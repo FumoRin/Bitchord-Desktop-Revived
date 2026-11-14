@@ -2373,7 +2373,6 @@ fn paint_instrumental(painter: &egui::Painter, cfg: &Cfg, b: &Block, xf: &Xf, t:
     let mid = x0 + total * 0.5;
     let into = t - b.start;
     let (exit_start, exit_len, step) = gap_times(b.start, b.dur);
-    let until = b.start + b.dur.max(0.001);
     // Opening: the row settles from just under its size rather than appearing.
     let swell = EASE.at(((into / GAP_ENTER) as f32).clamp(0.0, 1.0));
     // Closing: a push over the first [GAP_SPLIT], then a pull into the point the beads
@@ -2391,7 +2390,7 @@ fn paint_instrumental(painter: &egui::Painter, cfg: &Cfg, b: &Block, xf: &Xf, t:
     };
     let alpha = if e <= 0.0 { swell } else if !pull { 1.0 } else { 1.0 - bend };
     if alpha <= 0.001 || grow <= 0.001 {
-        return false;
+        return;
     }
     // One breath to each bead it lights, all three on the same phase; once the third is
     // lit the row holds still and waits for the exit. Raised cosine, so every turn round

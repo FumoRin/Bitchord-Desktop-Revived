@@ -49,7 +49,7 @@ use crate::shader::Background;
 use crate::theme;
 use lists::{LIKED_MUSIC, Lists};
 use queue::Queue;
-use dev::{dev_probe, dev_script, dev_screenshot, dev_var};
+use dev::{dev_script, dev_screenshot, dev_var};
 use dialogs::text_field;
 pub use queue::Repeat;
 
