@@ -130,8 +130,10 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
     // Header: on the window buttons' line, when the app draws them.
     let lift = 20.0 - f32::from(super::titlebar::top_margin(20, 44.0));
     let header = Rect::from_min_size(area.min - vec2(0.0, if app.fullscreen { 0.0 } else { lift }), vec2(area.width(), 44.0));
-    // A song gets the switch too once its music video is found (or is playing).
-    if !app.jam.active() && (track.has_video() || app.playing_as().is_some() || app.song_video().is_some()) {
+    // A song gets the switch too once its music video is found (or is playing). Songs, not
+    // music videos, with videos off: no switch, and no music video looked up for it.
+    let songs_only = app.play_songs && !app.show_video;
+    if !app.jam.active() && !songs_only && (track.has_video() || app.playing_as().is_some() || app.song_video().is_some()) {
         song_video_switch(app, ui, header);
     }
     let mut hui = ui.new_child(egui::UiBuilder::new().max_rect(header).layout(egui::Layout::left_to_right(egui::Align::Center)));
