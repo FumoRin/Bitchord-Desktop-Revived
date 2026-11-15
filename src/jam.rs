@@ -997,6 +997,9 @@ mod tests {
             track_nr: Some(3),
             plays: None,
             music_video: true,
+            // This fork's tracks carry the video/explicit marks too; the relay says neither.
+            video: false,
+            explicit: false,
         };
         let i = item_of(&t);
         let w = serde_json::to_value(&i).unwrap();
