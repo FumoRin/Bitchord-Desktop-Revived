@@ -1259,6 +1259,11 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     // artist's full discography for that kind of release.
     card_row_all(ui, "a-albums", "Albums", &a.albums, a.albums_more.is_some(), acts, || Action::Go(Page::ArtistShelf { artist: id.to_owned(), title: "Albums".to_owned() }));
     card_row_all(ui, "a-singles", "Singles", &a.singles, a.singles_more.is_some(), acts, || Action::Go(Page::ArtistShelf { artist: id.to_owned(), title: super::SINGLES_SHELF.to_owned() }));
+    // Their songs you've saved, less those hidden as explicit.
+    let library: Vec<Card> = a.library.iter().filter(|c| !matches!(&c.target, Target::Song(t) if !rows.shows(t))).cloned().collect();
+    if !library.is_empty() {
+        card_row(ui, "a-lib", "From your library", &library, acts);
+    }
     card_row(ui, "a-pl", "Featured on", &a.playlists, acts);
     card_row(ui, "a-sim", "Fans might also like", &a.similar, acts);
     if let Some(d) = a.description.as_deref().filter(|d| !d.trim().is_empty()) {
