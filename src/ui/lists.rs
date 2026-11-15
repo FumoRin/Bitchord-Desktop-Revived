@@ -684,7 +684,6 @@ mod tests {
         assert!(!edits.keeps("LM", &track("x"), Some("set-x")));
         assert!(edits.keeps("PL9", &track("x"), Some("set-x")));
     }
-}
 
     fn sorts(on: u64) -> Vec<PlaylistSort> {
         [(0, "Manual"), (3, "Title")]
@@ -742,3 +741,4 @@ mod tests {
         assert!(wait.take_due(wait.due().unwrap()));
         assert!(wait.arrived(&sorts(0), 5.0));
     }
+}

@@ -385,6 +385,9 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                 }
                 let img = Rect::from_center_size(pos2(rect.left() + ICON_X, rect.center().y), Vec2::splat(36.0));
                 paint_cover(ui, img, &c.thumbs, theme::thumb_radius(), 1.0);
+                if let Target::Album(id) | Target::Playlist(id) = &c.target {
+                    widgets::download_veil(ui, img, theme::thumb_radius(), id);
+                }
                 if a > 0.0 {
                     let w = full_w - 58.0;
                     text_at(ui, pos2(img.right() + 10.0, rect.top() + 7.0), &c.title, theme::semibold(13.5), theme::with_alpha(theme::text(), a), w);

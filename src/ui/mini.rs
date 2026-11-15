@@ -931,7 +931,7 @@ pub fn video_pip(app: &mut App, ui: &mut Ui, _now: f64) {
     ui.painter().rect_filled(r, 0.0, Color32::BLACK);
     let track = app.current().cloned();
     let video = app.shown_video().cloned();
-    let frame = video.and_then(|t| super::nowplaying::video_frame(app, &ctx, t));
+    let frame = video.as_ref().and_then(|t| super::nowplaying::video_frame(app, &ctx, t));
     // The window takes its shape (see `keep_shape`); a song without a video leaves it be.
     app.mini.video_shape = frame.as_ref().map(|tex| tex.size_vec2()).filter(|s| s.x > 0.0 && s.y > 0.0).map(|s| s.x / s.y);
     match (&frame, &video, &track) {
