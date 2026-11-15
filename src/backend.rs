@@ -300,6 +300,8 @@ pub struct ArtistPage {
     /// "Top songs" playlist behind the shelf's Show all button.
     pub top_playlist: Option<String>,
     pub albums: Vec<Card>,
+    /// Their songs in your library ("From your library"); signed in only.
+    pub library: Vec<Card>,
     /// The "Singles & EPs" shelf, kept apart from the albums since BitChord's
     /// artist page gives each its own Show all.
     pub singles: Vec<Card>,
