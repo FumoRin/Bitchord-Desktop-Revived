@@ -17,6 +17,9 @@ use std::time::Duration;
 use bytes::Bytes;
 
 const BLOCK: u64 = 256 * 1024;
+/// The first block is smaller: a decoder opens after a few hundred bytes, so playback
+/// waits on this one alone, and it still holds seconds of audio while the next arrive.
+const FIRST: u64 = 64 * 1024;
 const WORKERS: usize = 4;
 /// Tries per block before the download gives up, waiting a little longer each time
 /// (about half a minute in all): long enough to ride out a dropped connection.
@@ -27,8 +30,9 @@ const STALL: Duration = Duration::from_secs(20);
 /// googlevideo occasionally starts rejecting a URL partway through (HTTP 403);
 /// a freshly resolved URL for the same video resumes the download.
 const MAX_REFRESHES: u32 = 2;
-/// A prefetch only fetches this much (~16 s of audio) until playback actually opens it:
-/// enough to start at once, without holding a whole extra song in memory.
+/// A prefetch only fetches this much (~10 s of audio at 256 kbps, two HLS segments)
+/// until playback actually opens it: enough to start at once, without holding a whole
+/// extra song in memory.
 const HEAD_BLOCKS: usize = 2;
 /// Files larger than this (about 20 minutes at 256 kbps: long mixes, whole albums in
 /// one video) aren't kept whole. Each reader keeps a window around where it reads,
@@ -38,9 +42,24 @@ const WINDOWED_FROM: u64 = 40 * 1024 * 1024;
 const AHEAD: usize = 40;
 const BEHIND: usize = 8;
 
+/// Block `idx`'s first byte in a file.
+fn block_start(idx: usize) -> u64 {
+    if idx == 0 { 0 } else { FIRST + (idx as u64 - 1) * BLOCK }
+}
+
+/// The block holding byte `pos` of a file.
+fn block_of(pos: u64) -> usize {
+    if pos < FIRST { 0 } else { 1 + ((pos - FIRST) / BLOCK) as usize }
+}
+
+/// How many blocks a file of `total` bytes takes.
+fn block_count(total: u64) -> usize {
+    if total == 0 { 0 } else { block_of(total - 1) + 1 }
+}
+
 /// What a download fetches.
 pub enum Media {
-    /// One file, in `BLOCK`-sized ranges.
+    /// One file, in ranges: `FIRST` bytes, then `BLOCK`s.
     File(String),
     /// A podcast feed's file on its own server: the same ranges, asked for in a
     /// `Range` header (googlevideo's `&range=` means nothing there).
@@ -153,12 +172,12 @@ impl Shared {
     /// A buffer for `total` bytes. `head_only` (a prefetch) fetches just the start until
     /// a reader opens it.
     pub fn new(total: u64, duration_ms: u64, loudness_db: Option<f32>, format: Format, info: Option<crate::hires::Info>, head_only: bool) -> Arc<Self> {
-        Self::build(total.div_ceil(BLOCK) as usize, total, total > WINDOWED_FROM, duration_ms, loudness_db, format, info, false, None, head_only)
+        Self::build(block_count(total), total, total > WINDOWED_FROM, duration_ms, loudness_db, format, info, false, None, head_only)
     }
 
     /// A buffer for a podcast feed's file of `total` bytes.
     pub fn feed(total: u64, duration_ms: u64, head_only: bool) -> Arc<Self> {
-        Self::build(total.div_ceil(BLOCK) as usize, total, total > WINDOWED_FROM, duration_ms, None, Format::File { hint: "mp3", mime: None }, None, true, None, head_only)
+        Self::build(block_count(total), total, total > WINDOWED_FROM, duration_ms, None, Format::File { hint: "mp3", mime: None }, None, true, None, head_only)
     }
 
     /// A buffer for an HLS stream's segments, starting at `starts` (s).
@@ -211,10 +230,9 @@ impl Shared {
     pub fn from_bytes_with_format(data: Vec<u8>, duration_ms: u64, loudness_db: Option<f32>, format: Format, info: Option<crate::hires::Info>) -> Arc<Self> {
         let total = data.len() as u64;
         let data = Bytes::from(data);
-        let blocks: Vec<Option<Bytes>> =
-            (0..total.div_ceil(BLOCK)).map(|i| Some(data.slice(i as usize * BLOCK as usize..((i + 1) * BLOCK).min(total) as usize))).collect();
-        let n = blocks.len();
         let shared = Self::new(total, duration_ms, loudness_db, format, info, false);
+        let n = shared.inner.lock().unwrap().blocks.len();
+        let blocks: Vec<Option<Bytes>> = (0..n).map(|i| Some(data.slice(block_start(i) as usize..block_start(i + 1).min(total) as usize))).collect();
         {
             let mut inner = shared.inner.lock().unwrap();
             inner.blocks = blocks;
@@ -323,8 +341,7 @@ impl Shared {
     }
 
     fn range(&self, idx: usize) -> (u64, u64) {
-        let start = idx as u64 * BLOCK;
-        (start, (start + BLOCK).min(self.total) - 1)
+        (block_start(idx), block_start(idx + 1).min(self.total) - 1)
     }
 }
 
@@ -497,7 +514,7 @@ impl std::error::Error for SimulatedRefusal {}
 static FAIL_FROM: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
 
 /// Dev hook: YTM_STREAM_REFUSE=<block> answers every file stream's ranges from that
-/// block on with HTTP 403, fresh URLs too, as YouTube does past 1 MiB (block 4) where
+/// block on with HTTP 403, fresh URLs too, as YouTube does past 1 MiB (in block 4) where
 /// it wants a PO token for the visionOS player's URLs. HLS segments get through.
 static REFUSE_FROM: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
 
@@ -600,15 +617,19 @@ async fn download_whole(http: &reqwest::Client, url: &str, ua: &str, shared: &Ar
         .map_err(|_| stalled())?
         .and_then(reqwest::Response::error_for_status)
         .map_err(reqwest::Error::without_url)?;
-        let block = BLOCK as usize;
         let blocks = shared.inner.lock().unwrap().blocks.len();
-        let mut buf = bytes::BytesMut::with_capacity(block);
+        // The first block is smaller than the rest (see `FIRST`).
+        let lens: Vec<usize> = (0..blocks).map(|i| {
+            let (a, b) = shared.range(i);
+            (b - a + 1) as usize
+        }).collect();
+        let mut buf = bytes::BytesMut::with_capacity(BLOCK as usize);
         let (mut idx, mut received) = (0usize, 0u64);
         while let Some(chunk) = tokio::time::timeout(STALL, resp.chunk()).await.map_err(|_| stalled())?.map_err(reqwest::Error::without_url)? {
             received += chunk.len() as u64;
             buf.extend_from_slice(&chunk);
-            while buf.len() >= block && idx < blocks {
-                shared.put(idx, buf.split_to(block).freeze());
+            while idx < blocks && buf.len() >= lens[idx] {
+                shared.put(idx, buf.split_to(lens[idx]).freeze());
                 idx += 1;
             }
             if shared.inner.lock().unwrap().cancelled {
@@ -616,8 +637,9 @@ async fn download_whole(http: &reqwest::Client, url: &str, ua: &str, shared: &Ar
             }
         }
         anyhow::ensure!(received == shared.total, "short read: {received} of {} bytes", shared.total);
-        if idx < blocks {
-            shared.put(idx, buf.split().freeze());
+        while idx < blocks {
+            shared.put(idx, buf.split_to(lens[idx]).freeze());
+            idx += 1;
         }
         anyhow::Ok(())
     }
@@ -704,9 +726,9 @@ impl Read for StreamReader {
         if out.is_empty() || self.pos >= self.shared.total {
             return Ok(0);
         }
-        let idx = (self.pos / BLOCK) as usize;
+        let idx = block_of(self.pos);
         let block = self.block_at(idx)?;
-        let off = (self.pos - idx as u64 * BLOCK) as usize;
+        let off = (self.pos - block_start(idx)) as usize;
         let n = out.len().min(block.len() - off);
         out[..n].copy_from_slice(&block[off..off + n]);
         self.pos += n as u64;

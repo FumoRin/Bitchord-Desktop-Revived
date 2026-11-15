@@ -413,6 +413,8 @@ pub struct App {
     // page data
     home: Option<HomeState>,
     home_loading: bool,
+    /// The Home last asked for is a mood's, not the plain feed (kept for the next launch).
+    home_mood: bool,
     explore: Option<Explore>,
     /// The Moods & genres category last opened.
     mood: Option<crate::ytm::MoodPage>,
@@ -770,6 +772,8 @@ pub struct App {
     dialog: Option<Dialog>,
     share_pending: Option<String>,
     smoke: Option<String>,
+    /// The one part of egui's memory that's saved (see `save`).
+    zoom: f32,
 }
 
 /// Longest crossfade offered, in seconds.
@@ -932,6 +936,8 @@ impl App {
             suggest_due: None,
             home: None,
             home_loading: true,
+            home_mood: false,
+            zoom: 1.0,
             explore: None,
             mood: None,
             search: None,
@@ -1202,6 +1208,14 @@ impl App {
             app.account_avatar = c.avatar;
             app.sidebar_cache = Some(c.playlists).filter(|p| !p.is_empty());
         }
+        // Last launch's Home, so it shows at once; the request above replaces it.
+        if let Some(c) = std::fs::read(app.backend.data_dir().join(HOME_CACHE))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<HomeCache>(&b).ok())
+            .filter(|c| c.logged_in == app.logged_in && !c.shelves.is_empty())
+        {
+            app.home = Some(HomeState { chips: c.chips, shelves: c.shelves, continuation: None, loading_more: None, picks_loading: false, picks_expanded: false });
+        }
         // Dev hook: YTM_QUEUE opens the queue drawer.
         if std::env::var_os("YTM_QUEUE").is_some() {
             app.queue_open = true;
@@ -1288,6 +1302,7 @@ impl App {
         let req = match &self.page.clone() {
             Page::Home if !self.home_loading => {
                 self.home_loading = true;
+                self.home_mood = false;
                 Some(Req::Home(None))
             }
             Page::New => Some(Req::Explore(self.preferred_artist_ids())),
@@ -1889,6 +1904,7 @@ impl eframe::App for App {
     /// Dev hook: `YTM_FAKE_POINTER=x,y` parks a synthetic pointer there, for testing
     /// hover behaviour without touching the real mouse.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        self.zoom = ctx.zoom_factor();
         dev_script(ctx, raw);
         // Dev hook: YTM_FAKE_WHEEL="secs,notches" injects one wheel event, for testing.
         if let Some((at, n)) = dev_var("YTM_FAKE_WHEEL").and_then(|v| {
@@ -1929,7 +1945,16 @@ impl eframe::App for App {
         }
     }
 
+    /// egui's memory is a lot of scroll offsets and text cursors, written every 30 s
+    /// and parsed at every launch. Nothing needs it back but the zoom, saved in `save`.
+    fn persist_egui_memory(&self) -> bool {
+        false
+    }
+
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        // Where eframe reads it back from, before it sizes the window: the saved size is
+        // in points at this zoom. Everything else in egui's memory starts fresh.
+        storage.set_string("egui", format!("(options:(zoom_factor:{:?}))", self.zoom));
         if std::env::var_os("YTM_MUTE").is_none() {
             storage.set_string("volume", self.audio.volume().to_string());
         }
@@ -2101,6 +2126,43 @@ fn relaunch() {
         let _ = std::process::Command::new(exe).spawn();
     }
 }
+
+/// The last unfiltered Home feed, shown at launch until the new one arrives.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct HomeCache {
+    pub logged_in: bool,
+    pub chips: Vec<crate::model::Chip>,
+    pub shelves: Vec<crate::model::Shelf>,
+}
+
+impl HomeCache {
+    /// Writes it (`None` removes it) off the UI thread. A write started later always wins,
+    /// and a half-written file is never left behind.
+    pub(super) fn store(dir: &std::path::Path, cache: Option<Self>) {
+        static STARTED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        static WRITTEN: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
+        let n = STARTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let path = dir.join(HOME_CACHE);
+        std::thread::spawn(move || {
+            let mut written = WRITTEN.lock().unwrap_or_else(|e| e.into_inner());
+            if *written > n {
+                return;
+            }
+            *written = n;
+            match cache.and_then(|c| serde_json::to_vec(&c).ok()) {
+                Some(json) => {
+                    let tmp = path.with_extension("json.tmp");
+                    let _ = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &path));
+                }
+                None => {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        });
+    }
+}
+
+const HOME_CACHE: &str = "home.json";
 
 /// What the sidebar and the account button show, kept for the next launch.
 #[derive(serde::Serialize, serde::Deserialize)]

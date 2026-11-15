@@ -740,8 +740,28 @@ pub fn is_downloaded(t: &Track) -> bool {
 type StreamSlot = Arc<std::sync::Mutex<Option<(String, Arc<Shared>)>>>;
 type SongCell = Arc<tokio::sync::OnceCell<Option<Track>>>;
 
+/// A music video's stream opened while its song was looked up. Left unused, it stops.
+struct EarlyVideo(Option<tokio::task::JoinHandle<anyhow::Result<Arc<Shared>>>>);
+
+impl Drop for EarlyVideo {
+    fn drop(&mut self) {
+        if let Some(open) = self.0.take()
+            && let Ok(rt) = tokio::runtime::Handle::try_current()
+        {
+            rt.spawn(async move {
+                if let Ok(Ok(s)) = open.await {
+                    s.cancel();
+                }
+            });
+        }
+    }
+}
+
 /// How long a play waits for a music video's song version before playing the video.
 const PLAY_SONG_WAIT: std::time::Duration = std::time::Duration::from_millis(2500);
+/// A lookup still going after this starts the music video's own stream alongside, so
+/// it's ready to play when no song turns up.
+const EARLY_VIDEO_AFTER: std::time::Duration = std::time::Duration::from_millis(200);
 /// A prefetch has until the song before it ends.
 const PREFETCH_SONG_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 /// How long playback waits for the hi-res sources before falling back to YouTube. Every
@@ -1426,24 +1446,36 @@ impl Backend {
     /// `song_of`: the music video it stands for, whose song version is what will play.
     /// `track`: the song as listed, for a hi-res source's search.
     async fn prefetch(&self, video_id: String, song_of: Option<Track>, track: Option<Track>) -> anyhow::Result<()> {
-        // For the play it was asked during: a skip in the meantime makes it moot.
+        // For the play it was asked during: a skip in the meantime makes it moot, and so
+        // does a later prefetch (the queue changed: another song is next now).
+        static LATEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let ticket = LATEST.fetch_add(1, Ordering::Relaxed) + 1;
         let generation = self.audio.status.wanted_gen.load(Ordering::Relaxed);
         // Looked up now, so the play doesn't wait for it.
         let song = self.song_version(&video_id, song_of.as_ref(), PREFETCH_SONG_WAIT).await;
         let meta = song.clone().or_else(|| song_of.clone()).or_else(|| track);
         let video_id = song.map_or(video_id, |s| s.id);
-        // Let the playing song finish downloading first: it gets the whole bandwidth.
-        let playing = self.current.lock().unwrap().as_ref().map(|(_, s)| s.clone());
-        if let Some(s) = playing {
-            s.finished().await;
+        let moot = || {
+            self.audio.status.wanted_gen.load(Ordering::Relaxed) != generation
+                || LATEST.load(Ordering::Relaxed) != ticket
+                || self.prefetched.lock().unwrap().as_ref().is_some_and(|(id, _)| *id == video_id)
+        };
+        if moot() {
+            return Ok(());
         }
-        if self.audio.status.wanted_gen.load(Ordering::Relaxed) != generation
-            || self.prefetched.lock().unwrap().as_ref().is_some_and(|(id, _)| *id == video_id)
-        {
+        // The URL is looked up meanwhile, but the playing song finishes downloading
+        // first: it gets the whole bandwidth.
+        let playing = self.current.lock().unwrap().as_ref().map(|(_, s)| s.clone());
+        let (found, ()) = tokio::join!(self.find_stream(&video_id, meta.as_ref()), async {
+            if let Some(s) = playing {
+                s.finished().await;
+            }
+        });
+        if moot() {
             return Ok(());
         }
         log::debug!("prefetch {video_id}");
-        let shared = self.open_stream(&video_id, true, meta.as_ref()).await?;
+        let shared = self.start_stream(&video_id, found?, true, meta.as_ref());
         if let Some((_, old)) = self.prefetched.lock().unwrap().replace((video_id, shared)) {
             old.cancel();
         }
@@ -1527,9 +1559,23 @@ impl Backend {
         // one it was). From here on, everything (prefetch, replay, history) goes by what
         // actually plays.
         let was_carried = carried.is_some();
+        let mut early = EarlyVideo(None);
         let mut song = match carried {
             Some(song) => Some(song),
-            None => self.song_version(listed, song_of, PLAY_SONG_WAIT).await,
+            None => {
+                let lookup = self.song_version(listed, song_of, PLAY_SONG_WAIT);
+                tokio::pin!(lookup);
+                match tokio::time::timeout(EARLY_VIDEO_AFTER, &mut lookup).await {
+                    Ok(song) => song,
+                    Err(_) => {
+                        // Just its start, until it turns out to be the one that plays.
+                        let (this, id) = (self.clone(), listed.to_owned());
+                        let meta = song_of.cloned().or_else(|| track.cloned());
+                        early.0 = Some(tokio::spawn(async move { this.open_stream(&id, true, meta.as_ref()).await }));
+                        lookup.await
+                    }
+                }
+            }
         };
         // What a hi-res source is asked for: the song that will play, or the video itself.
         let meta = song.clone().or_else(|| song_of.cloned()).or_else(|| track.cloned());
@@ -1567,7 +1613,15 @@ impl Backend {
                 if self.audio.status.wanted_gen.load(Ordering::Relaxed) != generation {
                     return Ok(());
                 }
-                match self.open_stream(&video_id, false, meta.as_ref()).await {
+                // Taken only for the video; otherwise dropping `early` stops it.
+                let opened = match early.0.take_if(|_| song.is_none()) {
+                    Some(open) => {
+                        log::debug!("play {video_id} (gen {generation}): stream opened during the song lookup");
+                        open.await.map_err(anyhow::Error::from).flatten()
+                    }
+                    None => self.open_stream(&video_id, false, meta.as_ref()).await,
+                };
+                match opened {
                     Ok(s) => s,
                     // The song won't play: the music video still does.
                     Err(e) if song.is_some() => {
@@ -1577,7 +1631,14 @@ impl Backend {
                         if was_carried {
                             let _ = self.tx.send(Resp::PlayingAs { generation, listed: listed.to_owned(), song: None });
                         }
-                        self.open_stream(listed, false, None).await?
+                        let opened = match early.0.take() {
+                            Some(open) => open.await.ok().and_then(Result::ok),
+                            None => None,
+                        };
+                        match opened {
+                            Some(s) => s,
+                            None => self.open_stream(listed, false, None).await?,
+                        }
                     }
                     Err(e) => return Err(e),
                 }
@@ -1807,14 +1868,28 @@ impl Backend {
     }
 
     async fn open_stream(&self, video_id: &str, prefetch: bool, track: Option<&Track>) -> anyhow::Result<Arc<Shared>> {
+        let found = self.find_stream(video_id, track).await?;
+        Ok(self.start_stream(video_id, found, prefetch, track))
+    }
+
+    /// The saved download, or a stream URL to download from.
+    async fn find_stream(&self, video_id: &str, track: Option<&Track>) -> anyhow::Result<Found> {
         let id = video_id.to_owned();
         if let Some(shared) = tokio::task::spawn_blocking(move || crate::downloads::open(&id)).await? {
-            return Ok(shared);
+            return Ok(Found::Saved(shared));
         }
         let (source, s) = self.resolve(video_id, false, track, true).await?;
+        Ok(Found::Url(source, s))
+    }
+
+    fn start_stream(&self, video_id: &str, found: Found, prefetch: bool, track: Option<&Track>) -> Arc<Shared> {
+        let (source, s) = match found {
+            Found::Saved(shared) => return shared,
+            Found::Url(source, s) => (source, s),
+        };
         // Atmos arrives already decoded: a complete buffer, no download to run.
         if let Some(data) = s.data {
-            return Ok(Shared::from_bytes_with_format(data, s.duration_ms, s.loudness_db, s.format, s.info));
+            return Shared::from_bytes_with_format(data, s.duration_ms, s.loudness_db, s.format, s.info);
         }
         match (&s.starts, &s.media) {
             (Some(starts), _) => log::info!("stream {video_id}: {} HLS segments from {source:?}", starts.len()),
@@ -1832,7 +1907,7 @@ impl Backend {
                 log::warn!("visionOS file streams are refused here past 1 MiB; playing HLS from now on");
             }
         });
-        Ok(shared)
+        shared
     }
 
     /// Resolves a fresh URL from the same source and format, for a download that got a 403.
@@ -2530,6 +2605,11 @@ enum Source {
     HiRes,
     /// A music provider (see `providers`): Monochrome or JioSaavn.
     Provider,
+}
+
+enum Found {
+    Saved(Arc<Shared>),
+    Url(Source, ResolvedStream),
 }
 
 /// The music sources a song can play from before YouTube, as Settings › Music sources
