@@ -381,10 +381,12 @@ impl App {
             self.start_current(at, false, true);
         } else {
             self.resume_at = Some(at);
+            self.resume_as_song = true;
         }
     }
 
     fn start_current(&mut self, at: Duration, report: bool, as_song: bool) {
+        let as_song = std::mem::take(&mut self.resume_as_song) || as_song;
         let Some(track) = self.current().cloned() else { return };
         // A natural Automix handoff keeps the outgoing song on screen until the next one
         // is louder (see `MixFrom`); any other play switches at once.
