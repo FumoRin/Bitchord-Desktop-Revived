@@ -1596,7 +1596,7 @@ impl eframe::App for App {
         [0.0, 0.0, 0.0, 0.0]
     }
 
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         pace::frame(ctx);
         self.lyric_view.release_hidden(ctx.cumulative_pass_nr());
         let now = ctx.input(|i| i.time);
@@ -1628,11 +1628,12 @@ impl eframe::App for App {
             self.upload_files(files);
         }
         transfer::poll(self, ctx, now);
+        let wayland = integrations::is_wayland(frame);
         if crate::deeplink::take_show() {
-            self.show_window(ctx);
+            self.bring_back(ctx, wayland);
         }
         for invite in crate::deeplink::take() {
-            self.show_window(ctx);
+            self.bring_back(ctx, wayland);
             match invite {
                 crate::deeplink::Invite::Jam(code) => jam::open_link(self, code),
                 crate::deeplink::Invite::Party(code, server) => party::open_link(self, code, server),
@@ -1698,7 +1699,7 @@ impl eframe::App for App {
             self.set_mini(ctx, on, now);
         }
         self.mini.tick(ctx, now);
-        self.tray_window(ctx);
+        self.tray_window(ctx, frame);
         self.window_hidden = self.hidden_to_tray || ctx.input(|i| i.viewport().minimized == Some(true));
         self.sync_tempo();
         self.sync_discord();

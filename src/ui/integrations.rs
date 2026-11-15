@@ -352,7 +352,7 @@ impl App {
     /// the shell can accept it and then never display it (taskbar replacements, a
     /// busy tray cache); and if the icon can't be had at all, a close just quits
     /// instead of hiding.
-    pub(super) fn tray_window(&mut self, ctx: &egui::Context) {
+    pub(super) fn tray_window(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         // Shells mid-refresh have been seen to drop a single show request: keep
         // re-asserting it for a few frames, focus last, once. (Before the early
         // returns below: after a show, `hidden_to_tray` is false and the rest of
@@ -445,7 +445,7 @@ impl App {
         // The tray's clicks, handled like the keyboard's own transport keys.
         for cmd in crate::tray::take() {
             match cmd {
-                crate::tray::Cmd::Show => self.show_window(ctx),
+                crate::tray::Cmd::Show => self.bring_back(ctx, is_wayland(frame)),
                 crate::tray::Cmd::PlayPause => self.toggle(),
                 crate::tray::Cmd::Next => self.next(),
                 crate::tray::Cmd::Prev => self.prev(),
@@ -460,6 +460,16 @@ impl App {
                     break;
                 }
             }
+        }
+    }
+
+    /// The window back for the tray's Show or a later launch. Wayland ignores Visible,
+    /// un-minimizing and Focus, so there it can only ask for attention (see `tray_window`).
+    pub(super) fn bring_back(&mut self, ctx: &egui::Context, wayland: bool) {
+        if wayland {
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
+        } else {
+            self.show_window(ctx);
         }
     }
 
@@ -501,4 +511,10 @@ impl App {
             }
         });
     }
+}
+
+/// Whether the window runs under Wayland (it can't be raised or focused there).
+pub(super) fn is_wayland(frame: &eframe::Frame) -> bool {
+    use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+    frame.display_handle().is_ok_and(|h| matches!(h.as_raw(), RawDisplayHandle::Wayland(_)))
 }
