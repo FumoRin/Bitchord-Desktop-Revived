@@ -310,7 +310,7 @@ mod unix {
     /// A copy that died left its socket behind: take the channel over, if the holder
     /// is really gone (its lock went with it). False when someone is serving after all.
     pub fn take_over() -> bool {
-        dir().is_some_and(listen_at)
+        dir().is_some_and(|dir| listen_at(&dir))
     }
 
     fn serve(listener: UnixListener) {

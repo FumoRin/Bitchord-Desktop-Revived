@@ -40,7 +40,7 @@ pub struct ListSorts {
     /// The last order worked out, the same way: its list, the tracks it came from, the rows.
     memo: RefCell<Option<(String, ListKey, Vec<usize>)>>,
     /// The Library grid's last order, the same way: its sort, its cards and their order.
-    card_memo: RefCell<Option<(Sort, u64, Vec<usize>)>>,
+    card_memo: RefCell<Option<(Sort, ListKey, Vec<usize>)>>,
 }
 
 /// The songs a list holds, by where they are and which they are.
@@ -96,7 +96,7 @@ impl ListSorts {
         }
         let key = list_key(tracks);
         let mut memo = self.memo.borrow_mut();
-        if let Some((_, l, rows)) = memo.as_ref().filter(|(k, l, _)| k == list && *l == key) {
+        if let Some((_, _, rows)) = memo.as_ref().filter(|(k, l, _)| k == list && *l == key) {
             return Some(rows.clone());
         }
         let mut rows: Vec<usize> = (0..tracks.len()).collect();
@@ -129,7 +129,7 @@ impl ListSorts {
         }
         let key = (cards.as_ptr() as usize, cards.len(), titles.finish());
         let mut memo = self.card_memo.borrow_mut();
-        if let Some((_, l, rows)) = memo.as_ref().filter(|(s, l, _)| *s == sort && *l == key) {
+        if let Some((_, _, rows)) = memo.as_ref().filter(|(s, l, _)| *s == sort && *l == key) {
             return rows.clone();
         }
         match sort {
@@ -222,7 +222,7 @@ pub fn run(shown: Option<&[usize]>, from: usize, to: usize) -> Vec<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{KEEP_SORTS, ListSorts, Page, Sort, run, sort_rows};
+    use super::{KEEP_SORTS, ListSorts, Sort, run, sort_rows};
     use crate::model::{Link, Track};
 
     fn link(name: &str) -> Link {

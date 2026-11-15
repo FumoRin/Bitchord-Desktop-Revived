@@ -2382,6 +2382,48 @@ mod tests {
         assert_eq!(list_item(&row(&plain)).unwrap().artists[0].id, None);
     }
 
+    // A search of your uploads and one of your library, trimmed from real answers (November
+    // 2026). Only the picked tab holds results. Uploads come in one untitled shelf: your
+    // uploads' artist and album (leading to pages of your own), then the songs.
+    const UPLOADS_SEARCH: &str = r#"{"contents":{"tabbedSearchResultsRenderer":{"tabs":[{"tabRenderer":{"title":"YT Music","selected":false,"endpoint":{"searchEndpoint":{"params":"agIYAQ%3D%3D","query":"kaede"}}}},{"tabRenderer":{"title":"Library","selected":false,"endpoint":{"searchEndpoint":{"params":"agIYBA%3D%3D","query":"kaede"}}}},{"tabRenderer":{"title":"Uploads","selected":true,"content":{"sectionListRenderer":{"contents":[{"musicShelfRenderer":{"contents":[{"musicResponsiveListItemRenderer":{"flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Kaede"}]}}},{"musicResponsiveListItemFlexColumnRenderer":{"text":{}}}],"navigationEndpoint":{"browseEndpoint":{"browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_ARTIST"}},"browseId":"FEmusic_library_privately_owned_artist_detaila_po_CJD2uP34k9CPgQESBWthZWRl"}}}},{"musicResponsiveListItemRenderer":{"flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Stardust in Blue"}]}}},{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Album"},{"text":" • "},{"navigationEndpoint":{"browseEndpoint":{"browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_UNKNOWN"}},"browseId":"FEmusic_library_privately_owned_artist_detaila_po_CJD2uP34k9CPgQESBWthZWRl"}},"text":"Kaede"}]}}}],"navigationEndpoint":{"browseEndpoint":{"browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_ALBUM"}},"browseId":"FEmusic_library_privately_owned_release_detailb_po_CJD2uP34k9CPgQESEHN0YXJkdXN0IGluIGJsdWUaBWthZWRlIg1odHRwIHVwbG9hZGVy"}}}},{"musicResponsiveListItemRenderer":{"flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"navigationEndpoint":{"watchEndpoint":{"videoId":"pQlgsq6hpWE","watchEndpointMusicSupportedConfigs":{"watchEndpointMusicConfig":{"musicVideoType":"MUSIC_VIDEO_TYPE_PRIVATELY_OWNED_TRACK"}}}},"text":"さよならはハート仕掛け - Farewell Is A Heartwork"}]}}},{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"navigationEndpoint":{"browseEndpoint":{"browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_UNKNOWN"}},"browseId":"FEmusic_library_privately_owned_artist_detaila_po_CJD2uP34k9CPgQESBWthZWRl"}},"text":"Kaede"},{"text":" • "},{"navigationEndpoint":{"browseEndpoint":{"browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_ALBUM"}},"browseId":"FEmusic_library_privately_owned_release_detailb_po_CJD2uP34k9CPgQESEHN0YXJkdXN0IGluIGJsdWUaBWthZWRlIg1odHRwIHVwbG9hZGVy"}},"text":"Stardust in Blue"}]}}}],"playlistItemData":{"videoId":"pQlgsq6hpWE"}}}]}}]}}}}]}}}"#;
+    // Library results come in titled shelves; its artists lead to "MPLA" and their channel.
+    const LIBRARY_SEARCH: &str = r#"{"contents":{"tabbedSearchResultsRenderer":{"tabs":[{"tabRenderer":{"title":"YT Music","selected":false,"endpoint":{"searchEndpoint":{"params":"agIYAQ%3D%3D","query":"kaede"}}}},{"tabRenderer":{"title":"Library","selected":true,"content":{"sectionListRenderer":{"contents":[{"musicShelfRenderer":{"title":{"runs":[{"text":"Artists"}]},"contents":[{"musicResponsiveListItemRenderer":{"flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Kaede"}]}}},{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"3.8K subscribers"}]}}}],"navigationEndpoint":{"browseEndpoint":{"browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_LIBRARY_ARTIST"}},"browseId":"MPLAUCMJIUyOLyBdal5XpZW3-96w"}}}}]}},{"musicShelfRenderer":{"title":{"runs":[{"text":"Albums"}]},"contents":[{"musicResponsiveListItemRenderer":{"flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Stardust in Blue"}]}}},{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Album"},{"text":" • "},{"navigationEndpoint":{"browseEndpoint":{"browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_ARTIST"}},"browseId":"UCMJIUyOLyBdal5XpZW3-96w"}},"text":"Kaede"},{"text":" & "},{"text":"Lamp"},{"text":" • "},{"text":"2020"}]}}}],"navigationEndpoint":{"browseEndpoint":{"browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_ALBUM"}},"browseId":"MPREb_54uxDZG0XOp"}}}}]}},{"musicShelfRenderer":{"title":{"runs":[{"text":"Songs"}]},"contents":[{"musicResponsiveListItemRenderer":{"flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"navigationEndpoint":{"watchEndpoint":{"videoId":"G0BLtNsvMP8","watchEndpointMusicSupportedConfigs":{"watchEndpointMusicConfig":{"musicVideoType":"MUSIC_VIDEO_TYPE_ATV"}}}},"text":"When We Were Young"}]}}},{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"navigationEndpoint":{"browseEndpoint":{"browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_ARTIST"}},"browseId":"UCMJIUyOLyBdal5XpZW3-96w"}},"text":"Kaede"},{"text":" & "},{"text":"Lamp"},{"text":" • "},{"navigationEndpoint":{"browseEndpoint":{"browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_ALBUM"}},"browseId":"MPREb_54uxDZG0XOp"}},"text":"Stardust in Blue"}]}}}],"playlistItemData":{"videoId":"G0BLtNsvMP8"}}}]}}]}}}},{"tabRenderer":{"title":"Uploads","selected":false,"endpoint":{"searchEndpoint":{"params":"agIYAw%3D%3D","query":"kaede"}}}}]}}}"#;
+
+    #[test]
+    fn uploads_search_finds_your_songs_and_no_pages_it_cant_open() {
+        let r = parse_scoped(&serde_json::from_str(UPLOADS_SEARCH).unwrap());
+        assert!(r.cards.is_empty());
+        assert_eq!(r.tracks.len(), 1);
+        let t = &r.tracks[0];
+        assert_eq!((t.id.as_str(), t.title.as_str()), ("pQlgsq6hpWE", "さよならはハート仕掛け - Farewell Is A Heartwork"));
+        assert_eq!(names(t), ["Kaede"]);
+        assert_eq!(t.artists[0].id, None);
+        assert_eq!(t.album.as_ref().map(|a| (a.name.as_str(), a.id.as_deref())), Some(("Stardust in Blue", None)));
+        assert!(!t.video);
+    }
+
+    #[test]
+    fn library_search_opens_its_artists_and_albums() {
+        let r = parse_scoped(&serde_json::from_str(LIBRARY_SEARCH).unwrap());
+        let cards: Vec<_> = r.cards.iter().map(|c| (c.title.as_str(), c.subtitle.as_str(), &c.target)).collect();
+        assert_eq!(
+            cards,
+            [
+                ("Kaede", "3.8K subscribers", &Target::Artist("UCMJIUyOLyBdal5XpZW3-96w".into())),
+                ("Stardust in Blue", "Album • Kaede & Lamp • 2020", &Target::Album("MPREb_54uxDZG0XOp".into())),
+            ]
+        );
+        assert_eq!(r.tracks.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(), ["When We Were Young"]);
+        assert_eq!(r.tracks[0].album.as_ref().and_then(|a| a.id.as_deref()), Some("MPREb_54uxDZG0XOp"));
+    }
+
+    #[test]
+    fn a_search_without_a_picked_tab_finds_nothing() {
+        let v = json!({"contents": {"tabbedSearchResultsRenderer": {"tabs": [{"tabRenderer": {"title": "Library"}}]}}});
+        let r = parse_scoped(&v);
+        assert!(r.tracks.is_empty() && r.cards.is_empty());
+    }
+
     #[test]
     fn quick_pick_artist_is_not_its_play_count() {
         let t = list_item(&row(QUICK_PICK)).unwrap();
