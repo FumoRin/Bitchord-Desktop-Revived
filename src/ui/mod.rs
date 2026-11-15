@@ -494,7 +494,8 @@ pub struct App {
     video_quality: u32,
     /// The video on show or on its way, by id.
     video: Option<(String, Option<crate::video::Player>)>,
-    video_frame: Option<egui::TextureHandle>,    /// Full screen fills the screen with the video, past the black bars that came with it.
+    video_frame: Option<egui::TextureHandle>,
+    /// Full screen fills the screen with the video, past the black bars that came with it.
     video_fill: bool,
     /// The video's picture inside those bars, as a fraction of the frame, widened frame by
     /// frame, and when it was last looked at.

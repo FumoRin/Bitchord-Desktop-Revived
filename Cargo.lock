@@ -527,6 +527,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "crossbeam-channel",
+ "dbus",
  "des",
  "directories",
  "discord-rich-presence",
