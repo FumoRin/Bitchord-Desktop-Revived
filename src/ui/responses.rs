@@ -884,7 +884,7 @@ fn download_summary(r: &crate::backend::DownloadRun, name: &str) -> String {
         format!("Downloaded{name}: {}", songs(r.saved))
     };
     if r.skipped > 0 && !r.cancelled {
-        msg += &format!(", {} already there", songs(r.skipped));
+        msg += &format!(", {} already there", r.skipped);
     }
     if !r.failed.is_empty() {
         let few: Vec<&str> = r.failed.iter().take(3).map(String::as_str).collect();
