@@ -1125,7 +1125,8 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
     // The speed button, when the setting is on: the speed it's at, lit (with the dot
     // under it) when it isn't 1×. Clicking opens a small card with its slider.
     if app.tempo_on {
-        tempo_button(app, ui, rbtn(ui, 3, "tempo", "Playback speed"), accent, cap.bottom());
+        let resp = rbtn(ui, 3, "tempo", "Playback speed");
+        tempo_button(app, ui, resp, accent, cap.bottom());
     }
 
     if total > 0.0

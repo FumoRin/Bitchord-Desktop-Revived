@@ -922,7 +922,7 @@ pub fn strip(app: &mut App, ui: &mut Ui, now: f64) {
 /// Picture in picture: the video filling the window (its cover for a song that plays
 /// after it). Pointed at, previous / play / next over it, pin, the full window and close
 /// at the top right, and a seek line. Drag to move, double-click for the full window.
-pub fn video_pip(app: &mut App, ui: &mut Ui, now: f64) {
+pub fn video_pip(app: &mut App, ui: &mut Ui, _now: f64) {
     let ctx = ui.ctx().clone();
     let r = ctx.content_rect();
     if titlebar::drag_strip(ui, r, "pip").double_clicked() {
