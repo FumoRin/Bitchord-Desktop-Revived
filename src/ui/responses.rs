@@ -41,7 +41,7 @@ impl App {
         }
         while let Ok(ev) = self.ch.audio_rx.try_recv() {
             match ev {
-                AudioEvent::Finished { generation } if generation == self.generation && self.jam.guest() => {}
+                AudioEvent::Finished { generation } if generation == self.generation && self.jam.follows() => {}
                 AudioEvent::Finished { generation } if generation == self.generation => {
                     if self.repeats_one() {
                         self.play_current();
@@ -51,7 +51,7 @@ impl App {
                 }
                 AudioEvent::Finished { .. } => {}
                 // Crossfade into the next song; repeat-one and the end of the queue wait for the end.
-                AudioEvent::Ending { generation } if generation == self.generation && !self.jam.guest() && !self.repeats_one() => {
+                AudioEvent::Ending { generation } if generation == self.generation && !self.jam.follows() && !self.repeats_one() => {
                     // Automix: the next song eases in under this one, which keeps the
                     // player until the blend has given the next song the louder half
                     // (see `MixFrom`).
@@ -555,10 +555,6 @@ impl App {
                     if self.mix_hold().is_none() {
                         self.show_in_media(&shown);
                         self.refresh_lyrics(shown);
-                    }
-                    // A jam began while it was being looked up: everyone plays the host's upload.
-                    if self.jam.active() {
-                        self.play_listed_upload();
                     }
                 }
             }

@@ -33,9 +33,11 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
-/// The party server the web app and the phone use. `YTM_PARTY_SERVER` overrides it,
-/// and a custom server typed on the page wins over both.
-pub const DEFAULT_SERVER: &str = "https://bitchord.kushagrasingh.in";
+/// The party server the web app and the phone use: the API host, which answers the
+/// JSON the phone backend speaks (`bitchord.kushagrasingh.in` itself is the invite
+/// page and hands out HTML, not parties). `YTM_PARTY_SERVER` overrides it, and a
+/// custom server typed on the page wins over both.
+pub const DEFAULT_SERVER: &str = "https://api.bitchord.kushagrasingh.in";
 
 /// Party invite links (JamInviteLink.kt): `https://bitchord.kushagrasingh.in/invite/<CODE>`,
 /// optionally `?server=<custom server>`, and `bitchord://party/<CODE>`.

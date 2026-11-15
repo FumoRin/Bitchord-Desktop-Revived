@@ -12,15 +12,12 @@ use super::{Action, App, Dialog, LibTab, NpTab, Page, jam, keybinds, transfer};
 
 impl App {
     pub(super) fn apply(&mut self, a: Action) {
-        // In someone else's jam, playback changes become requests to the host.
-        let a = if self.jam.guest() {
-            match jam::guest_action(self, a) {
-                Some(a) => a,
-                None => return,
-            }
-        } else {
-            a
-        };
+        // In a party only the host drives, the relay turns these down for us: say so
+        // instead of clicking into nothing. Playing the current song stays ours (a pause).
+        if self.jam.locked() && jam::refused(self, &a) {
+            self.toast("Only the host can change the party");
+            return;
+        }
         // In a locked party, pause is the listener's own; a resume rejoins the party.
         let a = match super::party::locked_action(self, a) {
             Some(a) => a,

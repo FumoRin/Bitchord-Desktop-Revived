@@ -541,7 +541,7 @@ mod win {
         }
     }
 
-    /// The registry writer for `ytm-rs:` links (see `register_protocol`).
+    /// The registry writer for `ytm-rs:` and `bitchord:` links (see `register_protocol`).
     pub(super) fn register_at(root: HKEY, key: &str, exe: &str) -> windows::core::Result<()> {
         let set = |sub: &str, name: &str, value: &str| -> windows::core::Result<()> {
             let path = if sub.is_empty() { key.to_string() } else { format!(r"{key}\{sub}") };
@@ -566,17 +566,22 @@ mod win {
     }
 }
 
-/// Register the `ytm-rs:` URL protocol for this user, pointing at this exe.
+/// Register the `ytm-rs:` and `bitchord:` URL protocols for this user, pointing at
+/// this exe. The party's invite links (`bitchord://party/CODE`) need the second.
 /// Call only from an installed copy, so dev builds don't take the protocol over.
 #[cfg(windows)]
 pub fn register_protocol() {
     match std::env::current_exe() {
         Ok(exe) => {
-            if let Err(e) = win::register_at(HKEY_CURRENT_USER, r"Software\Classes\ytm-rs", &exe.to_string_lossy()) {
+            let exe = exe.to_string_lossy();
+            if let Err(e) = win::register_at(HKEY_CURRENT_USER, r"Software\Classes\ytm-rs", &exe) {
                 log::warn!("registering the ytm-rs: protocol: {e}");
             }
+            if let Err(e) = win::register_at(HKEY_CURRENT_USER, r"Software\Classes\bitchord", &exe) {
+                log::warn!("registering the bitchord: protocol: {e}");
+            }
         }
-        Err(e) => log::warn!("registering the ytm-rs: protocol: {e}"),
+        Err(e) => log::warn!("registering the link protocols: {e}"),
     }
 }
 
