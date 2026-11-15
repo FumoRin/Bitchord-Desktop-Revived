@@ -42,6 +42,9 @@ const BEHIND: usize = 8;
 pub enum Media {
     /// One file, in `BLOCK`-sized ranges.
     File(String),
+    /// A podcast feed's file on its own server: the same ranges, asked for in a
+    /// `Range` header (googlevideo's `&range=` means nothing there).
+    Feed(String),
     /// An HLS playlist's segments, one block each.
     Segments(Vec<String>),
 }
@@ -135,6 +138,9 @@ pub struct Shared {
     pub format: Format,
     /// What the player can say about this stream, when its source reported it (addons).
     pub info: Option<crate::hires::Info>,
+    /// A podcast feed's file (`Media::Feed`): MP3 mostly, which seeks by estimate,
+    /// since an exact seek in MP3 reads every frame before the spot.
+    pub feed: bool,
     /// HLS: each segment's start (s). Its blocks are the segments.
     pub segments: Option<Arc<[f64]>>,
     /// Flips to true once the download task has stopped (complete, failed or cancelled).
@@ -147,18 +153,23 @@ impl Shared {
     /// A buffer for `total` bytes. `head_only` (a prefetch) fetches just the start until
     /// a reader opens it.
     pub fn new(total: u64, duration_ms: u64, loudness_db: Option<f32>, format: Format, info: Option<crate::hires::Info>, head_only: bool) -> Arc<Self> {
-        Self::build(total.div_ceil(BLOCK) as usize, total, total > WINDOWED_FROM, duration_ms, loudness_db, format, info, None, head_only)
+        Self::build(total.div_ceil(BLOCK) as usize, total, total > WINDOWED_FROM, duration_ms, loudness_db, format, info, false, None, head_only)
+    }
+
+    /// A buffer for a podcast feed's file of `total` bytes.
+    pub fn feed(total: u64, duration_ms: u64, head_only: bool) -> Arc<Self> {
+        Self::build(total.div_ceil(BLOCK) as usize, total, total > WINDOWED_FROM, duration_ms, None, Format::File { hint: "mp3", mime: None }, None, true, None, head_only)
     }
 
     /// A buffer for an HLS stream's segments, starting at `starts` (s).
     pub fn segmented(starts: Vec<f64>, duration_ms: u64, loudness_db: Option<f32>, head_only: bool) -> Arc<Self> {
         // About as many segments (~7 s) as a windowed file has blocks (~8 s at 256 kbps).
         let windowed = starts.len() as u64 > WINDOWED_FROM / BLOCK;
-        Self::build(starts.len(), 0, windowed, duration_ms, loudness_db, Format::Aac, None, Some(starts.into()), head_only)
+        Self::build(starts.len(), 0, windowed, duration_ms, loudness_db, Format::Aac, None, false, Some(starts.into()), head_only)
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn build(n: usize, total: u64, windowed: bool, duration_ms: u64, loudness_db: Option<f32>, format: Format, info: Option<crate::hires::Info>, segments: Option<Arc<[f64]>>, head_only: bool) -> Arc<Self> {
+    fn build(n: usize, total: u64, windowed: bool, duration_ms: u64, loudness_db: Option<f32>, format: Format, info: Option<crate::hires::Info>, feed: bool, segments: Option<Arc<[f64]>>, head_only: bool) -> Arc<Self> {
         let limit = if head_only { HEAD_BLOCKS.min(n) } else { n };
         LIVE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Arc::new(Self {
@@ -183,6 +194,7 @@ impl Shared {
             tempo: Arc::new(std::sync::OnceLock::new()),
             format,
             info,
+            feed,
             segments,
             done: tokio::sync::watch::Sender::new(false),
             changed: tokio::sync::Notify::new(),
@@ -335,7 +347,7 @@ impl UrlSlot {
                 log::warn!("stream URL refresh: {} segments for a buffer of {:?}", urls.len(), self.segments);
                 false
             }
-            Ok(Media::File(_)) if self.segments.is_some() => {
+            Ok(Media::File(_) | Media::Feed(_)) if self.segments.is_some() => {
                 log::warn!("stream URL refresh: a file for a segmented buffer");
                 false
             }
@@ -392,6 +404,8 @@ pub async fn download(http: reqwest::Client, media: Media, ua: String, shared: A
                             // The range rides the URL for YouTube's players (Query); addon
                             // servers take it as a header (Header) and keep a clean URL.
                             Media::File(url) => (if ranging == Ranging::Query { format!("{url}&range={a}-{b}") } else { url.clone() }, Some(b - a + 1), slot.1),
+                            // A podcast feed's file: its own server, ranges as a header.
+                            Media::Feed(url) => (url.clone(), Some(b - a + 1), slot.1),
                             Media::Segments(urls) => (urls[idx].clone(), None, slot.1),
                         }
                     };
@@ -473,6 +487,25 @@ pub fn init_dev_hooks() {
     if let Some(b) = std::env::var("YTM_STREAM_REFUSE").ok().and_then(|v| v.parse().ok()) {
         REFUSE_FROM.store(b, std::sync::atomic::Ordering::Relaxed);
     }
+}
+
+/// Where a podcast feed's file ends up after its redirects (trackers, mostly), and its
+/// size: asked with a one-byte range, which also shows the server serves ranges.
+pub async fn probe_feed(http: &reqwest::Client, url: &str, ua: &str) -> anyhow::Result<(String, u64)> {
+    let resp = tokio::time::timeout(STALL, http.get(url).header("User-Agent", ua).header("Range", "bytes=0-0").header("Accept-Encoding", "identity").send())
+        .await
+        .map_err(|_| anyhow::anyhow!("the podcast's server didn't answer"))?
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(reqwest::Error::without_url)?;
+    anyhow::ensure!(resp.status() == reqwest::StatusCode::PARTIAL_CONTENT, "the podcast's server doesn't serve ranges ({})", resp.status());
+    let total = resp
+        .headers()
+        .get(reqwest::header::CONTENT_RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.rsplit_once('/'))
+        .and_then(|(_, t)| t.parse().ok())
+        .ok_or_else(|| anyhow::anyhow!("the podcast's server didn't give the file's size"))?;
+    Ok((resp.url().to_string(), total))
 }
 
 /// `expect`: the exact length a range must come back with (a segment's isn't known).
@@ -686,6 +719,14 @@ pub fn decoder(shared: Arc<Shared>, seekable: bool) -> anyhow::Result<TrackDecod
         return Ok(TrackDecoder::Hls(Box::new(crate::hls::HlsSource::new(StreamReader::new(shared), starts, duration_ms)?)));
     }
     let size = shared.total;
+    // A feed's file is probed for what it is: MP3, or AAC in an MP4 whose index may
+    // follow the audio (only a seekable reader gets to it). Without a VBR header, an
+    // MP3's length is guessed from its first frames, and gapless trimming would cut
+    // whatever runs past the guess.
+    if shared.feed {
+        let builder = rodio::Decoder::builder().with_data(StreamReader::new(shared)).with_byte_len(size).with_seekable(true).with_coarse_seek(true).with_gapless(false);
+        return Ok(TrackDecoder::Rodio(builder.build()?));
+    }
     match shared.format {
         Format::Opus => {
             let duration_ms = shared.duration_ms;
@@ -829,5 +870,45 @@ impl rodio::Source for PcmSource {
         let byte = frame * self.channels as u64 * 2;
         self.reader.seek(SeekFrom::Start(byte)).map_err(|e| rodio::source::SeekError::Other(std::sync::Arc::new(e)))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use rodio::Source;
+
+    /// A real podcast's newest episode played the way an RSS episode is: found past its
+    /// tracking redirects, downloaded in `Range` requests, decoded as MP3, seeked.
+    /// `cargo test --release -- --ignored feed_file_live --nocapture`
+    #[tokio::test]
+    #[ignore]
+    async fn feed_file_live() {
+        let (http, ua) = (reqwest::Client::new(), crate::webmusic::UA);
+        let rss = http.get("https://feeds.npr.org/510289/podcast.xml").header("User-Agent", ua).send().await.unwrap().text().await.unwrap();
+        let tag = &rss[rss.find("<enclosure").unwrap()..];
+        let url = tag[tag.find(" url=\"").unwrap() + 6..].split('"').next().unwrap().replace("&amp;", "&");
+        let (file, size) = super::probe_feed(&http, &url, ua).await.unwrap();
+        println!("{url}\n  -> {file}: {size} bytes");
+        let shared = super::Shared::feed(size, 0, false);
+        let t = Instant::now();
+        super::download(http, super::Media::Feed(file), ua.to_owned(), shared.clone(), None, super::Ranging::Header).await;
+        assert!(shared.error().is_none(), "{:?}", shared.error());
+        println!("  downloaded in {:?}", t.elapsed());
+        let mut d = super::decoder(shared.clone(), true).unwrap();
+        let (ch, rate) = (d.channels().get() as usize, d.sample_rate().get() as usize);
+        let secs = d.by_ref().count() as f64 / (ch * rate) as f64;
+        println!("  {ch} ch {rate} Hz, {secs:.1} s");
+        assert!(secs > 60.0, "too short: {secs} s");
+        let mut d = super::decoder(shared, true).unwrap();
+        let half = Duration::from_secs_f64(secs / 2.0);
+        let t = Instant::now();
+        d.try_seek(half).unwrap();
+        println!("  seek to {:.1} s took {:?}", half.as_secs_f64(), t.elapsed());
+        let left = d.count() as f64 / (ch * rate) as f64;
+        println!("  {left:.1} s left");
+        // Coarse: an estimate from the bitrate.
+        assert!((left - (secs - half.as_secs_f64())).abs() < 5.0, "seek off");
     }
 }

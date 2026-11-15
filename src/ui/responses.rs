@@ -14,6 +14,20 @@ use super::{Action, App, Dialog, HomeState, LibTab, MixFrom, Page, PlayingAs, de
 
 impl App {
     pub(super) fn pump(&mut self, now: f64) {
+        // Sorted playlists load again when it's time, for their new order. One whose load
+        // ended without its first page (it failed) stops waiting, so Sort comes back.
+        let mut due = Vec::new();
+        let lists = &self.lists;
+        self.sorting.retain(|id, w| {
+            if w.take_due(now) {
+                due.push(id.clone());
+                return true;
+            }
+            w.awaiting() && lists.loading(id)
+        });
+        for id in due {
+            self.load_list(&id, false, true);
+        }
         let cover = self.media_cover.lock().unwrap().take();
         // The listed track's art.
         if let Some((id, file)) = cover
@@ -225,6 +239,10 @@ impl App {
                     }
                 }
             }
+            Resp::SearchIn(r) => {
+                self.search = Some(r);
+                self.loading = false;
+            }
             Resp::Search(r) => {
                 if self.smoke.as_ref() == Some(&r.query) {
                     self.smoke = None;
@@ -259,9 +277,17 @@ impl App {
                     }
                 }
             }
-            Resp::Collection { load, c, more } => self.collection_in(load, c, more),
+            Resp::Collection { load, c, more } => {
+                let id = c.id.clone();
+                self.collection_in(load, c, more);
+                // A sort waiting for its order, from this load (an older one isn't kept).
+                let sorted = self.lists.get(&id).filter(|o| o.load == load).zip(self.sorting.get_mut(&id)).is_some_and(|(o, w)| w.arrived(&o.c.sorts, now));
+                if sorted {
+                    self.sorting.remove(&id);
+                }
+            }
             Resp::CollectionMore { id, load, tracks, set_ids, more } => self.collection_more(id, load, tracks, set_ids, more),
-            Resp::Artist(a) => {
+            Resp::Artist(mut a) => {
                 // A slow answer for an artist left meanwhile doesn't replace the one on screen.
                 if matches!(&self.page, Page::Artist(id) if *id != a.id)
                     && !self.shelf_pending.as_ref().is_some_and(|(id, _)| *id == a.id)
@@ -270,6 +296,10 @@ impl App {
                 }
                 if self.page == Page::Artist(a.id.clone()) {
                     self.loading = false;
+                }
+                // Asked for before a subscribe here was answered, it can be from before that.
+                if let Some(channel) = &a.channel_id {
+                    a.subscribed = self.subscriptions.shown(channel, a.subscribed, a.asked);
                 }
                 // A shelf page that opened before its artist page was here gets its
                 // request out now, with the More link the page carries.
@@ -300,6 +330,9 @@ impl App {
                 }
                 if l.albums_failed {
                     l.albums = self.library.as_ref().map(|o| o.albums.clone()).unwrap_or_default();
+                }
+                if l.artists_failed {
+                    l.artists = self.library.as_ref().map(|o| o.artists.clone()).unwrap_or_default();
                 }
                 self.library = Some(l);
                 self.loading = false;
@@ -463,6 +496,23 @@ impl App {
                 self.go(Page::Playlist(id));
             }
             Resp::PlaylistChanged { id, message } => self.on_playlist_changed(id, message),
+            Resp::Subscribed { channel_id, on, ok } => {
+                // As it now stands, over a reload fetched before the change.
+                let now = self.subscriptions.finish(&channel_id, on, ok);
+                if let Some(a) = self.artist.as_mut().filter(|a| a.channel_id.as_deref() == Some(&channel_id)) {
+                    a.subscribed = now;
+                }
+                // Library › Artists lists it now (or no longer).
+                if ok {
+                    self.request_library();
+                }
+                self.toast(match (ok, on) {
+                    (true, true) => "Subscribed",
+                    (true, false) => "Unsubscribed",
+                    (false, true) => "Couldn't subscribe",
+                    (false, false) => "Couldn't unsubscribe",
+                });
+            }
             Resp::Collaboration(c) => {
                 if let Some(Dialog::Collaborate { id, info, busy, .. }) = &mut self.dialog
                     && *id == c.playlist_id
@@ -498,6 +548,9 @@ impl App {
                         self.play_listed_upload();
                     }
                 }
+            }
+            Resp::MusicVideo { song, video } => {
+                self.music_videos.insert(song, video);
             }
             Resp::PlayError { generation, msg } => self.on_play_error(generation, msg),
             Resp::AudioInfo { generation, info } => {
@@ -587,6 +640,13 @@ impl App {
     /// A playlist was edited, added to, removed from, saved or deleted; `message` says which.
     fn on_playlist_changed(&mut self, id: String, message: &'static str) {
         self.request_library();
+        // A sort taken waits on, for the reload in its order; anything else ends it.
+        match self.sorting.get_mut(&id) {
+            Some(w) if message == "Playlist sorted" => w.taken(),
+            _ => {
+                self.sorting.remove(&id);
+            }
+        }
         if message == "Playlist deleted" {
             // Its load is dropped too, and the queue stops waiting for it.
             self.lists.forget(&id);
@@ -668,6 +728,9 @@ impl App {
         self.library = None;
         self.history = None;
         self.uploads = None;
+        // Whether it's subscribed is this account's (or channel's) to say.
+        self.artist = None;
+        self.subscriptions = Default::default();
         // Your own playlists show differently (and private ones not at all) to another
         // account, and its likes aren't this one's.
         self.lists.clear();
@@ -676,7 +739,7 @@ impl App {
         self.unliking.clear();
         self.queue.fill = None;
         self.play_pending = None;
-        if self.page_list().is_some() {
+        if self.page_list().is_some() || matches!(self.page, Page::Artist(_)) {
             self.refresh();
         }
         self.home = None;

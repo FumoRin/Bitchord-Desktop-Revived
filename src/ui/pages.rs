@@ -8,7 +8,7 @@ use egui::{Align2, Color32, Rect, RichText, Sense, Ui, Vec2, pos2, vec2};
 use super::row_drag;
 use super::widgets::{self, RowOpts, card, chip, h_scroll, named, paint_cover, pill, shelf_header, track_row};
 use super::{Action, App, LibTab, Page, ProviderVerdicts, Selection};
-use crate::backend::compact;
+use crate::backend::{PlaylistSort, compact};
 use crate::model::{Card, ShelfKind, Target, Track};
 use crate::theme::{self, icon};
 
@@ -193,14 +193,19 @@ fn circle_action(ui: &mut Ui, glyph: CircleGlyph, name: &str, active: bool) -> e
 
 /// A page's main Play button. Shows Pause while this page's album / playlist / artist
 /// is playing, and toggles instead of restarting when it's already loaded.
-fn play_pill(ui: &mut Ui, acts: &mut Vec<Action>, target: &Target, tracks: &[Track]) {
+fn play_pill(ui: &mut Ui, acts: &mut Vec<Action>, target: &Target, tracks: &[Track], order: Option<&[usize]>) {
     let active = widgets::active_state(ui, target);
     let (label, glyph) = if active == Some(true) { ("Pause", icon::PAUSE) } else { ("Play", icon::PLAY) };
     if pill(ui, label, Some(glyph), true).clicked() {
         if active.is_some() {
             acts.push(Action::TogglePlay);
         } else if !tracks.is_empty() {
-            acts.push(Action::Play(tracks.to_vec(), 0));
+            // All of it from the top, in the order it's sorted.
+            let plays = match order {
+                Some(o) => o.iter().map(|&i| tracks[i].clone()).collect(),
+                None => tracks.to_vec(),
+            };
+            acts.push(Action::Play(plays, 0));
         }
     }
 }
@@ -282,26 +287,36 @@ struct ListCtx<'a> {
 /// A long song list; only the rows on screen are built. Clicking one plays `tracks` from it,
 /// or picks it while selecting: Ctrl-click picks one song, Shift-click a run of them.
 #[allow(clippy::too_many_arguments)]
-fn list(ui: &mut Ui, rows: &Rows, liked: &HashSet<String>, tracks: &[Track], show_album: bool, number: impl Fn(usize, &Track) -> Option<usize>, cx: ListCtx, drag: &mut Option<row_drag::RowDrag>, drag_list: egui::Id, acts: &mut Vec<Action>) {
+fn list(ui: &mut Ui, rows: &Rows, liked: &HashSet<String>, tracks: &[Track], order: Option<&[usize]>, show_album: bool, number: impl Fn(usize, &Track) -> Option<usize>, cx: ListCtx, drag: &mut Option<row_drag::RowDrag>, drag_list: egui::Id, acts: &mut Vec<Action>) {
     let ListCtx { sel, page, own } = cx;
     let selecting = sel.on(page);
     let mods = ui.input(|i| i.modifiers);
-    widgets::visible_rows(ui, tracks.len(), |ui, i| {
+    widgets::visible_rows(ui, order.map_or(tracks.len(), |o| o.len()), |ui, k| {
+        let i = order.map_or(k, |o| o[k]);
         let t = &tracks[i];
-        // Any song can be dragged onto a playlist in the sidebar.
-        row_drag::grip(ui, drag, drag_list, i, t);
-        let o = RowOpts {
-            selected: selecting.then(|| sel.rows.contains(&i)),
-            remove: own.then_some(i),
-            ..rows.opts(liked, t, number(i, t), show_album)
-        };
-        if track_row(ui, t, &o, acts).clicked() {
-            if selecting || mods.command || mods.shift {
-                sel.pick(page, i, mods.shift);
-            } else {
-                acts.push(Action::Play(tracks.to_vec(), i));
+        // Keyed on the song as well as the place: a song's open menu closes when the order
+        // changes under it, instead of turning into another song's.
+        ui.push_id(&t.id, |ui| {
+            // Any song can be dragged onto a playlist in the sidebar.
+            row_drag::grip(ui, drag, drag_list, i, t);
+            let o = RowOpts {
+                selected: selecting.then(|| sel.rows.contains(&i)),
+                remove: own.then_some(i),
+                ..rows.opts(liked, t, number(i, t), show_album)
+            };
+            if track_row(ui, t, &o, acts).clicked() {
+                if selecting || mods.command || mods.shift {
+                    // A run of picks is of the rows on show, in their order on screen.
+                    sel.pick(page, i, mods.shift, order);
+                } else if let Some(o) = order {
+                    // What's on show plays, in its order.
+                    let plays: Vec<Track> = o.iter().map(|&r| tracks[r].clone()).collect();
+                    acts.push(Action::Play(plays, k));
+                } else {
+                    acts.push(Action::Play(tracks.to_vec(), i));
+                }
             }
-        }
+        });
     });
     // These lists don't change order: a picked-up song is only carried out, onto a
     // playlist in the sidebar.
@@ -314,6 +329,57 @@ fn select_pill(ui: &mut Ui, sel: &mut Selection, page: &Page) {
     if pill(ui, if on { "Done" } else { "Select" }, Some(icon::LIST_CHECKS), false).clicked() {
         if on { sel.clear() } else { sel.start(page) }
     }
+}
+
+/// A list's Sort button, with its orders in a menu. Away while the list is still coming in.
+fn sort_pill(ui: &mut Ui, sorts: &mut super::sorts::ListSorts, page: &Page, held: bool) {
+    if held {
+        return;
+    }
+    let Some(list) = super::sorts::list_id(page) else { return };
+    let options = super::sorts::options(page);
+    let now = sorts.sort(&list);
+    let label = match options.iter().find(|(s, _)| *s == now && now != super::sorts::Sort::Default) {
+        Some((_, name)) => format!("Sort: {name}"),
+        None => "Sort".to_owned(),
+    };
+    let resp = pill(ui, &label, None, false);
+    egui::Popup::menu(&resp).show(|ui| {
+        ui.set_width(190.0);
+        ui.add_space(3.0);
+        for (s, name) in options {
+            if widgets::menu_choice(ui, name, s == now) {
+                sorts.set_sort(&list, s);
+            }
+        }
+        ui.add_space(3.0);
+    });
+}
+
+/// Your own playlist's Sort button: YouTube Music's orders, saved to the playlist as there,
+/// which then loads again in the new order. Away while the list is still coming in.
+fn saved_sort_pill(ui: &mut Ui, sorts: &mut super::sorts::ListSorts, id: &str, saved: &[PlaylistSort], busy: bool, sorting: bool, acts: &mut Vec<Action>) {
+    // It comes in the order picked here: none of the app's own sorts on top.
+    if sorts.sort(id) != super::sorts::Sort::Default {
+        sorts.set_sort(id, super::sorts::Sort::Default);
+    }
+    // One sort at a time: what's ticked is stale until the playlist has loaded again.
+    let label = match saved.iter().find(|s| s.on && !s.manual) {
+        _ if sorting => "Sorting…".to_owned(),
+        Some(s) => format!("Sort: {}", s.name),
+        None => "Sort".to_owned(),
+    };
+    let resp = ui.add_enabled_ui(!busy, |ui| pill(ui, &label, None, false)).inner;
+    egui::Popup::menu(&resp).show(|ui| {
+        ui.set_width(190.0);
+        ui.add_space(3.0);
+        for s in saved {
+            if widgets::menu_choice(ui, &s.name, s.on) && !s.on {
+                acts.push(Action::SortPlaylist(id.to_owned(), s.actions.clone()));
+            }
+        }
+        ui.add_space(3.0);
+    });
 }
 
 /// The songs a page lists, and whether they're your own playlist's.
@@ -336,7 +402,12 @@ fn selection_bar(app: &mut App, ctx: &egui::Context, page: &Page, area: Rect) {
     }
     let Some((tracks, own)) = selectable(app, page) else { return };
     let n = tracks.len();
-    let picked: Vec<Track> = app.selection.rows.iter().filter_map(|&i| tracks.get(i).cloned()).collect();
+    // In the order on screen.
+    let order = super::sorts::list_id(page).and_then(|l| app.sorts.order(&l, tracks));
+    let picked: Vec<Track> = match &order {
+        Some(s) => s.iter().filter(|i| app.selection.rows.contains(i)).map(|&i| tracks[i].clone()).collect(),
+        None => app.selection.rows.iter().filter_map(|&i| tracks.get(i).cloned()).collect(),
+    };
     let all = !picked.is_empty() && picked.len() == n;
     let all_liked = !picked.is_empty() && picked.iter().all(|t| app.liked.contains(&t.id));
     // Labelled buttons when there's room, icons with tooltips when the window is narrow.
@@ -555,6 +626,17 @@ fn search(app: &mut App, ui: &mut Ui, q: &str, now: f64) {
         app.search_text = q.trim().to_owned();
     }
     super::shell::search_field(app, ui, ui.available_width().min(560.0));
+    // Where the search looks, as on the website: everywhere, or your own music.
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        for (scope, label) in [(crate::ytm::Scope::Everywhere, "YT Music"), (crate::ytm::Scope::Library, "Library"), (crate::ytm::Scope::Uploads, "Uploads")] {
+            if widgets::chip(ui, label, app.search_scope == scope).clicked() && app.search_scope != scope {
+                app.search_scope = scope;
+                app.search = None;
+            }
+        }
+    });
     if q.trim().is_empty() {
         ui.add_space(26.0);
         recent_searches(ui, app);
@@ -784,9 +866,16 @@ fn collection(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     let proxy = app.opened(id).and_then(|o| o.c.tracks.first().cloned());
     let sprite = proxy.and_then(|t| app.animated_cover(ui.ctx(), &t, px));
     let Some(o) = app.lists.get(id) else { return };
-    let (c, more) = (&o.c, app.receiving(id));
+    let more = app.receiving(id);
+    // Sorted once all of it is here: until then it plays as it arrives.
+    app.sorts.hold(id, more);
+    // A sort of it is under way. None starts while it loads (what's ticked may be stale).
+    let sorting = app.sorting.contains_key(id);
+    let busy = sorting || app.lists.loading(id);
+    let (c, more) = (&o.c, more);
     let acts = &mut app.actions;
     let tracks = &c.tracks;
+    let play_order = super::sorts::list_id(&app.page).and_then(|l| app.sorts.sorted(&l, tracks));
     let is_album = c.is_album;
     let filter_on = app.coll_search.as_ref().is_some_and(|(fid, _)| fid == id);
     let selecting = app.selection.on(&app.page);
@@ -835,11 +924,16 @@ fn collection(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
             let owned = !is_album && c.owned;
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing = vec2(10.0, 0.0);
-                play_pill(ui, acts, &target, tracks);
+                play_pill(ui, acts, &target, tracks, play_order.as_deref());
                 if circle_action(ui, CircleGlyph::Char(icon::SHUFFLE), "Shuffle", false).clicked() && !tracks.is_empty() {
                     let mut t = tracks.clone();
                     super::shuffle(&mut t);
                     acts.push(Action::Play(t, 0));
+                }
+                if !c.sorts.is_empty() && !more {
+                    saved_sort_pill(ui, &mut app.sorts, id, &c.sorts, busy, sorting, acts);
+                } else if !more {
+                    sort_pill(ui, &mut app.sorts, &app.page, false);
                 }
                 if circle_action(ui, CircleGlyph::Char(icon::SEARCH), "Search in this list", filter_on).clicked() {
                     toggle_search = true;
@@ -954,9 +1048,10 @@ fn collection(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
             .collect()
     };
     let shown: &[Track] = if needle.is_empty() { tracks } else { &filtered };
+    let order = super::sorts::list_id(&app.page).and_then(|l| app.sorts.order(&l, shown));
     let number = |i: usize, t: &Track| is_album.then(|| t.track_nr.map_or(i + 1, |n| n as usize));
     let own = app.logged_in && c.owned && !is_album;
-    list(ui, &rows, &app.liked, shown, !is_album, number, ListCtx { sel: &mut app.selection, page: &app.page, own }, &mut app.row_drag, egui::Id::unique(("list", id)), acts);
+    list(ui, &rows, &app.liked, shown, order.as_deref(), !is_album, number, ListCtx { sel: &mut app.selection, page: &app.page, own }, &mut app.row_drag, egui::Id::unique(("list", id)), acts);
     if more {
         widgets::skeleton_rows(ui, now, 3);
     }
@@ -971,6 +1066,7 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     }
     let rows = Rows::new(app, now);
     let accent = app.accent_color();
+    let subscribing = app.subscriptions.busy();
     let name = app.artist.as_ref().map(|a| a.name.clone()).unwrap_or_default();
     // The listener's signature service stands in for the name where it has one.
     let signature = app.signature_texture(ui.ctx(), &name);
@@ -1021,7 +1117,7 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     ui.add_space(18.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
-        play_pill(ui, acts, &Target::Artist(id.to_owned()), top);
+        play_pill(ui, acts, &Target::Artist(id.to_owned()), top, None);
         if pill(ui, "Shuffle", Some(icon::SHUFFLE), false).clicked() && !top.is_empty() {
             let mut t = top.clone();
             super::shuffle(&mut t);
@@ -1031,6 +1127,12 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
             && pill(ui, "Radio", Some(icon::RADIO), false).clicked() {
                 acts.push(Action::Radio(first.clone()));
             }
+        // Greyed out while a subscribe or unsubscribe runs: a click then wouldn't count.
+        if a.channel_id.is_some()
+            && ui.add_enabled_ui(!subscribing, |ui| pill(ui, if a.subscribed { "Subscribed" } else { "Subscribe" }, None, false)).inner.clicked()
+        {
+            acts.push(Action::Subscribe(!a.subscribed));
+        }
     });
     if !top.is_empty() {
         ui.add_space(26.0);
@@ -1129,7 +1231,7 @@ fn artist_shelf(app: &mut App, ui: &mut Ui, artist: &str, title: &str, now: f64)
         let mut sel = std::mem::take(&mut app.selection);
         let page = app.page.clone();
         let cx = ListCtx { sel: &mut sel, page: &page, own: false };
-        let clicked = list(ui, &rows, liked, tracks, true, plain, cx, &mut app.row_drag, egui::Id::unique(("shelf", app.page.clone())), acts);
+        let clicked = list(ui, &rows, liked, tracks, None, true, plain, cx, &mut app.row_drag, egui::Id::unique(("shelf", app.page.clone())), acts);
         app.selection = sel;
         let _ = clicked;
     } else if !s.cards.is_empty() {
@@ -1163,7 +1265,7 @@ fn library(app: &mut App, ui: &mut Ui, tab: LibTab, now: f64) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
         let podcasts = app.show_podcasts;
-        for (t, label) in [(LibTab::Playlists, "Playlists"), (LibTab::Songs, "Liked songs"), (LibTab::Albums, "Albums"), (LibTab::Podcasts, "Podcasts"), (LibTab::History, "History"), (LibTab::Uploads, "Uploads")].into_iter().filter(|(t, _)| podcasts || *t != LibTab::Podcasts) {
+        for (t, label) in [(LibTab::Playlists, "Playlists"), (LibTab::Songs, "Liked songs"), (LibTab::Albums, "Albums"), (LibTab::Artists, "Artists"), (LibTab::Podcasts, "Podcasts"), (LibTab::History, "History"), (LibTab::Uploads, "Uploads")].into_iter().filter(|(t, _)| podcasts || *t != LibTab::Podcasts) {
             if chip(ui, label, tab == t).clicked() {
                 // Tabs swap in place (no history entry); the current one refreshes.
                 if tab == t {
@@ -1176,11 +1278,11 @@ fn library(app: &mut App, ui: &mut Ui, tab: LibTab, now: f64) {
         }
     });
     ui.add_space(12.0);
-    let grid = |ui: &mut Ui, cards: &[Card], acts: &mut Vec<Action>| {
+    let grid = |ui: &mut Ui, cards: &[Card], order: &[usize], acts: &mut Vec<Action>| {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(20.0, 22.0);
-            for c in cards {
-                card(ui, c, CARD, false, acts);
+            for &i in order {
+                card(ui, &cards[i], CARD, false, acts);
             }
         });
     };
@@ -1193,7 +1295,12 @@ fn library(app: &mut App, ui: &mut Ui, tab: LibTab, now: f64) {
                 return;
             }
             let Some(h) = &app.history else { return };
-            list(ui, &rows, &app.liked, h, true, plain, ListCtx { sel: &mut app.selection, page: &app.page, own: false }, &mut app.row_drag, egui::Id::unique("history"), &mut app.actions);
+            ui.horizontal(|ui| {
+                sort_pill(ui, &mut app.sorts, &app.page, false);
+            });
+            ui.add_space(10.0);
+            let order = app.sorts.order("history", h);
+            list(ui, &rows, &app.liked, h, order.as_deref(), true, plain, ListCtx { sel: &mut app.selection, page: &app.page, own: false }, &mut app.row_drag, egui::Id::unique("history"), &mut app.actions);
         }
         LibTab::Uploads => {
             ui.horizontal(|ui| {
@@ -1218,7 +1325,12 @@ fn library(app: &mut App, ui: &mut Ui, tab: LibTab, now: f64) {
                 ui.add_space(20.0);
                 ui.label(RichText::new("No uploads yet").color(theme::text_dim()));
             }
-            list(ui, &rows, &app.liked, up, true, plain, ListCtx { sel: &mut app.selection, page: &app.page, own: false }, &mut app.row_drag, egui::Id::unique("uploads"), &mut app.actions);
+            ui.horizontal(|ui| {
+                sort_pill(ui, &mut app.sorts, &app.page, false);
+            });
+            ui.add_space(10.0);
+            let order = app.sorts.order("uploads", up);
+            list(ui, &rows, &app.liked, up, order.as_deref(), true, plain, ListCtx { sel: &mut app.selection, page: &app.page, own: false }, &mut app.row_drag, egui::Id::unique("uploads"), &mut app.actions);
         }
         // Liked Music, kept like any playlist.
         LibTab::Songs => {
@@ -1232,7 +1344,12 @@ fn library(app: &mut App, ui: &mut Ui, tab: LibTab, now: f64) {
             if !liked.is_empty() {
                 ui.horizontal(|ui| {
                     if pill(ui, "Play", Some(icon::PLAY), true).clicked() {
-                        app.actions.push(Action::Play(liked.clone(), 0));
+                        // All of it from the top, in the order it's sorted.
+                        let plays = match app.sorts.sorted(super::LIKED_MUSIC, liked) {
+                            Some(o) => o.iter().map(|&i| liked[i].clone()).collect(),
+                            None => liked.clone(),
+                        };
+                        app.actions.push(Action::Play(plays, 0));
                     }
                     if pill(ui, "Shuffle", Some(icon::SHUFFLE), false).clicked() {
                         let mut t = liked.clone();
@@ -1240,10 +1357,12 @@ fn library(app: &mut App, ui: &mut Ui, tab: LibTab, now: f64) {
                         app.actions.push(Action::Play(t, 0));
                     }
                     select_pill(ui, &mut app.selection, &app.page);
+                    sort_pill(ui, &mut app.sorts, &app.page, more);
                 });
                 ui.add_space(10.0);
             }
-            list(ui, &rows, &app.liked, liked, true, plain, ListCtx { sel: &mut app.selection, page: &app.page, own: false }, &mut app.row_drag, egui::Id::unique("liked"), &mut app.actions);
+            let order = app.sorts.order(super::LIKED_MUSIC, liked);
+            list(ui, &rows, &app.liked, liked, order.as_deref(), true, plain, ListCtx { sel: &mut app.selection, page: &app.page, own: false }, &mut app.row_drag, egui::Id::unique("liked"), &mut app.actions);
             if more {
                 widgets::skeleton_rows(ui, now, 3);
             }
@@ -1254,16 +1373,23 @@ fn library(app: &mut App, ui: &mut Ui, tab: LibTab, now: f64) {
                 return;
             }
             let Some(lib) = &app.library else { return };
+            if matches!(tab, LibTab::Playlists | LibTab::Albums | LibTab::Artists | LibTab::Podcasts) {
+                ui.horizontal(|ui| {
+                    sort_pill(ui, &mut app.sorts, &app.page, false);
+                });
+                ui.add_space(10.0);
+            }
             match tab {
                 LibTab::Playlists => {
                     if pill(ui, "New playlist", None, false).clicked() {
                         app.actions.push(Action::NewPlaylist(Vec::new()));
                     }
                     ui.add_space(14.0);
-                    grid(ui, &lib.playlists, &mut app.actions)
+                    grid(ui, &lib.playlists, &app.sorts.cards("playlists", &lib.playlists), &mut app.actions)
                 }
-                LibTab::Albums => grid(ui, &lib.albums, &mut app.actions),
-                LibTab::Podcasts => grid(ui, &lib.podcasts, &mut app.actions),
+                LibTab::Albums => grid(ui, &lib.albums, &app.sorts.cards("albums", &lib.albums), &mut app.actions),
+                LibTab::Artists => grid(ui, &lib.artists, &app.sorts.cards("artists", &lib.artists), &mut app.actions),
+                LibTab::Podcasts => grid(ui, &lib.podcasts, &app.sorts.cards("podcasts", &lib.podcasts), &mut app.actions),
                 LibTab::Songs | LibTab::History | LibTab::Uploads => unreachable!(),
             }
         }
@@ -1298,7 +1424,12 @@ fn downloads(app: &mut App, ui: &mut Ui, now: f64) {
     }
     ui.horizontal(|ui| {
         if pill(ui, "Play", Some(icon::PLAY), true).clicked() {
-            app.actions.push(Action::Play(songs.clone(), 0));
+            // All of them from the top, in the order they're sorted.
+            let plays = match app.sorts.sorted("downloads", &songs) {
+                Some(o) => o.iter().map(|&i| songs[i].clone()).collect(),
+                None => songs.clone(),
+            };
+            app.actions.push(Action::Play(plays, 0));
         }
         if pill(ui, "Shuffle", Some(icon::SHUFFLE), false).clicked() {
             let mut t = songs.clone();
@@ -1308,10 +1439,12 @@ fn downloads(app: &mut App, ui: &mut Ui, now: f64) {
         if pill(ui, "Open folder", Some(icon::FOLDER_OPEN), false).clicked() {
             crate::downloads::open_folder();
         }
+        sort_pill(ui, &mut app.sorts, &app.page, false);
     });
     ui.add_space(12.0);
     let rows = Rows::new(app, now);
-    list(ui, &rows, &app.liked, &songs, true, |_, _| None, ListCtx { sel: &mut app.selection, page: &app.page, own: false }, &mut app.row_drag, egui::Id::unique("downloads"), &mut app.actions);
+    let order = app.sorts.order("downloads", &songs);
+    list(ui, &rows, &app.liked, &songs, order.as_deref(), true, |_, _| None, ListCtx { sel: &mut app.selection, page: &app.page, own: false }, &mut app.row_drag, egui::Id::unique("downloads"), &mut app.actions);
 }
 
 // ------------------------------------------------------------------ settings
@@ -2589,13 +2722,13 @@ fn settings_lyrics(app: &mut App, ui: &mut Ui) {
             setting_row_shown(ui, "Lyrics sources", Some(desc), |_| {});
             let n = app.lyric_prefs.order.len();
             let mut swap: Option<(usize, usize)> = None;
-            for i in 0..n {
-                let (p, on) = app.lyric_prefs.order[i];
+            for (i, entry) in app.lyric_prefs.order.iter_mut().enumerate() {
+                let (p, on) = *entry;
                 let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::hover());
                 let mut row = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
                 let mut enabled = on;
                 if toggle(&mut row, &mut enabled, p.name()).changed() {
-                    app.lyric_prefs.order[i].1 = enabled;
+                    entry.1 = enabled;
                 }
                 row.add_space(10.0);
                 let kind = match p.sync() {

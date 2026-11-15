@@ -170,7 +170,8 @@ impl App {
         if self.lastfm_user.is_none() {
             return;
         }
-        let Some(t) = self.playing_track().filter(|_| self.playing() && !self.buffering) else { return };
+        // A song's music video picked on its switch is still that song.
+        let Some(t) = self.heard_song().filter(|_| self.playing() && !self.buffering) else { return };
         let pos = self.audio.status.position();
         let dur = Duration::from_millis(self.audio.status.duration_ms.load(Ordering::Relaxed));
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
@@ -336,13 +337,12 @@ impl App {
                 }
             }
         }
-        // The tray's Play/Pause label follows the player; it only changes with it.
+        // The menu shows the song, with Play/Pause, Next and Previous under it, and
+        // hovering the icon shows the song too; they follow the player.
         let playing = self.playing() || self.buffering;
-        if self.tray.is_some() && self.tray_play != Some(playing) {
-            if let Some(t) = &self.tray {
-                t.set_play(playing);
-            }
-            self.tray_play = Some(playing);
+        let song = self.current().map(|t| (t.title.clone(), t.artist_line()));
+        if let Some(t) = &mut self.tray {
+            t.set_now(song.as_ref().map(|(title, artist)| (title.as_str(), artist.as_str())), playing);
         }
         if ctx.input(|i| i.viewport().close_requested()) && self.close_to_tray && !self.exiting {
             // A real click on × needs the app to have been up for a moment. The

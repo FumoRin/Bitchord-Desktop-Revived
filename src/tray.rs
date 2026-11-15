@@ -1,7 +1,8 @@
-//! System tray icon, always up from the first frame (ForkChord's tray: Open,
-//! transport buttons, Launch at login, Quit). Its Play/Pause label follows the
-//! player like a real desktop player's would, and it keeps working while the
-//! window is hidden behind it — the music goes on after a close.
+//! System tray icon, always up from the first frame (ForkChord's tray: the song,
+//! Open, transport buttons, Launch at login, Quit). Its Play/Pause label follows the
+//! player like a real desktop player's would, the menu shows what's playing, and it
+//! keeps working while the window is hidden behind it — the music goes on after a
+//! close.
 //!
 //! The icon must be created on the UI thread (it owns a Win32 message window), so
 //! the app creates and drops it from `logic`. Clicks arrive on that thread's message
@@ -39,13 +40,30 @@ static PENDING: Mutex<Vec<Cmd>> = Mutex::new(Vec::new());
 
 pub struct Tray {
     #[cfg(not(target_os = "linux"))]
-    _icon: TrayIcon,
-    /// The Play/Pause item, so its label can follow the player while the menu is up.
+    icon: TrayIcon,
+    /// The menu items that follow the player: the song, and Play/Pause.
+    #[cfg(not(target_os = "linux"))]
+    song: MenuItem,
     #[cfg(not(target_os = "linux"))]
     play: MenuItem,
+    /// Next and Previous, with nothing to skip to until something plays.
+    #[cfg(not(target_os = "linux"))]
+    next: MenuItem,
+    #[cfg(not(target_os = "linux"))]
+    prev: MenuItem,
     /// The Launch at login item, so the tick answers right after a click on it.
     #[cfg(not(target_os = "linux"))]
     autostart: CheckMenuItem,
+    /// The song the menu and tooltip show now, and whether the player says "Pause".
+    now: Now,
+}
+
+/// The song the tray shows now, and whether it says "Pause".
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Now {
+    /// "Title — Artist", or None when nothing's playing.
+    song: Option<String>,
+    playing: bool,
 }
 
 impl Tray {
@@ -78,7 +96,7 @@ impl Tray {
         #[cfg(target_os = "linux")]
         {
             gtk_thread::show(png, playing, autostart_on)?;
-            Ok(Self {})
+            Ok(Self { now: Now::default() })
         }
     }
 
@@ -92,13 +110,33 @@ impl Tray {
             .with_menu(Box::new(menu.menu))
             .with_menu_on_left_click(false)
             .build()?;
-        Ok(Self { _icon: icon, play: menu.play, autostart: menu.autostart })
+        Ok(Self { icon, song: menu.song, play: menu.play, next: menu.next, prev: menu.prev, autostart: menu.autostart, now: Now::default() })
     }
 
-    /// Keeps the tray's Play/Pause label honest as the player changes state.
+    /// The song (title and artists) in the menu and the tooltip, and "Pause" while it plays.
+    pub fn set_now(&mut self, song: Option<(&str, &str)>, playing: bool) {
+        let song = song.map(|(title, artist)| if artist.is_empty() { title.to_owned() } else { format!("{title} — {artist}") });
+        let now = Now { song, playing };
+        if now == self.now {
+            return;
+        }
+        self.now = now.clone();
+        #[cfg(not(target_os = "linux"))]
+        self.icon_menu_set(&now);
+        #[cfg(target_os = "linux")]
+        gtk_thread::set_now(now);
+    }
+
+    /// The menu items on the windowing system's own thread; the icon's tooltip with them.
     #[cfg(not(target_os = "linux"))]
-    pub fn set_play(&self, playing: bool) {
-        self.play.set_text(if playing { "Pause" } else { "Play" });
+    fn icon_menu_set(&self, now: &Now) {
+        self.song.set_text(now.song.as_deref().unwrap_or("Nothing playing"));
+        self.play.set_text(if now.playing { "Pause" } else { "Play" });
+        // Nothing to play, skip or go back to.
+        for item in [&self.play, &self.next, &self.prev] {
+            item.set_enabled(now.song.is_some());
+        }
+        let _ = self.icon.set_tooltip(Some(tooltip(now.song.as_deref())));
     }
 
     /// Flips the Launch at login tick after the app toggled the OS state itself.
@@ -109,33 +147,56 @@ impl Tray {
 
     /// The menu item handles live on the GTK thread on Linux; these hop over.
     #[cfg(target_os = "linux")]
-    pub fn set_play(&self, playing: bool) {
-        gtk_thread::set_play(playing);
-    }
-
-    #[cfg(target_os = "linux")]
     pub fn set_autostart(&self, on: bool) {
         gtk_thread::set_autostart(on);
     }
 }
 
-/// The tray menu, ForkChord's: Open, transport (Play/Pause named for the state it
-/// would switch to, like every desktop player's), Launch at login, Quit.
+/// "BitChord", with the song under it. Windows cuts a tooltip off at 127 characters
+/// (UTF-16 ones), so a long one ends in "…" there instead.
+fn tooltip(song: Option<&str>) -> String {
+    const MAX: usize = 127;
+    let Some(song) = song else { return "BitChord".to_owned() };
+    let tip = format!("BitChord\n{song}");
+    if tip.encode_utf16().count() <= MAX {
+        return tip;
+    }
+    let mut out = String::new();
+    let mut len = 1; // the "…"
+    for c in tip.chars() {
+        len += c.len_utf16();
+        if len > MAX {
+            break;
+        }
+        out.push(c);
+    }
+    out.push('…');
+    out
+}
+
+/// The tray menu, ForkChord's: the song, Open, transport (Play/Pause named for the state
+/// it would switch to, like every desktop player's), Launch at login, Quit.
 struct TrayMenu {
     menu: Menu,
+    song: MenuItem,
     play: MenuItem,
+    next: MenuItem,
+    prev: MenuItem,
     autostart: CheckMenuItem,
 }
 
 impl TrayMenu {
     fn new(playing: bool, autostart_on: bool) -> Self {
+        let song = MenuItem::with_id("song", "Nothing playing", false, None);
         let open = MenuItem::with_id("show", "Open BitChord", true, None);
-        let previous = MenuItem::with_id("previous", "Previous", true, None);
-        let play = MenuItem::with_id("play-pause", if playing { "Pause" } else { "Play" }, true, None);
-        let next = MenuItem::with_id("next", "Next", true, None);
+        let previous = MenuItem::with_id("previous", "Previous", false, None);
+        let play = MenuItem::with_id("play-pause", if playing { "Pause" } else { "Play" }, false, None);
+        let next = MenuItem::with_id("next", "Next", false, None);
         let autostart = CheckMenuItem::with_id("autostart", "Launch at login", true, autostart_on, None);
         let quit = MenuItem::with_id("quit", "Quit BitChord", true, None);
         let menu = Menu::with_items(&[
+            &song,
+            &PredefinedMenuItem::separator(),
             &open,
             &PredefinedMenuItem::separator(),
             &previous,
@@ -147,7 +208,7 @@ impl TrayMenu {
             &quit,
         ])
         .expect("tray menu");
-        Self { menu, play, autostart }
+        Self { menu, song, play, next, prev: previous, autostart }
     }
 }
 
@@ -159,7 +220,7 @@ impl Drop for Tray {
 }
 
 #[cfg(target_os = "linux")]
-fn build(png: image::RgbaImage, playing: bool, autostart_on: bool) -> anyhow::Result<(TrayIcon, MenuItem, CheckMenuItem)> {
+fn build(png: image::RgbaImage, playing: bool, autostart_on: bool) -> anyhow::Result<(TrayIcon, TrayMenuItems)> {
     let menu = TrayMenu::new(playing, autostart_on);
     let (w, h) = png.dimensions();
     let icon = TrayIconBuilder::new()
@@ -168,7 +229,18 @@ fn build(png: image::RgbaImage, playing: bool, autostart_on: bool) -> anyhow::Re
         .with_menu(Box::new(menu.menu))
         .with_menu_on_left_click(false)
         .build()?;
-    Ok((icon, menu.play, menu.autostart))
+    let items = TrayMenuItems { song: menu.song, play: menu.play, next: menu.next, prev: menu.prev, autostart: menu.autostart };
+    Ok((icon, items))
+}
+
+/// The menu items the GTK thread keeps, so their labels can be set from it alone.
+#[cfg(target_os = "linux")]
+struct TrayMenuItems {
+    song: MenuItem,
+    play: MenuItem,
+    next: MenuItem,
+    prev: MenuItem,
+    autostart: CheckMenuItem,
 }
 
 #[cfg(target_os = "linux")]
@@ -183,7 +255,7 @@ mod gtk_thread {
         static ICON: RefCell<Option<TrayIcon>> = const { RefCell::new(None) };
         /// The menu items that follow the player and the login setting; kept so
         /// their labels can be set from this thread alone.
-        static LABELS: RefCell<Option<(tray_icon::menu::MenuItem, tray_icon::menu::CheckMenuItem)>> = const { RefCell::new(None) };
+        static LABELS: RefCell<Option<super::TrayMenuItems>> = const { RefCell::new(None) };
     }
 
     /// Start GTK's thread once; an error if GTK can't start (no display).
@@ -214,9 +286,9 @@ mod gtk_thread {
         start()?;
         let (tx, rx) = std::sync::mpsc::channel();
         gtk::glib::MainContext::default().invoke(move || {
-            let res = super::build(png, playing, autostart_on).map(|(icon, play, autostart)| {
+            let res = super::build(png, playing, autostart_on).map(|(icon, items)| {
                 ICON.with(|i| *i.borrow_mut() = Some(icon));
-                LABELS.with(|l| *l.borrow_mut() = Some((play, autostart)));
+                LABELS.with(|l| *l.borrow_mut() = Some(items));
             });
             let _ = tx.send(res.map_err(|e| e.to_string()));
         });
@@ -227,11 +299,24 @@ mod gtk_thread {
         gtk::glib::MainContext::default().invoke(|| ICON.with(|i| drop(i.borrow_mut().take())));
     }
 
-    pub fn set_play(playing: bool) {
+    /// The song in the menu and the tooltip, and "Pause" while it plays, as the
+    /// windowing system's own update does.
+    pub fn set_now(now: super::Now) {
         gtk::glib::MainContext::default().invoke(move || {
+            let tip = super::tooltip(now.song.as_deref());
+            ICON.with(|i| {
+                if let Some(icon) = &*i.borrow() {
+                    let _ = icon.set_tooltip(Some(tip));
+                }
+            });
             LABELS.with(|l| {
-                if let Some((play, _)) = l.borrow().as_ref() {
-                    play.set_text(if playing { "Pause" } else { "Play" });
+                if let Some(items) = l.borrow().as_ref() {
+                    items.song.set_text(now.song.as_deref().unwrap_or("Nothing playing"));
+                    items.play.set_text(if now.playing { "Pause" } else { "Play" });
+                    // Nothing to play, skip or go back to.
+                    for item in [&items.play, &items.next, &items.prev] {
+                        item.set_enabled(now.song.is_some());
+                    }
                 }
             });
         });
@@ -240,8 +325,8 @@ mod gtk_thread {
     pub fn set_autostart(on: bool) {
         gtk::glib::MainContext::default().invoke(move || {
             LABELS.with(|l| {
-                if let Some((_, autostart)) = l.borrow().as_ref() {
-                    autostart.set_checked(on);
+                if let Some(items) = l.borrow().as_ref() {
+                    items.autostart.set_checked(on);
                 }
             });
         });
@@ -256,4 +341,23 @@ fn push(cmd: Cmd, wake: &impl Fn()) {
 /// Clicks since the last call.
 pub fn take() -> Vec<Cmd> {
     std::mem::take(&mut *PENDING.lock().unwrap())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tooltip_fits_windows() {
+        assert_eq!(tooltip(None), "BitChord");
+        assert_eq!(tooltip(Some("Song — Artist")), "BitChord\nSong — Artist");
+        // Just fits: left as it is.
+        let fits = "a".repeat(127 - 9);
+        assert_eq!(tooltip(Some(&fits)), format!("BitChord\n{fits}"));
+        assert_eq!(tooltip(Some(&"a".repeat(200))), format!("BitChord\n{}…", "a".repeat(117)));
+        // Cut between characters, never inside one (an emoji is two UTF-16 ones).
+        let emoji = tooltip(Some(&"😀".repeat(100)));
+        assert_eq!(emoji, format!("BitChord\n{}…", "😀".repeat(58)));
+        assert!(emoji.encode_utf16().count() <= 127);
+    }
 }
