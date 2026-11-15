@@ -52,7 +52,7 @@
 
 **Lyrics and interface**
 - **Synced lyrics** — timed lyrics with provider fallbacks, timing controls, romanization and translation options.
-- **Native Rust desktop UI** — a fast egui/rodio interface with system media controls, tray integration, and keyboard-friendly navigation.
+- **Native Rust desktop UI** — a fast egui/rodio interface with system media controls, tray integration, song notifications while the window is in the background, and keyboard-friendly navigation.
 - **Discord Rich Presence** — show what you’re listening to on Discord.
 - **Last.fm scrobbling** — connect your Last.fm account in Settings.
 

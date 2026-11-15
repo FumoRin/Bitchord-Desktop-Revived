@@ -752,6 +752,12 @@ pub struct App {
     exiting: bool,
     /// Minimized, or hidden in the tray: the window's geometry isn't worth saving.
     window_hidden: bool,
+    /// Settings › Window: a notification for each new song while the window is in the background.
+    song_notifications: bool,
+    /// Made when first needed.
+    notifier: Option<crate::notify::Notifier>,
+    /// The playback generation last looked at for a notification, and its song.
+    notified: Option<(u64, String)>,
     /// The window is behind the tray icon (a close with "Close to tray" on).
     hidden_to_tray: bool,
     /// eframe's saved window geometry ("window") from the last time it was visible.
@@ -1009,6 +1015,9 @@ impl App {
             started_at: std::time::Instant::now(),
             exiting: false,
             window_hidden: false,
+            song_notifications: get("song_notifications").is_some_and(|v| v == "1"),
+            notifier: None,
+            notified: None,
             hidden_to_tray: false,
             good_window: get("window"),
             sidebar_collapsed: get("sidebar_collapsed").is_none_or(|v| v == "1"),
@@ -1685,6 +1694,7 @@ impl eframe::App for App {
         self.window_hidden = self.hidden_to_tray || ctx.input(|i| i.viewport().minimized == Some(true));
         self.sync_tempo();
         self.sync_discord();
+        self.sync_song_notification(ctx);
         self.sync_lastfm();
         self.sync_server_queue(ctx, now);
         self.tick_updates(ctx, now);
@@ -2010,6 +2020,7 @@ impl eframe::App for App {
             self.good_window = Some(w);
         }
         storage.set_string("close_to_tray", b(self.close_to_tray));
+        storage.set_string("song_notifications", b(self.song_notifications));
         storage.set_string("sidebar_collapsed", b(self.sidebar_collapsed));
         // The sidebar's playlist order, completed with any playlist that appeared since
         // it was last changed (so a drag can place them all).

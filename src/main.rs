@@ -29,6 +29,7 @@ mod lyrics;
 mod media;
 mod model;
 mod motion;
+mod notify;
 mod opus;
 mod party;
 mod preset;
@@ -204,6 +205,8 @@ fn main() -> eframe::Result {
             // Jam links from later launches arrive over the channel claimed at startup:
             // this is where their wake-up meets the UI.
             deeplink::set_wake(Arc::new(move || wake()));
+            // Whether song notifications can show here (Windows: a Start menu entry).
+            notify::look_up();
             // Keep `ytm-rs:` links pointing at this copy; dev builds leave it alone
             // (even with YTM_UPDATE_FORCE).
             if update::installed() && !cfg!(debug_assertions) {
