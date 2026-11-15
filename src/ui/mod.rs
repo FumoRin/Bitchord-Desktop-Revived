@@ -306,11 +306,14 @@ pub struct MotionView {
     seen: u64,
     /// The width this decoder was started at: a larger view replaces it once.
     width: u32,
+    /// When this view was last asked for: the least recently used one makes way at
+    /// the cap, and one nothing has asked for lately is dropped outright.
+    last_used: std::time::Instant,
 }
 
 impl MotionView {
     fn new(motion: std::sync::Arc<crate::motion::Motion>, width: u32) -> Self {
-        Self { motion, tex: None, seen: 0, width }
+        Self { motion, tex: None, seen: 0, width, last_used: std::time::Instant::now() }
     }
 
     /// Whether the clip's clock runs: paused, the sleeve holds its last frame.
@@ -605,6 +608,19 @@ pub struct App {
     /// What the playing stream is (codec, rate, depth, size), when a hi-res source
     /// supplied it, with the generation it belongs to.
     audio_info: Option<(u64, crate::hires::Info)>,
+    /// Stats for nerds: show the codec, sample rate and bitrate of what's playing at
+    /// the foot of the cover in Now playing, whatever the source.
+    show_nerd_stats: bool,
+    /// What `generation`'s decoder is being fed, whatever the source.
+    stream_stats: Option<(u64, crate::stream::Stats)>,
+    /// A background upgrade from YouTube to a hi-res copy is under way.
+    upgrading_quality: bool,
+    /// The player's "Upgrade quality" was pressed and no hi-res stream has answered yet:
+    /// the difference between a search that ran and found nothing and one never started.
+    upgrade_asked: bool,
+    /// Play YouTube first and upgrade to hi-res in the background, instead of waiting
+    /// for the addons before the song starts.
+    disable_direct_stream: bool,
     accent: Color32,
     /// Selected theme preset (see `preset.rs`).
     theme_id: String,
@@ -858,7 +874,7 @@ impl App {
         crate::ytm::set_podcasts(show_podcasts);
         // Before any request: a song started at launch must see the addon sources too.
         let hires_source = get("hires_source").unwrap_or_default();
-        let hires_sources: Vec<String> = hires_source.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect();
+        let hires_sources: Vec<String> = dedupe_hires(hires_source.lines().map(str::trim).filter(|l| !l.is_empty()));
         // The switched-off ones, saved as their links, survive reordering and removals.
         let hires_disabled: std::collections::HashSet<String> = get("hires_disabled").unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect();
         let hires_enabled: Vec<bool> = hires_sources.iter().map(|s| !hires_disabled.contains(s.as_str())).collect();
@@ -866,6 +882,9 @@ impl App {
         backend.set_hires_source(&hires_on.join("\n"));
         let prefer_atmos = get("prefer_atmos").is_some_and(|v| v == "1");
         backend.set_prefer_atmos(prefer_atmos);
+        let show_nerd_stats = get("show_nerd_stats").is_some_and(|v| v == "1");
+        let disable_direct_stream = get("disable_direct_stream").is_some_and(|v| v == "1");
+        backend.set_disable_direct_stream(disable_direct_stream);
         // Before any request: a song started at launch must see the music sources too.
         let jiosaavn = get("jiosaavn").is_some_and(|v| v == "1");
         let jiosaavn_quality = crate::providers::SaavnQuality::from_key(&get("jiosaavn_quality").unwrap_or_default());
@@ -1105,6 +1124,11 @@ impl App {
             provider_tests: Default::default(),
             provider_last: None,
             audio_info: None,
+            show_nerd_stats,
+            stream_stats: None,
+            upgrading_quality: false,
+            upgrade_asked: false,
+            disable_direct_stream,
             art_changed: -10.0,
             accent: theme::RED,
             theme_id: crate::preset::DEFAULT_ID.to_owned(),
@@ -1534,13 +1558,21 @@ impl App {
     /// The newest frame of a motion clip, started the first time it's seen. The decoders
     /// on screen are capped so old pages don't leave threads behind.
     fn motion_sprite(&mut self, ctx: &egui::Context, key: String, url: &str, max_width: u32) -> Option<widgets::MotionSprite> {
+        // Never decode wider than the player's sleeve needs; frames and textures are
+        // sized by this, so it bounds the whole feature's memory.
+        let max_width = max_width.clamp(64, 640);
+        // A view that scrolled away stops being asked for; its decoder goes soon after.
+        self.motion_views.retain(|_, v| v.last_used.elapsed() < Duration::from_secs(6));
         // One decoder per cover. The strip and the player ask for different sizes, and
         // replacing it per caller would restart the clip every frame and never show a
         // frame: a bigger view takes over only when it needs a wider decode.
         let stale = self.motion_views.get(&key).map_or(true, |v| v.width < max_width);
         if stale {
-            if self.motion_views.len() >= 8 {
-                self.motion_views.clear();
+            // At the cap, the least recently used view makes way for the new one.
+            if self.motion_views.len() >= MOTION_VIEWS
+                && let Some(oldest) = self.motion_views.iter().min_by_key(|(_, v)| v.last_used).map(|(k, _)| k.clone())
+            {
+                self.motion_views.remove(&oldest);
             }
             // Apple's clips arrive as an HLS master playlist; Spotify's canvases are
             // one plain mp4, which decodes through its own download path.
@@ -1552,6 +1584,7 @@ impl App {
         // Read before the borrow of `motion_views`: `playing` wants all of `self`.
         let playing = self.playing() || self.buffering;
         let view = self.motion_views.get_mut(&key)?;
+        view.last_used = std::time::Instant::now();
         view.set_playing(playing);
         let tex = view.texture(ctx)?;
         Some(widgets::MotionSprite { id: tex.id(), size: tex.size_vec2() })
@@ -2083,10 +2116,12 @@ impl eframe::App for App {
         storage.set_string("reactive_bg", b(self.reactive_bg));
         storage.set_string("animated_covers", b(self.animated_covers));
         storage.set_string("signature_api", self.signature_api.clone());
-        storage.set_string("hires_source", self.hires_sources.join("\n"));
+        storage.set_string("hires_source", dedupe_hires(self.hires_sources.iter().map(String::as_str)).join("\n"));
         let hires_disabled: Vec<&str> = self.hires_sources.iter().enumerate().filter(|(i, _)| !self.hires_enabled.get(*i).copied().unwrap_or(true)).map(|(_, s)| s.trim()).filter(|s| !s.is_empty()).collect();
         storage.set_string("hires_disabled", hires_disabled.join("\n"));
         storage.set_string("prefer_atmos", b(self.prefer_atmos));
+        storage.set_string("show_nerd_stats", b(self.show_nerd_stats));
+        storage.set_string("disable_direct_stream", b(self.disable_direct_stream));
         storage.set_string("jiosaavn", b(self.jiosaavn));
         storage.set_string("jiosaavn_quality", self.jiosaavn_quality.key().to_owned());
         storage.set_string("monochrome", b(self.monochrome));
@@ -2138,6 +2173,28 @@ impl eframe::App for App {
 }
 
 const SESSION_KEY: &str = "session";
+
+/// How many animated covers may be decoding at once: the player's sleeve, the mini
+/// player's, and a few pages' worth. The least recently used one makes way for a new
+/// view, and a view nothing has asked for lately is dropped outright.
+const MOTION_VIEWS: usize = 8;
+
+/// One entry per distinct addon link. Only an exact repeat is dropped: a second link on
+/// the same addon host (a refreshed token, or another addon served from there) is a
+/// source the user asked for and stays. The backend still talks to each exact link
+/// once, so a link pasted twice can't fire duplicate searches and streams at one
+/// server, which is how a working source starts answering 502.
+fn dedupe_hires<'a>(links: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for link in links {
+        let link = link.trim();
+        if !link.is_empty() && seen.insert(link.to_owned()) {
+            out.push(link.to_owned());
+        }
+    }
+    out
+}
 
 /// The heights offered for music videos. Decoding is on the CPU: 720p is easy, 1080p takes
 /// about three times as much.

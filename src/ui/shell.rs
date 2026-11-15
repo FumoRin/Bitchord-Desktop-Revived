@@ -192,44 +192,43 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
     let collapsed = app.sidebar_collapsed;
     // Labels fade out over the first two thirds of collapsing (and back in late).
     let a = ((1.0 - t) * 1.5 - 0.5).clamp(0.0, 1.0);
-    // Content width now, and when expanded: text keeps its truncation while the panel narrows.
+    // Content width when expanded: text keeps its truncation while the panel narrows.
     let w = ui.available_width();
     let full_w = w + (SIDEBAR_W - RAIL_W) * t;
 
-    // Logo, with the page history on its line. The chevron pair is placed by hand rather
-    // than laid out after the logo, so it can end up centred in the rail: it hugs the
-    // content's right edge when expanded (as flow layout gave it) and slides left as the
-    // panel narrows, landing in the middle of the collapsed rail, where the logo has
-    // faded out to make room. Laid out after the logo instead, both chevrons would end
-    // up past the rail's edge, the forward one entirely outside it.
-    let row_top = ui.cursor().top();
+    // The logo keeps the icon column at the very top in both states. The history pair
+    // rides its line at the right while expanded, and slides onto its own line under
+    // the logo as the rail narrows — the rail is too tight to carry all three across,
+    // and the logo no longer fades away to make room for them.
     let row_left = ui.cursor().left();
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        ui.add_space(8.0);
-        let (r, resp) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::click());
-        mark(ui, Rect::from_center_size(r.center(), vec2(30.0, 20.0)), theme::with_alpha(theme::text(), a));
-        let resp = named(resp, "Home");
+    {
+        let (hr, _) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0 + 30.0 * t), Sense::hover());
+        // Full strength in both states: `a` is the label fade, and the rail has no labels
+        // to fade — tinting the mark by it left the collapsed sidebar with no logo at all.
+        let logo = Rect::from_min_size(hr.min + vec2(8.0, 0.0), vec2(32.0, 32.0));
+        mark(ui, Rect::from_center_size(logo.center(), vec2(30.0, 20.0)), theme::text());
+        let resp = named(ui.interact(logo, ui.id().with("sidebar-home"), Sense::click()), "Home");
         let resp = if collapsed { resp } else { resp.on_hover_cursor(egui::CursorIcon::PointingHand) };
         if resp.clicked() && !collapsed {
             app.actions.push(Action::Go(Page::Home));
         }
-    });
-    // Two 22 pt chevrons and the 4 pt gap between them.
-    const PAIR_W: f32 = 48.0;
-    let right_x = full_w - PAIR_W;
-    let centre_x = ((w - PAIR_W) / 2.0).max(0.0);
-    let pair_x = right_x + (centre_x - right_x) * t;
-    let pair_y = row_top + 5.0;
-    let back_r = Rect::from_min_size(pos2(row_left + pair_x, pair_y), Vec2::splat(22.0));
-    let fwd_r = Rect::from_min_size(pos2(back_r.right() + 4.0, pair_y), Vec2::splat(22.0));
-    // Back also closes the now-playing overlay, so it's live whenever that is open.
-    let (can_back, can_forward) = (app.np_open || !app.back.is_empty(), !app.forward.is_empty());
-    if history_button(ui, back_r, icon::CHEVRON_LEFT, "Back", can_back) {
-        app.nav_back();
-    }
-    if history_button(ui, fwd_r, icon::CHEVRON_RIGHT, "Forward", can_forward) {
-        app.nav_forward();
+        // Expanded the pair sits flush right on the logo's line; on the rail it slides
+        // to the icon column and down onto its own line below the logo.
+        // Two 22 pt chevrons and the 4 pt gap between them.
+        const PAIR_W: f32 = 48.0;
+        let (x0, x1) = (hr.right() - PAIR_W, hr.left());
+        let pair_x = x0 + (x1 - x0) * t;
+        let yc = hr.top() + 16.0 + 31.0 * t;
+        let back_r = Rect::from_min_size(pos2(row_left + pair_x, yc - 11.0), Vec2::splat(22.0));
+        let fwd_r = Rect::from_min_size(pos2(row_left + pair_x + 26.0, yc - 11.0), Vec2::splat(22.0));
+        // Back also closes the now-playing overlay, so it's live whenever that is open.
+        let (can_back, can_forward) = (app.np_open || !app.back.is_empty(), !app.forward.is_empty());
+        if history_button(ui, back_r, icon::CHEVRON_LEFT, "Back", can_back) {
+            app.nav_back();
+        }
+        if history_button(ui, fwd_r, icon::CHEVRON_RIGHT, "Forward", can_forward) {
+            app.nav_forward();
+        }
     }
     ui.add_space(14.0);
 
@@ -520,36 +519,41 @@ pub fn top_bar(app: &mut App, ui: &mut Ui) {
     let panel = ui.max_rect();
     let row = Rect::from_min_size(panel.min, vec2(panel.width(), 44.0));
     let right = panel.right() - super::titlebar::right_gap(ui.ctx(), row, 20.0);
-    let r = Rect::from_min_max(pos2(right - 36.0, panel.top()), pos2(right, panel.top() + 36.0));
-    let resp = ui.interact(r, ui.scope_id().with("account"), Sense::click());
-    let resp = named(resp, "Account").on_hover_cursor(egui::CursorIcon::PointingHand);
-    let initial = app.account_name.as_deref().and_then(|n| n.chars().next()).unwrap_or('?');
-    if app.logged_in {
-        ui.painter().circle_filled(r.center(), 18.0, theme::lerp_color(app.accent_color(), Color32::BLACK, 0.35));
-        if let Some(avatar) = &app.account_avatar {
-            widgets::paint_remote(ui, avatar, r, 18.0, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+    let at = pos2(right - 36.0, panel.top());
+    // Its own layer, above the pages: a page's header art scrolls up into this corner
+    // and would otherwise cover the picture and take its clicks.
+    egui::Area::new(ui.scope_id().with("account")).order(egui::Order::Middle).fixed_pos(at).show(ui.ctx(), |ui| {
+        let (r, resp) = ui.allocate_exact_size(Vec2::splat(36.0), Sense::click());
+        let resp = named(resp, "Account").on_hover_cursor(egui::CursorIcon::PointingHand);
+        let initial = app.account_name.as_deref().and_then(|n| n.chars().next()).unwrap_or('?');
+        if app.logged_in {
+            ui.painter().circle_filled(r.center(), 18.0, theme::lerp_color(app.accent_color(), Color32::BLACK, 0.35));
+            if let Some(avatar) = &app.account_avatar {
+                widgets::paint_remote(ui, avatar, r, 18.0, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            } else {
+                ui.painter().text(r.center(), Align2::CENTER_CENTER, initial, theme::bold(16.0), Color32::WHITE);
+            }
         } else {
-            ui.painter().text(r.center(), Align2::CENTER_CENTER, initial, theme::bold(16.0), Color32::WHITE);
+            ui.painter().circle_filled(r.center(), 18.0, theme::glass(0.12));
+            icon_at(ui, r.center(), icon::USER, 18.0, theme::text_dim());
         }
-    } else {
-        ui.painter().circle_filled(r.center(), 18.0, theme::glass(0.12));
-        icon_at(ui, r.center(), icon::USER, 18.0, theme::text_dim());
-    }
-    if resp.clicked() {
-        app.actions.push(Action::Go(Page::Settings));
-    }
+        if resp.clicked() {
+            app.actions.push(Action::Go(Page::Settings));
+        }
+        if app.loading {
+            let spin = Rect::from_min_size(r.min + vec2(-34.0, 8.0), Vec2::splat(20.0));
+            let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(spin));
+            cui.spinner();
+        }
+    });
     // The refresh button, beside the account circle (this fork has no back/forward row
     // in the top bar: they live on the sidebar's logo line).
     {
-        let mut rui = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(r.left() - 68.0, panel.top()), Vec2::splat(44.0))).layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight)));
+        let r = Rect::from_min_size(pos2(at.x - 68.0, panel.top()), Vec2::splat(44.0));
+        let mut rui = ui.new_child(egui::UiBuilder::new().max_rect(r).layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight)));
         if refresh_button(&mut rui).clicked() {
             app.refresh();
         }
-    }
-    if app.loading {
-        let spin = Rect::from_min_size(pos2(r.left() - 34.0, r.top() + 8.0), Vec2::splat(20.0));
-        let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(spin));
-        cui.spinner();
     }
 }
 
@@ -1117,13 +1121,7 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
         }
     }
     if r.clicked() {
-        let stash = unmute_id();
-        if vol > 0.0 {
-            ui.data_mut(|d| d.insert_temp(stash, vol));
-            app.audio.set_volume(0.0);
-        } else {
-            app.audio.set_volume(ui.data(|d| d.get_temp::<f32>(stash)).unwrap_or(0.6));
-        }
+        toggle_mute(app, ui.ctx());
     }
     // The speed button, when the setting is on: the speed it's at, lit (with the dot
     // under it) when it isn't 1×. Clicking opens a small card with its slider.
@@ -1236,9 +1234,22 @@ fn mark(ui: &Ui, r: Rect, tint: Color32) {
     ui.painter().image(tex.id(), dst, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), tint);
 }
 
-/// Where Mute keeps the volume to go back to (the player bar's and the mini player's).
+/// Where Mute keeps the volume to go back to (the player bar's, the mini player's and
+/// the keyboard's — one slot, not one per caller).
 pub fn unmute_id() -> egui::Id {
-    egui::Id::unique("unmute")
+    egui::Id::new("unmute")
+}
+
+/// Mute and back, from the player bar, the mini strip or the keyboard. What the volume
+/// was before the mute is remembered, so unmuting returns to it rather than to a guess.
+pub fn toggle_mute(app: &mut App, ctx: &egui::Context) {
+    let vol = app.audio.volume();
+    if vol > 0.0 {
+        ctx.data_mut(|d| d.insert_temp(unmute_id(), vol));
+        app.audio.set_volume(0.0);
+    } else {
+        app.audio.set_volume(ctx.data(|d| d.get_temp::<f32>(unmute_id())).unwrap_or(0.6));
+    }
 }
 
 /// The volume track: click or drag to set, scroll over it to nudge.

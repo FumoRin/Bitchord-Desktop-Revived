@@ -26,6 +26,10 @@ pub enum AudioCmd {
     Start { generation: u64, decoder: TrackDecoder, shared: Arc<Shared>, at: Duration },
     /// A decoder positioned at `at`, replacing the current one; only the latest seek's lands.
     Replace { generation: u64, seek: u64, decoder: TrackDecoder, at: Duration, seekable: bool },
+    /// Seamlessly upgrade the current stream to hi-res in place: same generation, same
+    /// song, a better copy of it. Sent by the backend once an addon answers after
+    /// playback already started from YouTube.
+    Upgrade { generation: u64, decoder: TrackDecoder, shared: Arc<Shared>, at: Duration, seekable: bool },
     Pause,
     Resume,
     Stop,
@@ -221,8 +225,10 @@ impl Ramp {
         match self {
             Ramp::In { at, len } => at as f32 / len as f32,
             Ramp::Out { from, at, len } => from * (1.0 - at as f32 / len as f32),
-            Ramp::MixIn { at, len } => mix_handoff(at as f32 / len as f32),
-            Ramp::MixOut { from, at, len } => from * (1.0 - mix_handoff(at as f32 / len as f32)),
+            // The two Automix gains are the square roots of a mirrored pair, so their
+            // powers sum to one: the level holds through the handoff instead of dipping.
+            Ramp::MixIn { at, len } => mix_handoff(at as f32 / len as f32).sqrt(),
+            Ramp::MixOut { from, at, len } => from * (1.0 - mix_handoff(at as f32 / len as f32)).sqrt(),
         }
     }
 }
@@ -324,12 +330,15 @@ impl MixFx {
                 self.wet = if outgoing { 0.4 * smoothstep((x - 0.3) / 0.35) } else { 0.0 };
                 // The comb sweeps over two beats, fast enough to hear as a flanger.
                 let phase = self.ticks as f32 / (self.beat * 2.0) * std::f32::consts::TAU;
-                self.flange = self.rate * (0.0006 + 0.0026 * (0.5 + 0.5 * phase.sin()));
+                self.flange = self.rate * (0.0008 + 0.0037 * (0.5 + 0.5 * phase.sin()));
             }
             result = input + (self.bass - 1.0) * self.low[c] + (self.treble - 1.0) * (input - self.body[c]);
             if outgoing {
-                // Dry plus its own delayed copy: the swept comb is the flanger.
-                let flanged = 0.5 * (input + self.tap(self.flange));
+                // Dry plus two swept combs at an uneven ratio, so the notch family is
+                // denser and no frequency sits dead. The right channel's combs sit a
+                // quarter of the sweep farther back, which moves the image as they pass.
+                let spread = (c as f32) * 0.25 * self.flange;
+                let flanged = (input + self.tap(self.flange + spread) + self.tap(self.flange * 0.618 + spread * 0.5)) / 3.0;
                 let tail = if self.rhythmic {
                     // A half-beat repeat stutters the last bar under the flanged comb.
                     0.45 * self.tap(self.beat * 0.5) + 0.55 * flanged
@@ -382,6 +391,9 @@ struct Meter<S> {
     fx: Option<MixFx>,
 }
 
+/// How many windows Automix reads for a beat before it settles for the plain length.
+const TEMPO_PASSES: u8 = 4;
+
 /// Rough tempo tracking for Automix's phrase length: the spacing that repeats most in
 /// the music's loudness impulses over the last few seconds.
 struct Tempo {
@@ -390,16 +402,19 @@ struct Tempo {
     count: usize,
     /// The song's tempo is settled; nothing more to analyse in it.
     done: bool,
+    /// How many windows have been read without a beat in them.
+    passes: u8,
     /// How many ms one loudness reading covers.
     hop_ms: f32,
 }
 
 impl Tempo {
     fn new(hop_ms: f32) -> Self {
-        Self { prev: 0.0, hist: [0.0; 300], count: 0, done: false, hop_ms }
+        Self { prev: 0.0, hist: [0.0; 300], count: 0, done: false, passes: 0, hop_ms }
     }
 
-    // One bounded analysis pass, including when no reliable beat is found.
+    // Bounded: a few windows of roughly six seconds each, and it stops the moment one of
+    // them answers, whether or not a reliable beat was found in it.
     fn push(&mut self, e: f32) -> Option<f32> {
         if self.done {
             return None;
@@ -411,8 +426,20 @@ impl Tempo {
         if self.count < self.hist.len() {
             return None;
         }
-        self.done = true;
-        self.estimate()
+        if let Some(bpm) = self.estimate() {
+            self.done = true;
+            return Some(bpm);
+        }
+        // An intro that says nothing yet is not a song without a beat: try the next
+        // window, and stop while the mix still has time to use the answer.
+        self.passes += 1;
+        if self.passes >= TEMPO_PASSES {
+            self.done = true;
+        } else {
+            self.hist.fill(0.0);
+            self.count = 0;
+        }
+        None
     }
 
     fn estimate(&self) -> Option<f32> {
@@ -1104,7 +1131,16 @@ fn run(
                 log::info!("audio: loudness {:?} dB, normalization gain {gain:.3}", s.loudness_db);
                 player.set_volume(slider_gain(&status, f32::from_bits(status.volume.load(Ordering::Relaxed))) * gain);
                 // Fade in only over a song still playing, both over the same length.
-                fading.retain(|f| !f.player.empty());
+                fading.retain(|f| {
+                    if f.player.empty() {
+                        if let Some(s) = &f.shared {
+                            s.cancel();
+                        }
+                        false
+                    } else {
+                        true
+                    }
+                });
                 let skip_len = status.crossfade_ms.load(Ordering::Relaxed);
                 let natural_len = mix_ms(&status, length);
                 let mut fade_in = 0;
@@ -1137,6 +1173,10 @@ fn run(
                 ending_sent = false;
                 status.stream_ms.store(s.duration_ms, Ordering::Relaxed);
                 status.started_gen.store(generation, Ordering::Release);
+                // The new song's needle, claimed before `playing`: the first sample from a
+                // fresh decoder is a moment away, and until then the reader — the progress
+                // bar, the party's announce — would take the song that just ended for this one.
+                status.set_position(at.as_millis() as u64);
                 status.playing.store(true, Ordering::Relaxed);
             }
             Ok(AudioCmd::Replace { generation, seek, decoder, at, seekable: s }) => {
@@ -1157,6 +1197,57 @@ fn run(
                 // Paused, nothing else tells the UI (and the system media controls) where it is now.
                 status.set_position(at.as_millis() as u64);
                 wake();
+            }
+            Ok(AudioCmd::Upgrade { generation, decoder, shared: s, at, seekable: s_seekable }) => {
+                if generation != current || generation != status.wanted_gen.load(Ordering::Relaxed) {
+                    s.cancel();
+                    continue;
+                }
+                log::debug!("audio: upgrade generation {generation} to hi-res stream at {at:?}");
+                if (output.sink.is_none() || output.default_changed()) && !output.open(tx.clone(), &status) {
+                    let _ = events.send(AudioEvent::Error("No audio output device".into()));
+                    wake();
+                }
+                let paused = player.is_paused();
+                if !paused && !player.empty() {
+                    // The YouTube copy fades out under the hi-res one, like a short crossfade.
+                    fade_out.store(QUICK_FADE_MS, Ordering::Relaxed);
+                    let old = std::mem::replace(&mut player, Player::connect_new(&output.mixer));
+                    fading.push(Fading { player: old, song_ms: song_ms.clone(), shared: shared.take(), out: fade_out.clone(), waiting: None, natural: false });
+                } else {
+                    clear(&mut player, &output);
+                    if let Some(old) = shared.take() {
+                        old.cancel();
+                    }
+                }
+                let gain = norm_gain(&status, Some(&s));
+                show_norm(&status, Some(&s));
+                log::info!("audio: hi-res loudness {:?} dB, normalization gain {gain:.3}", s.loudness_db);
+                player.set_volume(slider_gain(&status, f32::from_bits(status.volume.load(Ordering::Relaxed))) * gain);
+                fade_out = Arc::new(AtomicU32::new(0));
+                let fade_in = if !paused { QUICK_FADE_MS } else { 0 };
+                let analysis = s.tempo.clone();
+                status.bpm.store(s.tempo.get().copied().flatten().unwrap_or(0.0).to_bits(), Ordering::Relaxed);
+                song_ms = Arc::new(AtomicU64::new(0));
+                player.append(Meter::new(tempo(decoder, at, &song_ms), status.clone(), fade_in, fade_out.clone(), false, analysis));
+                if !paused {
+                    player.play();
+                }
+                if s.duration_ms > 0 {
+                    status.duration_ms.store(s.duration_ms, Ordering::Relaxed);
+                }
+                length = status.duration();
+                if let Some(old) = shared.replace(s.clone())
+                    && !Arc::ptr_eq(&old, &s)
+                {
+                    old.cancel();
+                }
+                seekable = s_seekable;
+                ending_sent = false;
+                status.stream_ms.store(s.duration_ms, Ordering::Relaxed);
+                // The upgraded stream picks up at the same needle, not at the old one's
+                // last reading.
+                status.set_position(at.as_millis() as u64);
             }
             Ok(AudioCmd::Pause) => {
                 log::debug!("audio: pause at {:?}", song_pos(&song_ms));
@@ -1350,7 +1441,16 @@ fn run(
                 let len = if f.natural { mix_ms(&status, length) } else { status.crossfade_ms.load(Ordering::Relaxed) };
                 log::debug!("audio: next song not ready, fading out over {} ms", f.start(len, status.automix.load(Ordering::Relaxed)));
             }
-            fading.retain(|f| !f.player.empty());
+            fading.retain(|f| {
+                if f.player.empty() {
+                    if let Some(s) = &f.shared {
+                        s.cancel();
+                    }
+                    false
+                } else {
+                    true
+                }
+            });
             if fading.is_empty() {
                 status.mix_active.store(false, Ordering::Relaxed);
                 wake();
@@ -1523,11 +1623,13 @@ mod tests {
         // The outgoing song keeps the floor through the first third of the overlap.
         assert_eq!(a[25], 0.0);
         assert_eq!(b[25], 1.0);
-        // Then one mirrored swap, with no gap and no step at either end.
+        // Then an equal-power swap: no gap and no step at either end, and the combined
+        // loudness of the two songs holds through the whole handoff.
         for (x, y) in a.iter().zip(&b) {
-            assert!((x + y - 1.0).abs() < 1e-4);
+            assert!((x * x + y * y - 1.0).abs() < 1e-4);
         }
-        assert!((a[65] - 0.5).abs() < 1e-4);
+        assert!((a[65] - 0.5_f32.sqrt()).abs() < 1e-4);
+        assert!((b[65] - 0.5_f32.sqrt()).abs() < 1e-4);
         assert_eq!(incoming.next(), Some(1.0));
         assert_eq!(outgoing.next(), None);
     }
@@ -1649,14 +1751,20 @@ mod tests {
     }
 
     #[test]
-    fn tempo_analysis_finishes_once_even_for_silence() {
+    fn tempo_analysis_stops_after_its_windows_quiet_or_not() {
         for silence in [false, true] {
             let mut tempo = Tempo::new(20.0);
             let mut result = None;
-            for i in 0..300 {
-                result = tempo.push(if !silence && i % 25 == 0 { 1.0 } else { 0.0 });
+            let mut windows = 0;
+            while !tempo.done {
+                for i in 0..300 {
+                    result = tempo.push(if !silence && (i + windows * 300) % 25 == 0 { 1.0 } else { 0.0 });
+                }
+                windows += 1;
+                assert!(windows <= TEMPO_PASSES as usize, "the analysis never stops");
             }
-            assert!(tempo.done);
+            // A beat answers in the first window; nothing but silence takes all four.
+            assert_eq!(windows, if silence { TEMPO_PASSES as usize } else { 1 });
             if silence {
                 assert!(result.is_none());
             } else {

@@ -34,7 +34,7 @@ pub struct Audio {
 
 /// Fetch the manifest's Dolby (E-)AC-3 or FLAC rendition and decode it to stereo PCM.
 pub async fn fetch(http: &reqwest::Client, mpd_url: &str) -> anyhow::Result<Audio> {
-    let text = http.get(mpd_url).timeout(FETCH_TIMEOUT).header("User-Agent", crate::hires::USER_AGENT).send().await.map_err(wire)?.error_for_status().map_err(wire)?.text().await.map_err(wire)?;
+    let text = http.get(mpd_url).timeout(FETCH_TIMEOUT).header("User-Agent", crate::hires::agent()).send().await.map_err(wire)?.error_for_status().map_err(wire)?.text().await.map_err(wire)?;
     let plan = Plan::parse(&text, mpd_url)?;
     let mut bytes = Vec::new();
     let init = get(http, &plan.init).await?;
@@ -79,7 +79,7 @@ pub async fn fetch(http: &reqwest::Client, mpd_url: &str) -> anyhow::Result<Audi
 }
 
 async fn get(http: &reqwest::Client, url: &str) -> anyhow::Result<Vec<u8>> {
-    let r = http.get(url).timeout(FETCH_TIMEOUT).header("User-Agent", crate::hires::USER_AGENT).send().await.map_err(wire)?.error_for_status().map_err(wire)?;
+    let r = http.get(url).timeout(FETCH_TIMEOUT).header("User-Agent", crate::hires::agent()).send().await.map_err(wire)?.error_for_status().map_err(wire)?;
     Ok(r.bytes().await.map_err(wire)?.to_vec())
 }
 
@@ -477,7 +477,7 @@ mod tests {
             let http = reqwest::Client::new();
             // Search + stream via the same endpoints the app uses.
             let mk = |q: &str| { let mut u = url::Url::parse(&base).unwrap(); { let mut p = u.path_segments_mut().unwrap(); p.pop_if_empty(); p.push("search"); } u.query_pairs_mut().append_pair("q", q).append_pair("quality", "LOSSLESS").append_pair("atmos", "auto"); u };
-            let r = http.get(mk("Blinding Lights The Weeknd")).header("User-Agent", crate::hires::USER_AGENT).send().await.unwrap();
+            let r = http.get(mk("Blinding Lights The Weeknd")).header("User-Agent", crate::hires::agent()).send().await.unwrap();
             let j: serde_json::Value = r.json().await.unwrap();
             let items = j["tracks"].as_array().or(j["results"].as_array()).cloned().unwrap_or_default();
             let hit = items.iter().find(|t| t["artist"].as_str().unwrap_or("").to_lowercase().contains("weeknd") && t["title"].as_str().unwrap_or("").eq_ignore_ascii_case("Blinding Lights")).unwrap();
@@ -485,7 +485,7 @@ mod tests {
             let mut su = url::Url::parse(&base).unwrap();
             { let mut p = su.path_segments_mut().unwrap(); p.pop_if_empty(); p.push("stream"); p.push(id); }
             su.query_pairs_mut().append_pair("quality", "LOSSLESS").append_pair("atmos", "auto");
-            let sr = http.get(su).header("User-Agent", crate::hires::USER_AGENT).send().await.unwrap();
+            let sr = http.get(su).header("User-Agent", crate::hires::agent()).send().await.unwrap();
             let sj: serde_json::Value = sr.json().await.unwrap();
             assert!(sj["atmos"].as_bool().unwrap_or(false), "not atmos: {:?}", sj["codec"]);
             let mpd = sj["url"].as_str().unwrap();

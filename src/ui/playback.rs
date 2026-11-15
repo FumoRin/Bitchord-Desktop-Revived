@@ -403,6 +403,11 @@ impl App {
         self.generation += 1;
         self.audio.status.wanted_gen.store(self.generation, Ordering::Relaxed);
         self.audio_info = None;
+        // The new song's stream stats arrive with its own decoder; a background
+        // upgrade under way was for the song before it.
+        self.stream_stats = None;
+        self.upgrading_quality = false;
+        self.upgrade_asked = false;
         let shown = carried.clone().unwrap_or_else(|| track.clone());
         self.audio.status.duration_ms.store(shown.duration.map_or(0, |d| d as u64 * 1000), Ordering::Relaxed);
         // A song running into the next crossfades (so does Next, when that's switched

@@ -802,6 +802,54 @@ pub fn decoder(shared: Arc<Shared>, seekable: bool) -> anyhow::Result<TrackDecod
     }
 }
 
+/// What the decoder is being fed, for stats for nerds: the codec, the rate and channels
+/// it decodes to, and the bitrate. The bit depth is the one a hi-res source states, as
+/// rodio's decoders don't report theirs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Stats {
+    pub codec: String,
+    pub bit_depth: Option<u32>,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub bitrate_kbps: Option<u32>,
+}
+
+impl Stats {
+    /// `shared` as `decoder` reads it.
+    pub fn of(shared: &Shared, decoder: &TrackDecoder) -> Self {
+        let rate = rodio::Source::sample_rate(decoder).get();
+        let channels = rodio::Source::channels(decoder).get();
+        Self::from_parts(&shared.format, shared.info.as_ref(), shared.total, shared.duration_ms, rate, channels)
+    }
+
+    fn from_parts(format: &Format, info: Option<&crate::hires::Info>, size: u64, duration_ms: u64, sample_rate: u32, channels: u16) -> Self {
+        let codec = match info.map(|i| i.codec.trim()).filter(|c| !c.is_empty()) {
+            Some(c) => codec_label(c),
+            None => match format {
+                Format::Aac => "AAC".to_owned(),
+                Format::Opus => "Opus".to_owned(),
+                Format::File { hint, .. } => codec_label(hint),
+                Format::Pcm { .. } => "PCM".to_owned(),
+            },
+        };
+        let bit_depth = info.and_then(|i| i.bit_depth);
+        let measured = (duration_ms > 0 && size != crate::hires::UNKNOWN_SIZE).then(|| (size * 8 / duration_ms) as u32);
+        let bitrate_kbps = match bit_depth {
+            Some(bits) if info.is_some_and(|i| i.lossless()) => Some(sample_rate * bits * channels as u32 / 1000),
+            _ => info.and_then(|i| i.bitrate_kbps).or(measured),
+        };
+        Self { codec, bit_depth, sample_rate, channels, bitrate_kbps: bitrate_kbps.filter(|k| *k > 0) }
+    }
+}
+
+fn codec_label(codec: &str) -> String {
+    match codec.to_ascii_lowercase().as_str() {
+        "opus" => "Opus".to_owned(),
+        "vorbis" => "Vorbis".to_owned(),
+        _ => codec.to_ascii_uppercase(),
+    }
+}
+
 /// A song's decoder: Opus (our own), in-process PCM (decoded Atmos), or a file
 /// rodio decodes (AAC/MP4 included).
 pub enum TrackDecoder {

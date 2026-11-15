@@ -21,6 +21,7 @@ pub enum Cmd {
     SeekBackward,
     VolumeUp,
     VolumeDown,
+    Mute,
     Lyrics,
     Queue,
     NowPlaying,
@@ -32,7 +33,7 @@ pub enum Cmd {
 }
 
 impl Cmd {
-    pub const ALL: [Cmd; 15] = [
+    pub const ALL: [Cmd; 16] = [
         Self::TogglePlay,
         Self::Next,
         Self::Prev,
@@ -40,6 +41,7 @@ impl Cmd {
         Self::SeekBackward,
         Self::VolumeUp,
         Self::VolumeDown,
+        Self::Mute,
         Self::Lyrics,
         Self::Queue,
         Self::NowPlaying,
@@ -59,6 +61,7 @@ impl Cmd {
             Self::SeekBackward => "Seek backwards",
             Self::VolumeUp => "Volume up",
             Self::VolumeDown => "Volume down",
+            Self::Mute => "Mute",
             Self::Lyrics => "Lyrics",
             Self::Queue => "Queue",
             Self::NowPlaying => "Now playing",
@@ -80,6 +83,7 @@ impl Cmd {
             Self::SeekBackward => "keybind_seek_backward",
             Self::VolumeUp => "keybind_vol_up",
             Self::VolumeDown => "keybind_vol_down",
+            Self::Mute => "keybind_mute",
             Self::Lyrics => "keybind_lyrics",
             Self::Queue => "keybind_queue",
             Self::NowPlaying => "keybind_np",
@@ -94,6 +98,7 @@ impl Cmd {
     /// What the key does by default. Seek keeps the plain arrows the songs' skip leaves
     /// free, volume the Ctrl arrows. Back and forward read the browser's own: on a Mac
     /// that's the Command key, which is what took Alt's place there (Macs have no Alt).
+    /// Mute is the bare M, clear of Ctrl+M (the mini player).
     fn default_combo(self) -> &'static str {
         match self {
             Self::TogglePlay => "Space",
@@ -103,6 +108,7 @@ impl Cmd {
             Self::SeekBackward => "ArrowLeft",
             Self::VolumeUp => "ctrl+ArrowUp",
             Self::VolumeDown => "ctrl+ArrowDown",
+            Self::Mute => "M",
             Self::Lyrics => "L",
             Self::Queue => "Q",
             Self::NowPlaying => "F",

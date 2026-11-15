@@ -96,11 +96,13 @@ impl App {
             self.mix_from = None;
         }
         while let Ok(ev) = self.ch.media_rx.try_recv() {
+            log::debug!("media: {ev:?}");
+            // Take the button for what it asks for, not as a flip of wherever we happen to
+            // be: a room already holding still doesn't start because Windows said "pause",
+            // and every answer here goes through `toggle`, so the room hears about it.
             match ev {
-                MediaControlEvent::Play | MediaControlEvent::Pause if self.jam.guest() => self.toggle(),
-                MediaControlEvent::Play if self.resume_at.is_some() => self.toggle(),
-                MediaControlEvent::Play => self.audio.send(AudioCmd::Resume),
-                MediaControlEvent::Pause | MediaControlEvent::Stop => self.audio.send(AudioCmd::Pause),
+                MediaControlEvent::Play if !self.playing() => self.toggle(),
+                MediaControlEvent::Pause | MediaControlEvent::Stop if self.playing() => self.toggle(),
                 MediaControlEvent::Toggle => self.toggle(),
                 MediaControlEvent::Next => self.next(),
                 MediaControlEvent::Previous => self.prev(),
@@ -568,6 +570,23 @@ impl App {
                 // The stream that answered may already have been skipped past.
                 if generation == self.generation {
                     self.audio_info = Some((generation, info));
+                    self.upgrading_quality = false;
+                    self.upgrade_asked = false;
+                }
+            }
+            Resp::StreamStats { generation, stats } => {
+                if generation == self.generation {
+                    self.stream_stats = Some((generation, stats));
+                }
+            }
+            Resp::UpgradingQuality { generation, active } => {
+                if generation == self.generation {
+                    self.upgrading_quality = active;
+                    // The player's "Upgrade quality" ends here one way or the other: a
+                    // stream would have announced itself first, so this one had nothing.
+                    if !active && std::mem::take(&mut self.upgrade_asked) && self.audio_info.is_none() {
+                        self.toast("None of your hi-res sources has a copy of this song.");
+                    }
                 }
             }
             Resp::ServerQueue(q) => self.adopt_server_queue(q),
