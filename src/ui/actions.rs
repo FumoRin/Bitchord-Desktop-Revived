@@ -324,7 +324,7 @@ impl App {
             keys.matches(Cmd::Lyrics, ctx),
             keys.matches(Cmd::Queue, ctx),
             keys.matches(Cmd::NowPlaying, ctx),
-            keys.matches(Cmd::FullScreen, ctx),
+            keys.matches(Cmd::FullScreen, ctx) || ctx.input(|i| i.key_pressed(egui::Key::F11)),
             keys.matches(Cmd::Search, ctx),
             keys.matches(Cmd::VolumeUp, ctx),
             keys.matches(Cmd::VolumeDown, ctx),
@@ -378,8 +378,13 @@ impl App {
             if !self.np_open {
                 self.np_open = true;
                 self.set_fullscreen(ctx, true);
+            } else if self.fullscreen {
+                self.set_fullscreen(ctx, false);
+            } else if self.shown_video().is_some() {
+                // With a video on show, full screen is the video's, as F is on YouTube.
+                self.set_video_fullscreen(ctx, true);
             } else {
-                self.set_fullscreen(ctx, !self.fullscreen);
+                self.set_fullscreen(ctx, true);
             }
         }
         if search {
@@ -428,8 +433,16 @@ impl App {
         self.mini.toggle(ctx, now, video);
     }
 
+    /// Full screen with just the video, as on YouTube. Leaving it is leaving full screen.
+    pub(super) fn set_video_fullscreen(&mut self, ctx: &egui::Context, on: bool) {
+        self.set_fullscreen(ctx, on);
+        self.video_full = on;
+        super::nowplaying::wake_video_controls(ctx);
+    }
+
     pub(super) fn set_fullscreen(&mut self, ctx: &egui::Context, on: bool) {
         self.fullscreen = on;
+        self.video_full = false;
         // Windows: in one step, without winit's unthemed-frame flash.
         if !crate::fullscreen::set(on) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
