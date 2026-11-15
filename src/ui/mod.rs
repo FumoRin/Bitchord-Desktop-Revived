@@ -743,6 +743,9 @@ pub struct App {
     /// What the tray's Play/Pause label last said, so it only changes with the player.
     /// This session runs without any tray icon (--no-tray): × quits for real.
     tray_off: bool,
+    /// Why the tray can't work on this system (`tray::Unsupported`), shown under the
+    /// setting.
+    tray_error: Option<String>,
     /// Frames left to keep re-asserting a show (some shells drop the first one).
     show_asserts: u8,
     /// When this copy started, so a close that arrives moments later can be told
@@ -1011,6 +1014,7 @@ impl App {
             tray_registered_at: None,
             tray_retry_at: None,
             tray_off: no_tray,
+            tray_error: None,
             show_asserts: 0,
             started_at: std::time::Instant::now(),
             exiting: false,

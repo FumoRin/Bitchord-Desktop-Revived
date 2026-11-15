@@ -3010,6 +3010,10 @@ fn settings_window(app: &mut App, ui: &mut Ui) {
         setting_row(ui, "Close to tray", Some("Clicking × hides the window and keeps the music playing. The tray icon is always up: left-click brings the window back, and its menu has the transport buttons, Launch at login and Quit. If the icon never shows up, launching BitChord again brings the window back; --no-tray starts a session without an icon, where × quits for real. On Linux, clicking the song in the system's media controls brings it back too, and Ctrl+Q quits."), |ui| {
             toggle(ui, &mut app.close_to_tray, "Close to tray");
         });
+        if let Some(e) = &app.tray_error {
+            ui.label(RichText::new(e).font(theme::regular(12.5)).color(theme::RED));
+            ui.add_space(8.0);
+        }
         if crate::notify::SUPPORTED {
             divider(ui);
             let ok = crate::notify::available();

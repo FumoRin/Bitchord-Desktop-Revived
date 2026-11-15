@@ -373,7 +373,7 @@ impl App {
         // The icon, from the first frame on (--no-tray sessions never get one).
         // A failed registration isn't retried every frame; the next try comes at
         // the re-register interval.
-        if self.tray.is_none() && !self.tray_off && !self.exiting && self.tray_retry_at.is_none_or(|t| t.elapsed() >= TRAY_REREGISTER) {
+        if self.tray.is_none() && !self.tray_off && !self.exiting && self.tray_error.is_none() && self.tray_retry_at.is_none_or(|t| t.elapsed() >= TRAY_REREGISTER) {
             let c = ctx.clone();
             match crate::tray::Tray::new(crate::appicon::get(self.app_icon), self.playing() || self.buffering, crate::autostart::enabled(), move || c.request_repaint()) {
                 Ok(t) => {
@@ -384,7 +384,13 @@ impl App {
                 }
                 Err(e) => {
                     log::warn!("tray icon unavailable: {e:#}");
-                    self.tray_retry_at = Some(std::time::Instant::now());
+                    if let Some(u) = e.downcast_ref::<crate::tray::Unsupported>() {
+                        // It can't work here: no retries, and the reason shows under the
+                        // setting. Without an icon there'd be no way back: × just closes.
+                        self.tray_error = Some(u.0.clone());
+                    } else {
+                        self.tray_retry_at = Some(std::time::Instant::now());
+                    }
                 }
             }
         }
