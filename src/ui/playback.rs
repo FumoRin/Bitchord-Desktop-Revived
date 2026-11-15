@@ -140,16 +140,78 @@ impl App {
         }
     }
 
+    /// The song of what's playing, for scrobbles: the song version standing in for a
+    /// music video, or the song a music video stands in for.
+    pub(super) fn heard_song(&self) -> Option<&Track> {
+        self.playing_as().filter(|t| !t.has_video()).or(self.current())
+    }
+
+    /// The video on show, when one is: the music video playing, or the one picked on a
+    /// song's switch. Lyrics are timed to the song, so they don't go with it.
+    pub(super) fn shown_video(&self) -> Option<&Track> {
+        let t = self.playing_track().filter(|t| t.has_video() && !self.jam.active())?;
+        (self.show_video || self.playing_as().is_some()).then_some(t)
+    }
+
+    /// What the Song/Video switch shows picked: on a song, whether its music video plays
+    /// in its place; on a video, the Video preference.
+    pub(super) fn video_picked(&self) -> bool {
+        match self.current() {
+            Some(t) if !t.has_video() => self.playing_as().is_some(),
+            _ => self.show_video,
+        }
+    }
+
+    /// The current song's music video, for its Song/Video switch. Asked for the first
+    /// time it's wanted, once per song.
+    pub(super) fn song_video(&mut self) -> Option<&crate::ytm::MusicVideo> {
+        let t = self.current().filter(|t| !t.has_video() && !self.jam.active())?;
+        if !self.music_videos.contains_key(&t.id) {
+            let t = t.clone();
+            if self.music_videos.len() >= 1000 {
+                self.music_videos.clear();
+            }
+            self.music_videos.insert(t.id.clone(), None);
+            self.backend.request(Req::MusicVideo(t));
+            return None;
+        }
+        let found = self.music_videos.get(&t.id)?.as_ref()?;
+        (!(self.hide_explicit && found.video.explicit)).then_some(found)
+    }
+
+    /// How far the music video playing for the current song runs ahead of the song.
+    fn video_offset(&self) -> i64 {
+        let (Some(song), Some(video)) = (self.current(), self.playing_as()) else { return 0 };
+        self.music_videos.get(&song.id).and_then(Option::as_ref).filter(|m| m.video.id == video.id).map_or(0, |m| m.offset_ms)
+    }
+
     /// Play the current music video as itself again, from where its song is now: a jam
     /// plays everyone the host's exact upload.
     pub(super) fn play_listed_upload(&mut self) {
         if self.playing_as().is_none() {
             return;
         }
-        let at = self.audio.status.position();
+        let at = shifted(self.audio.status.position(), -self.video_offset());
         self.playing_as = None;
         if self.playing() || self.buffering {
             self.play_current_at(at, false);
+        } else {
+            self.resume_at = Some(at);
+        }
+    }
+
+    /// From a song to its music video, at the same place in the song: the video stands
+    /// in for it as a song version does for a video, so it's the same play.
+    pub(super) fn play_music_video(&mut self) {
+        if self.playing_as().is_some() {
+            return;
+        }
+        let Some(found) = self.song_video().cloned() else { return };
+        let Some(listed) = self.current_id().map(str::to_owned) else { return };
+        let at = shifted(self.audio.status.position(), found.offset_ms);
+        self.playing_as = Some(PlayingAs { generation: self.generation, listed, song: found.video });
+        if self.playing() || self.buffering {
+            self.start_current(at, false, true);
         } else {
             self.resume_at = Some(at);
         }
@@ -585,4 +647,13 @@ impl App {
 
 fn unix_now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// A position moved by `ms` milliseconds, which can be negative.
+pub(super) fn shifted(pos: Duration, ms: i64) -> Duration {
+    if ms >= 0 {
+        pos + Duration::from_millis(ms as u64)
+    } else {
+        pos.saturating_sub(Duration::from_millis(ms.unsigned_abs()))
+    }
 }

@@ -27,10 +27,12 @@ mod queue;
 mod responses;
 mod row_drag;
 mod shell;
+mod sorts;
 mod titlebar;
 pub use mini::set_hwnd as set_mini_hwnd;
 pub use titlebar::{custom as custom_titlebar, init as init_titlebar, set_hwnd as set_titlebar_hwnd};
 mod transfer;
+mod wheel;
 mod widgets;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -82,6 +84,8 @@ pub enum LibTab {
     Playlists,
     Songs,
     Albums,
+    /// Subscribed artists.
+    Artists,
     /// Saved podcast shows (with Settings › Playback › Show podcasts on).
     Podcasts,
     History,
@@ -147,6 +151,9 @@ pub enum Action {
     Seek(f32),
     /// Moving video or the picture, for music videos.
     ToggleVideo,
+    /// The Song/Video switch on a song: its music video in its place (`true`), or the
+    /// song again.
+    SongVideo(bool),
     Like(Track, bool),
     /// Like (or unlike) a selection of songs.
     LikeMany(Vec<Track>, bool),
@@ -158,10 +165,14 @@ pub enum Action {
     Download(Track),
     NewPlaylist(Vec<Track>),
     EditPlaylist,
+    /// Save one of your playlist's sort orders to it: (playlist id, what to send).
+    SortPlaylist(String, serde_json::Value),
     /// The open playlist's collaboration settings.
     Collaborate,
     DeletePlaylist,
     SaveCollection(String, bool),
+    /// Subscribe to the open artist (true), or unsubscribe.
+    Subscribe(bool),
     HomeChip(Option<String>),
     OpenNowPlaying(bool),
     /// Into the mini player (true) or back to the full window.
@@ -213,13 +224,14 @@ impl Selection {
         *self = Self { page: Some(page.clone()), active: true, ..Self::default() };
     }
 
-    /// Toggle row `i`, or with `range` pick every row from the last one toggled to it.
-    pub fn pick(&mut self, page: &Page, i: usize, range: bool) {
+    /// Toggle row `i`, or with `range` pick every row from the last one toggled to it, as
+    /// they're `shown` (a list sorted; `None` is the whole list in its order).
+    pub fn pick(&mut self, page: &Page, i: usize, range: bool, shown: Option<&[usize]>) {
         if self.page.as_ref() != Some(page) {
             *self = Self { page: Some(page.clone()), ..Self::default() };
         }
         match self.anchor.filter(|_| range) {
-            Some(a) => self.rows.extend(a.min(i)..=a.max(i)),
+            Some(a) => self.rows.extend(sorts::run(shown, a, i)),
             None => {
                 if !self.rows.remove(&i) {
                     self.rows.insert(i);
@@ -398,10 +410,18 @@ pub struct App {
     /// The Moods & genres category last opened.
     mood: Option<crate::ytm::MoodPage>,
     search: Option<SearchResults>,
+    /// Where a search looks: all of YouTube Music, or just your library or your uploads.
+    search_scope: crate::ytm::Scope,
     /// Albums and playlists opened lately, so going back to one shows it at once (and
     /// refreshes it quietly), and their loads under way.
     lists: Lists,
+    /// Each list's chosen order, remembered.
+    sorts: sorts::ListSorts,
+    /// Playlists a sort was asked of, until they load in that order (or it fails).
+    sorting: HashMap<String, lists::SortWait>,
     artist: Option<ArtistPage>,
+    /// Subscribes and unsubscribes: the one under way, and what they settled.
+    subscriptions: actions::Subscriptions,
     /// The artist shelf page that's open (a Show all): its key, title, artist's name,
     /// and either the cards or the songs it lists. One at a time — opening another
     /// artist's shelf replaces it, like `artist` does for artist pages.
@@ -468,6 +488,9 @@ pub struct App {
     restricted_mode: bool,
     /// The song version playing in place of the current music video.
     playing_as: Option<PlayingAs>,
+    /// Songs' music videos, for the Song/Video switch: looked up once each (`None`: it has
+    /// none, or the answer hasn't come yet).
+    music_videos: HashMap<String, Option<crate::ytm::MusicVideo>>,
     /// The output device picked in settings (cpal's id and its name, for when it's not
     /// connected), and the devices last listed there.
     output_device: Option<(String, String)>,
@@ -602,9 +625,8 @@ pub struct App {
     forget_held: bool,
     /// The past search being removed (its token) and when: it folds away first.
     forgetting: Option<(String, f64)>,
-    /// Mouse-wheel distance still to be scrolled (smooth scrolling).
-    wheel_pending: egui::Vec2,
-    wheel_mods: egui::Modifiers,
+    /// Smooth scrolling: wheel distance still to be scrolled, or a touchpad coast.
+    wheel: wheel::Glide,
 
     // now playing
     np_open: bool,
@@ -701,7 +723,6 @@ pub struct App {
     /// re-register interval, not per frame).
     tray_retry_at: Option<std::time::Instant>,
     /// What the tray's Play/Pause label last said, so it only changes with the player.
-    tray_play: Option<bool>,
     /// This session runs without any tray icon (--no-tray): × quits for real.
     tray_off: bool,
     /// Frames left to keep re-asserting a show (some shells drop the first one).
@@ -898,8 +919,12 @@ impl App {
             explore: None,
             mood: None,
             search: None,
+            search_scope: Default::default(),
             lists: Lists::default(),
+            sorts: sorts::ListSorts::default(),
+            sorting: HashMap::new(),
             artist: None,
+            subscriptions: actions::Subscriptions::default(),
             shelf: None,
             shelf_pending: None,
             library: None,
@@ -942,6 +967,7 @@ impl App {
             show_comments,
             restricted_mode,
             playing_as: None,
+            music_videos: HashMap::new(),
             output_device: get("output_device").filter(|d| !d.is_empty()).map(|id| (id, get("output_device_name").unwrap_or_default())),
             output_devices: Vec::new(),
             updater: None,
@@ -952,7 +978,6 @@ impl App {
             tray: None,
             tray_registered_at: None,
             tray_retry_at: None,
-            tray_play: None,
             tray_off: no_tray,
             show_asserts: 0,
             started_at: std::time::Instant::now(),
@@ -1055,8 +1080,7 @@ impl App {
             search_refocus: false,
             forget_held: false,
             forgetting: None,
-            wheel_pending: egui::Vec2::ZERO,
-            wheel_mods: egui::Modifiers::NONE,
+            wheel: wheel::Glide::default(),
             np_open: false,
             np_tab: if get("np_art").is_some_and(|v| v == "1") { NpTab::Art } else { NpTab::Lyrics },
             np_bg: get("np_bg").and_then(|v| crate::preset::BgMode::from_name(&v)),
@@ -1092,6 +1116,7 @@ impl App {
         };
         app.request_liked(false);
         app.queue.hide_explicit = hide_explicit;
+        app.sorts.sorts = get("list_sorts").and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
         // Dev hooks: YTM_SMOKE="query" searches and plays the first song ("id:<videoId>[,<videoId>…]"
         // plays that video; with YTM_VIDEO, shown as a video); YTM_SEARCH
         // only searches; YTM_PAGE opens a page; YTM_NOWPLAYING opens the overlay.
@@ -1248,7 +1273,10 @@ impl App {
             Page::New => Some(Req::Explore(self.preferred_artist_ids())),
             Page::Mood(p) if self.mood.as_ref().is_none_or(|m| &m.params != p) => Some(Req::Mood(p.clone())),
             // The empty search is the page's landing state: nothing to ask for.
-            Page::Search(q) if !q.trim().is_empty() && self.search.as_ref().is_none_or(|s| &s.query != q) => Some(Req::Search(q.clone())),
+            Page::Search(q) if !q.trim().is_empty() && self.search.as_ref().is_none_or(|s| &s.query != q || s.scope != self.search_scope) => match self.search_scope {
+                crate::ytm::Scope::Everywhere => Some(Req::Search(q.clone())),
+                scope => Some(Req::SearchIn { query: q.clone(), scope }),
+            },
             Page::Album(id) | Page::Playlist(id) => {
                 self.visit_list(id, matches!(self.page, Page::Album(_)));
                 None
@@ -1515,6 +1543,10 @@ impl eframe::App for App {
         let now = ctx.input(|i| i.time);
         self.sync_look();
         self.pump(now);
+        // A sorted playlist that loads again in a while, for its new order.
+        if let Some(t) = self.sorting.values().filter_map(lists::SortWait::due).reduce(f64::min) {
+            ctx.request_repaint_after(Duration::from_secs_f64((t - now).max(0.0)));
+        }
         self.skip_segments(ctx, now);
         // System media controls and taskbar buttons follow the player however it changed.
         let playing = self.playing() || self.buffering;
@@ -1848,7 +1880,16 @@ impl eframe::App for App {
                 ctx.request_repaint_after(Duration::from_millis(100));
             }
         }
-        smooth_wheel(self, ctx, raw);
+        // Dev hook: YTM_LOG_WHEEL=1 logs the wheel events the window sends.
+        if dev_var("YTM_LOG_WHEEL").is_some() {
+            for e in raw.events.iter().filter(|e| matches!(e, egui::Event::MouseWheel { .. })) {
+                log::info!("wheel t={:.3} {e:?}", raw.time.unwrap_or(0.0));
+            }
+        }
+        let viewport_h = raw.screen_rect.map_or(800.0, |r| r.height());
+        if self.wheel.filter(&mut raw.events, raw.time.unwrap_or(0.0), raw.predicted_dt, viewport_h) {
+            ctx.request_repaint();
+        }
         if let Some((x, y)) = dev_var("YTM_FAKE_POINTER").and_then(|v| {
             let (x, y) = v.split_once(',')?;
             Some((x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?))
@@ -1889,6 +1930,7 @@ impl eframe::App for App {
         storage.set_string("ambient_light", b(self.ambient_light));
         storage.set_string("hide_search_videos", b(self.hide_search_videos));
         storage.set_string("hide_explicit", b(self.hide_explicit));
+        storage.set_string("list_sorts", serde_json::to_string(&self.sorts.sorts).unwrap_or_default());
         storage.set_string("podcasts", b(self.show_podcasts));
         storage.set_string("comments", b(self.show_comments));
         storage.set_string("restricted_mode", b(self.restricted_mode));
@@ -2100,48 +2142,6 @@ fn fit_window_to_monitor(ctx: &egui::Context) {
         log::info!("window {outer:?} exceeds monitor {monitor:?}; maximizing");
         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
     }
-}
-
-/// Smooth scrolling: mouse-wheel notches (line units) are collected and replayed as
-/// small pixel steps with an exponential ease-out (~0.3 s glide), like browsers do.
-/// Touchpads already report smooth pixel deltas and pass through untouched, as does
-/// Ctrl+wheel zoom.
-fn smooth_wheel(app: &mut App, ctx: &egui::Context, raw: &mut egui::RawInput) {
-    const NOTCH_PX: f32 = 70.0;
-    const GLIDE: f32 = 0.06; // time constant, seconds (settles in ~0.18 s)
-    let viewport_h = raw.screen_rect.map_or(800.0, |r| r.height());
-    raw.events.retain(|e| match e {
-        egui::Event::MouseWheel { unit, delta, modifiers, .. } if !modifiers.command && !modifiers.ctrl => {
-            let px = match unit {
-                egui::MouseWheelUnit::Line => *delta * NOTCH_PX,
-                egui::MouseWheelUnit::Page => *delta * viewport_h * 0.8,
-                egui::MouseWheelUnit::Point => return true,
-            };
-            // Reversing direction cancels the remaining glide instead of fighting it.
-            if app.wheel_pending.y * px.y < 0.0 || app.wheel_pending.x * px.x < 0.0 {
-                app.wheel_pending = egui::Vec2::ZERO;
-            }
-            app.wheel_pending += px;
-            app.wheel_mods = *modifiers;
-            false
-        }
-        _ => true,
-    });
-    if app.wheel_pending.length() < 0.5 {
-        app.wheel_pending = egui::Vec2::ZERO;
-        return;
-    }
-    let dt = raw.predicted_dt.clamp(0.001, 0.05);
-    let step = app.wheel_pending * (1.0 - (-dt / GLIDE).exp());
-    app.wheel_pending -= step;
-    raw.events.push(egui::Event::MouseWheel {
-        unit: egui::MouseWheelUnit::Point,
-        delta: step,
-        phase: egui::TouchPhase::Move,
-        modifiers: app.wheel_mods,
-        source: egui::MouseWheelSource::Wheel,
-    });
-    ctx.request_repaint();
 }
 
 /// Fisher-Yates with a clock-seeded xorshift; shuffling doesn't need a real RNG crate.

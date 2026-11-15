@@ -87,7 +87,7 @@ pub fn overlay(app: &mut App, ctx: &egui::Context, now: f64) {
             }
             let k = b.scrim / 0.3;
             super::shell::vgradient(ui.painter(), rect, theme::shade((0.18 * k).min(0.95)), theme::shade((0.42 * k).min(0.95)));
-            if app.ambient_light && app.current().cloned().is_some_and(|track| app.video_mode(&track)) {
+            if app.ambient_light && app.shown_video().is_some() {
                 paint_glow(app, ui, rect);
             }
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(32.0, 20.0))));
@@ -121,7 +121,8 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
     let look = app.look();
     let cs = &look.cover;
     let area = ui.max_rect();
-    let video_mode = app.video_mode(&track);
+    let video = app.shown_video().cloned();
+    let video_mode = video.is_some();
     let no_lyrics = app.no_lyrics() || video_mode;
     // The content is this area less its margins: a cover column beside the panel needs
     // 860 points, and below that the cover gives way to the panel.
@@ -129,7 +130,8 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
     // Header: on the window buttons' line, when the app draws them.
     let lift = 20.0 - f32::from(super::titlebar::top_margin(20, 44.0));
     let header = Rect::from_min_size(area.min - vec2(0.0, if app.fullscreen { 0.0 } else { lift }), vec2(area.width(), 44.0));
-    if track.has_video() && !app.jam.active() {
+    // A song gets the switch too once its music video is found (or is playing).
+    if !app.jam.active() && (track.has_video() || app.playing_as().is_some() || app.song_video().is_some()) {
         song_video_switch(app, ui, header);
     }
     let mut hui = ui.new_child(egui::UiBuilder::new().max_rect(header).layout(egui::Layout::left_to_right(egui::Align::Center)));
@@ -165,8 +167,8 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
     });
 
     let content = Rect::from_min_max(pos2(area.left(), header.bottom() + 12.0), area.max);
-    if video_mode {
-        video_stage(app, ui, content, &track);
+    if let Some(video) = video.as_ref() {
+        video_stage(app, ui, content, video);
         return;
     }
     if app.video.take().is_some() {
@@ -286,10 +288,13 @@ fn song_video_switch(app: &mut App, ui: &mut Ui, header: Rect) {
     let rect = Rect::from_center_size(header.center(), vec2(170.0, header.height()));
     let mut row = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
     row.spacing_mut().item_spacing.x = 6.0;
-    let song = widgets::chip(&mut row, "Song", !app.show_video).clicked();
-    let video = widgets::chip(&mut row, "Video", app.show_video).clicked();
-    if (song && app.show_video) || (video && !app.show_video) {
-        app.actions.push(Action::ToggleVideo);
+    let picked = app.video_picked();
+    let song = widgets::chip(&mut row, "Song", !picked).clicked();
+    let video = widgets::chip(&mut row, "Video", picked).clicked();
+    if (song && picked) || (video && !picked) {
+        // On a song, its switch swaps in (or back from) its music video.
+        let on_song = app.current().is_some_and(|t| !t.has_video());
+        app.actions.push(if on_song { Action::SongVideo(!picked) } else { Action::ToggleVideo });
     }
 }
 

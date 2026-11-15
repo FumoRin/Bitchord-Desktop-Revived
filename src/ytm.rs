@@ -244,16 +244,52 @@ pub async fn paired_song(api: &Api, video_id: &str) -> anyhow::Result<Option<Tra
 }
 
 fn parse_paired_song(v: &Value, video_id: &str) -> Option<Track> {
+    counterparts(v, video_id).map(half).find(|r| video_type(&[&r["navigationEndpoint"]]) == Some("MUSIC_VIDEO_TYPE_ATV")).and_then(panel_item)
+}
+
+/// A song's music video, and where the song's start comes in it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MusicVideo {
+    pub video: Track,
+    /// The video's place at the song's start, in milliseconds: later for an intro before
+    /// the song, earlier for a song that opens with what the video cut. 0 when not known.
+    pub offset_ms: i64,
+}
+
+/// The music video of a song from YouTube's own pair, as [`paired_song`] the other way
+/// round: Premium accounts only, `None` for others.
+pub async fn paired_video(api: &Api, song_id: &str) -> anyhow::Result<Option<MusicVideo>> {
+    let body = json!({"videoId": song_id, "isAudioOnly": true, "enablePersistentPlaylistPanel": true});
+    let v = api.call_signed_in("next", body).await?;
+    Ok(parse_paired_video(&v, song_id))
+}
+
+fn parse_paired_video(v: &Value, song_id: &str) -> Option<MusicVideo> {
+    let c = counterparts(v, song_id).find(|c| music_video(&[&half(c)["navigationEndpoint"]]))?;
+    let video = panel_item(half(c))?;
+    // The pair lines the two up: this far into the song is that far into the video.
+    let seg = &c["segmentMap"]["segment"][0];
+    let ms = |key: &str| seg[key].as_str().and_then(|n| n.parse::<i64>().ok());
+    let offset_ms = ms("counterpartVideoStartTimeMilliseconds").zip(ms("primaryVideoStartTimeMilliseconds")).map_or(0, |(video, song)| video - song);
+    Some(MusicVideo { video, offset_ms })
+}
+
+/// The other version itself, in a pair from [`counterparts`].
+fn half(counterpart: &Value) -> &Value {
+    &counterpart["counterpartRenderer"]["playlistPanelVideoRenderer"]
+}
+
+/// What a `next` answer pairs with `video_id`: its other version, on Premium accounts,
+/// with the `segmentMap` that lines the two up.
+fn counterparts<'a>(v: &'a Value, video_id: &str) -> impl Iterator<Item = &'a Value> {
     let panel = &v["contents"]["singleColumnMusicWatchNextResultsRenderer"]["tabbedRenderer"]["watchNextTabbedResultsRenderer"]["tabs"][0]
         ["tabRenderer"]["content"]["musicQueueRenderer"]["content"]["playlistPanelRenderer"];
+    let id = video_id.to_owned();
     arr(&panel["contents"])
         .iter()
         .map(|i| &i["playlistPanelVideoWrapperRenderer"])
-        .filter(|w| w["primaryRenderer"]["playlistPanelVideoRenderer"]["videoId"] == video_id)
+        .filter(move |w| w["primaryRenderer"]["playlistPanelVideoRenderer"]["videoId"] == id.as_str())
         .flat_map(|w| arr(&w["counterpart"]))
-        .map(|c| &c["counterpartRenderer"]["playlistPanelVideoRenderer"])
-        .find(|r| video_type(&[&r["navigationEndpoint"]]) == Some("MUSIC_VIDEO_TYPE_ATV"))
-        .and_then(panel_item)
 }
 
 /// The song version of a music video, by a signed-out search (a signed-in one would
@@ -267,6 +303,69 @@ pub async fn searched_song(api: &Api, video: &Track, clean: bool) -> anyhow::Res
     };
     let hits = search_songs(api, &query, false).await?;
     Ok(hits.into_iter().take(5).find(|h| same_song(video, h) && !(clean && h.explicit)))
+}
+
+/// The music video of a song, by a signed-out videos search (signed in, it would land in
+/// the account's search history). Only an official music video that's a sure match
+/// counts: [`same_song`], the other way round.
+pub async fn searched_video(api: &Api, song: &Track) -> anyhow::Result<Option<Track>> {
+    let Some(artist) = song.artists.first().filter(|_| song.duration.is_some() && !song.has_video()) else { return Ok(None) };
+    let hits = search_videos(api, &format!("{} {}", song.title, artist.name), false).await?;
+    Ok(sure_video(song, hits))
+}
+
+/// Among the first few hits only: further down, a match is more likely another recording.
+fn sure_video(song: &Track, hits: Vec<Track>) -> Option<Track> {
+    hits.into_iter().take(5).find(|h| h.music_video && same_song(h, song))
+}
+
+/// Where a search looks, as the tabs over music.youtube.com's results do: all of YouTube
+/// Music, or only the signed-in account's library or its uploads.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Scope {
+    #[default]
+    Everywhere,
+    Library,
+    Uploads,
+}
+
+/// What a search of your library or your uploads found: rows that play (episodes apart,
+/// with podcasts shown) and the pages it can open.
+#[derive(Default)]
+pub struct ScopedResults {
+    pub tracks: Vec<Track>,
+    pub episodes: Vec<Track>,
+    pub cards: Vec<Card>,
+}
+
+/// Search only your library or only your uploads, as the account (so the query goes into
+/// its search history, as on the website).
+pub async fn search_in(api: &Api, query: &str, scope: Scope) -> anyhow::Result<ScopedResults> {
+    let params = match scope {
+        Scope::Everywhere => anyhow::bail!("not a search of your own music"),
+        Scope::Library => "agIYBA%3D%3D",
+        Scope::Uploads => "agIYAw%3D%3D",
+    };
+    let v = api.call_signed_in("search", json!({ "query": query, "params": params })).await?;
+    Ok(parse_scoped(&v))
+}
+
+fn parse_scoped(v: &Value) -> ScopedResults {
+    let mut out = ScopedResults::default();
+    // Only the picked tab holds results; the others are links to their own search.
+    let tabs = arr(&v["contents"]["tabbedSearchResultsRenderer"]["tabs"]);
+    let Some(tab) = tabs.iter().map(|t| &t["tabRenderer"]).find(|t| t["selected"] == true) else { return out };
+    let sections = arr(&tab["content"]["sectionListRenderer"]["contents"]);
+    for r in sections.iter().flat_map(|s| arr(&s["musicShelfRenderer"]["contents"])).map(|i| &i["musicResponsiveListItemRenderer"]) {
+        if !r["navigationEndpoint"].is_null() {
+            out.cards.extend(list_card(r));
+        } else if video_type(&[&r["overlay"], &r["flexColumns"][0]]) == Some("MUSIC_VIDEO_TYPE_PODCAST_EPISODE") {
+            out.episodes.extend(episode_row(r).filter(|_| podcasts()));
+        } else {
+            out.tracks.extend(list_item(r));
+        }
+    }
+    out
 }
 
 /// Whether `hit` (a song from a search) is the song of the music video `video`: the same
@@ -557,6 +656,7 @@ fn parse_album(v: &Value, id: &str) -> Option<(Collection, Vec<usize>)> {
         set_ids: Vec::new(),
         count: None,
         owned: false,
+        sorts: Vec::new(),
     };
     Some((a, videos))
 }
@@ -642,10 +742,36 @@ fn parse_playlist(v: &Value, id: &str) -> Option<(Collection, Option<String>, Op
             tracks,
             set_ids,
             owned: owned(two),
+            sorts: sorts(shelf),
         },
         token,
         count,
     ))
+}
+
+/// Your own playlist's sort menu, with what each order sends to save it. Other lists'
+/// menus (Liked Music's, others' playlists') can't be saved, so they're left out.
+fn sorts(shelf: &Value) -> Vec<crate::backend::PlaylistSort> {
+    let menu = &shelf["header"]["musicSideAlignedItemRenderer"]["startItems"][0]["sortFilterSubMenuRenderer"]["subMenuItems"];
+    arr(menu)
+        .iter()
+        .filter_map(|item| {
+            let actions = &item["serviceEndpoint"]["playlistEditEndpoint"]["actions"];
+            Some(crate::backend::PlaylistSort {
+                name: item["title"].as_str()?.to_owned(),
+                on: item["selected"].as_bool() == Some(true),
+                manual: actions[0]["playlistVideoOrder"] == 0,
+                actions: actions.is_array().then(|| actions.clone())?,
+            })
+        })
+        .collect()
+}
+
+/// Save one of a playlist's sort orders to it (see [`crate::backend::PlaylistSort`]).
+pub async fn sort_playlist(api: &Api, id: &str, actions: Value) -> anyhow::Result<()> {
+    let answer = write(api, "browse/edit_playlist", json!({"playlistId": id, "actions": actions})).await?;
+    anyhow::ensure!(answer["status"].as_str().is_some_and(|s| s.contains("SUCCEEDED")), "YouTube Music didn't confirm the order");
+    Ok(())
 }
 
 /// The header of an album or playlist page; your own playlists wrap it in an editable one.
@@ -692,9 +818,37 @@ fn list_page(items: &[Value]) -> (Vec<Track>, Vec<Option<String>>, Option<String
 
 // ----------------------------------------------------------------------- artists
 
-pub async fn artist(api: &Api, id: &str) -> anyhow::Result<ArtistPage> {
-    let v = api.call("browse", json!({ "browseId": id }), false).await?;
-    parse_artist(&v, id).ok_or_else(|| anyhow::anyhow!("YouTube Music returned an empty artist page"))
+/// `auth`: ask as the account, so the page says whether it's subscribed.
+pub async fn artist(api: &Api, id: &str, auth: bool) -> anyhow::Result<ArtistPage> {
+    let asked = std::time::Instant::now();
+    let body = json!({ "browseId": id });
+    // The page is anyone's to see: a session YouTube turns away gets it signed out, the
+    // way a revoked one is answered anyway.
+    let (v, fell_back) = match api.call("browse", body.clone(), auth).await {
+        Err(e) if auth && api.account().is_some() && crate::ytmapi::session_refused(&e) => {
+            log::warn!("artist {id} signed in: {e:#}; asking signed out");
+            (api.call("browse", body, false).await?, true)
+        }
+        r => (r?, false),
+    };
+    let mut page = parse_artist(&v, id).ok_or_else(|| anyhow::anyhow!("YouTube Music returned an empty artist page"))?;
+    page.asked = asked;
+    if auth && api.account().is_some() && answered_signed_out(fell_back, &v) {
+        unknown_subscription(&mut page);
+    }
+    Ok(page)
+}
+
+/// A signed-in ask answered as no one: by the fallback, or a session Google revoked.
+fn answered_signed_out(fell_back: bool, v: &Value) -> bool {
+    fell_back || crate::ytmapi::logged_out(v)
+}
+
+/// Whether the account subscribes isn't known: no pill, rather than a Subscribe that
+/// would only fail.
+fn unknown_subscription(page: &mut ArtistPage) {
+    page.subscribed = false;
+    page.channel_id = None;
 }
 
 fn parse_artist(v: &Value, id: &str) -> Option<ArtistPage> {
@@ -708,6 +862,9 @@ fn parse_artist(v: &Value, id: &str) -> Option<ArtistPage> {
         id: id.to_owned(),
         banner: thumbs(&h["thumbnail"]["musicThumbnailRenderer"]),
         subscribers,
+        subscribed: sub["subscribed"].as_bool().unwrap_or(false),
+        channel_id: sub["channelId"].as_str().map(str::to_owned),
+        asked: std::time::Instant::now(),
         description: text(&h["description"]),
         top: Vec::new(),
         top_playlist: None,
@@ -1061,6 +1218,48 @@ pub async fn saved_albums(api: &Api) -> anyhow::Result<Vec<Card>> {
     saved(api, "4qmFsgIoEhRGRW11c2ljX2xpa2VkX2FsYnVtcxoQZ2dNR0tnUUlBQkFCb0FZQg%3D%3D").await
 }
 
+/// The artists the account subscribes to, as Library › Artists lists them.
+pub async fn subscribed_artists(api: &Api) -> anyhow::Result<Vec<Card>> {
+    let v = api.call_signed_in("browse", json!({ "browseId": "FEmusic_library_corpus_artists" })).await?;
+    let sections = arr(&v["contents"]["singleColumnBrowseResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"]);
+    // None subscribed: a message stands where the list would.
+    let Some(shelf) = sections.iter().map(|s| &s["musicShelfRenderer"]).find(|s| !s.is_null()) else { return Ok(Vec::new()) };
+    let mut cards = list_cards(arr(&shelf["contents"]));
+    let mut token = continuation(shelf).or_else(|| item_token(arr(&shelf["contents"])));
+    for _ in 0..100 {
+        let Some(t) = token.take() else { break };
+        // A later page failing keeps the pages already loaded.
+        let v = match api.call_signed_in("browse", json!({ "continuation": t })).await {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("subscribed artists page: {e}");
+                break;
+            }
+        };
+        let (more, next) = shelf_continuation(&v);
+        if more.is_empty() {
+            break;
+        }
+        cards.extend(more);
+        token = next;
+    }
+    Ok(cards)
+}
+
+/// A following page of a list shelf: its rows, and the token for the page after.
+fn shelf_continuation(v: &Value) -> (Vec<Card>, Option<String>) {
+    let appended = arr(&v["onResponseReceivedActions"][0]["appendContinuationItemsAction"]["continuationItems"]);
+    if !appended.is_empty() {
+        return (list_cards(appended), item_token(appended));
+    }
+    let more = &v["continuationContents"]["musicShelfContinuation"];
+    (list_cards(arr(&more["contents"])), continuation(more))
+}
+
+fn list_cards(items: &[Value]) -> Vec<Card> {
+    items.iter().filter_map(|i| list_card(&i["musicResponsiveListItemRenderer"])).collect()
+}
+
 /// The signed-in account's name and photo, as its account menu shows them (for a brand
 /// account, the channel's).
 pub async fn account(api: &Api) -> anyhow::Result<(Option<String>, Option<String>)> {
@@ -1212,8 +1411,11 @@ pub async fn dislike(api: &Api, video_id: &str) -> anyhow::Result<()> {
 /// playback starts. Streams come from other clients, so this asks for the player
 /// response only to get that URL. What it returns then reports how much of the song
 /// was heard ([`report_watchtime`]), as the web player does while it plays.
-pub async fn report_play(api: &Api, video_id: &str) -> anyhow::Result<Watchtime> {
-    let player = api.call_signed_in("player", json!({"videoId": video_id, "contentCheckOk": true, "racyCheckOk": true})).await?;
+///
+/// `sts` is the current player's signatureTimestamp. Without it YouTube answers
+/// UNPLAYABLE ("The page needs to be reloaded") and leaves the stats URL out.
+pub async fn report_play(api: &Api, video_id: &str, sts: Option<u32>) -> anyhow::Result<Watchtime> {
+    let player = api.call_signed_in("player", report_play_body(video_id, sts)).await?;
     let tracking = &player["playbackTracking"];
     let url = tracking["videostatsPlaybackUrl"]["baseUrl"]
         .as_str()
@@ -1226,6 +1428,14 @@ pub async fn report_play(api: &Api, video_id: &str) -> anyhow::Result<Watchtime>
         flush_at: arr(&tracking["videostatsScheduledFlushWalltimeSeconds"]).iter().filter_map(Value::as_u64).collect(),
         flush_every: tracking["videostatsDefaultFlushIntervalSeconds"].as_u64().filter(|&s| s > 0).unwrap_or(40),
     })
+}
+
+fn report_play_body(video_id: &str, sts: Option<u32>) -> Value {
+    let mut body = json!({"videoId": video_id, "contentCheckOk": true, "racyCheckOk": true});
+    if let Some(sts) = sts {
+        body["playbackContext"] = json!({"contentPlaybackContext": {"signatureTimestamp": sts}});
+    }
+    body
 }
 
 /// One play's listening-time reports: where they go and when the web player sends them.
@@ -1293,6 +1503,13 @@ pub async fn create_playlist_with(api: &Api, title: &str, video_ids: &[String]) 
 pub async fn add_videos(api: &Api, playlist_id: &str, video_ids: &[String]) -> anyhow::Result<()> {
     let actions: Vec<Value> = video_ids.iter().map(|v| json!({"action": "ACTION_ADD_VIDEO", "addedVideoId": v, "dedupeOption": "DEDUPE_OPTION_SKIP"})).collect();
     write(api, "browse/edit_playlist", json!({"playlistId": playlist_id, "actions": actions})).await?;
+    Ok(())
+}
+
+/// Subscribe to an artist's channel, or unsubscribe.
+pub async fn set_subscribed(api: &Api, channel_id: &str, on: bool) -> anyhow::Result<()> {
+    let endpoint = if on { "subscription/subscribe" } else { "subscription/unsubscribe" };
+    write(api, endpoint, json!({"channelIds": [channel_id]})).await?;
     Ok(())
 }
 
@@ -1503,7 +1720,13 @@ fn two_row(r: &Value) -> Option<Card> {
 /// What a browse endpoint opens.
 fn target(nav: &Value) -> Option<Target> {
     let id = nav["browseEndpoint"]["browseId"].as_str()?.to_owned();
+    // Your uploads' own artist and album pages, which the app can't open.
+    if id.starts_with("FEmusic_library_privately_owned_") {
+        return None;
+    }
     Some(match page_type(nav)? {
+        // An artist's songs in your library ("MPLA" and their channel): their own page opens.
+        "MUSIC_PAGE_TYPE_LIBRARY_ARTIST" => Target::Artist(id.strip_prefix("MPLA").unwrap_or(&id).to_owned()),
         "MUSIC_PAGE_TYPE_ALBUM" | "MUSIC_PAGE_TYPE_AUDIOBOOK" => Target::Album(id),
         "MUSIC_PAGE_TYPE_ARTIST" | "MUSIC_PAGE_TYPE_USER_CHANNEL" => Target::Artist(id),
         "MUSIC_PAGE_TYPE_PLAYLIST" => Target::Playlist(id.strip_prefix("VL").unwrap_or(&id).to_owned()),
@@ -1632,14 +1855,19 @@ fn list_item(r: &Value) -> Option<Track> {
     for c in 1..cols.len() {
         for (i, run) in runs(col(c)?).enumerate() {
             let name = run["text"].as_str().unwrap_or_default();
-            let kind = page_type(run);
+            // Uploads link their artist and album to the account's own uploads pages,
+            // which the artist and album pages can't open: keep the names, not the links.
+            let (kind, id) = match upload_page(run) {
+                Some(kind) => (Some(kind), None),
+                None => (page_type(run), browse_id(run)),
+            };
             if c == 1 && in_artists {
                 match name.trim() {
                     "•" => in_artists = false,
                     "" | "," | "&" => {}
                     "Song" | "Video" | "Episode" if i == 0 => {}
                     n if kind.is_none_or(|k| k == "MUSIC_PAGE_TYPE_ARTIST" || k == "MUSIC_PAGE_TYPE_USER_CHANNEL") && !looks_like_duration(n) && !n.ends_with(" plays") => {
-                        artists.push(Link { name: n.to_owned(), id: browse_id(run) })
+                        artists.push(Link { name: n.to_owned(), id: id.clone() })
                     }
                     _ => {}
                 }
@@ -1649,9 +1877,9 @@ fn list_item(r: &Value) -> Option<Track> {
             }
             match kind {
                 Some("MUSIC_PAGE_TYPE_ARTIST" | "MUSIC_PAGE_TYPE_USER_CHANNEL") if !artists.iter().any(|a| a.name == name) => {
-                    artists.push(Link { name: name.to_owned(), id: browse_id(run) })
+                    artists.push(Link { name: name.to_owned(), id })
                 }
-                Some("MUSIC_PAGE_TYPE_ALBUM") => album = Some(Link { name: name.to_owned(), id: browse_id(run) }),
+                Some("MUSIC_PAGE_TYPE_ALBUM") => album = Some(Link { name: name.to_owned(), id }),
                 // Search rows put the length in the text ("Artist • Album • 3:22").
                 _ if duration.is_none() && looks_like_duration(name) => duration = parse_duration(name),
                 _ if name.ends_with(" plays") => plays = count(name),
@@ -1769,6 +1997,20 @@ fn page_type(v: &Value) -> Option<&str> {
 
 fn browse_id(run: &Value) -> Option<String> {
     run["navigationEndpoint"]["browseEndpoint"]["browseId"].as_str().map(str::to_owned)
+}
+
+/// An uploaded song's artist or album run, read as the artist or album it names. They lead
+/// to the account's uploads ("FEmusic_library_privately_owned_artist_detail…",
+/// "…_release_detail…"), whatever page type they carry.
+fn upload_page(run: &Value) -> Option<&'static str> {
+    let rest = run["navigationEndpoint"]["browseEndpoint"]["browseId"].as_str()?.strip_prefix("FEmusic_library_privately_owned_")?;
+    if rest.starts_with("artist") {
+        Some("MUSIC_PAGE_TYPE_ARTIST")
+    } else if rest.starts_with("release") {
+        Some("MUSIC_PAGE_TYPE_ALBUM")
+    } else {
+        None
+    }
 }
 
 // ------------------------------------------------------------- the playing video's own lyrics
@@ -1904,6 +2146,34 @@ fn inner_text(v: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn play_report_asks_with_the_signature_timestamp() {
+        let body = report_play_body("gIhejm0k3dU", Some(20767));
+        assert_eq!(body["videoId"], "gIhejm0k3dU");
+        assert_eq!(body["playbackContext"]["contentPlaybackContext"]["signatureTimestamp"], 20767);
+        // Without a prepared player it asks as before rather than not at all.
+        let body = report_play_body("gIhejm0k3dU", None);
+        assert!(body.get("playbackContext").is_none());
+        assert_eq!(body["contentCheckOk"], true);
+    }
+
+    #[test]
+    fn own_playlist_sorts_come_from_the_menu() {
+        let item = |title: &str, on: bool, action: Value| json!({"title": title, "selected": on, "serviceEndpoint": {"playlistEditEndpoint": {"playlistId": "PL1", "actions": [action]}}});
+        let shelf = json!({"header": {"musicSideAlignedItemRenderer": {"startItems": [{"sortFilterSubMenuRenderer": {"subMenuItems": [
+            item("Manual ordering", false, json!({"action": "ACTION_SET_PLAYLIST_VIDEO_ORDER", "playlistVideoOrder": 0})),
+            item("Newest first", true, json!({"action": "ACTION_SET_PLAYLIST_VIDEO_ORDER", "playlistVideoOrder": 1})),
+            item("Title", false, json!({"action": "ACTION_SET_PLAYLIST_DYNAMIC_SORT_PREFERENCE", "playlistDynamicSortPreference": 1})),
+        ]}}]}}});
+        let s = sorts(&shelf);
+        let got: Vec<(&str, bool, bool)> = s.iter().map(|s| (s.name.as_str(), s.on, s.manual)).collect();
+        assert_eq!(got, [("Manual ordering", false, true), ("Newest first", true, false), ("Title", false, false)]);
+        assert_eq!(s[1].actions[0]["playlistVideoOrder"], 1);
+        // Liked Music's menu has nothing to send: no Sort of YouTube Music's there.
+        let liked = json!({"header": {"musicSideAlignedItemRenderer": {"startItems": [{"sortFilterSubMenuRenderer": {"subMenuItems": [{"title": "Newest first", "selected": true}]}}]}}});
+        assert!(sorts(&liked).is_empty());
+    }
 
     #[test]
     fn moods_and_genres_are_read_with_their_categories() {
@@ -2092,6 +2362,24 @@ mod tests {
         let t = list_item(&row(ALBUM_ROW)).unwrap();
         assert_eq!((t.title.as_str(), t.track_nr, t.duration), ("Alone Again", Some(1), Some(251)));
         assert!(t.artists.is_empty());
+    }
+
+    // Library › Uploads row, shaped like a real answer (November 2026): the artist and album lead
+    // to the account's uploads, the artist's page type UNKNOWN and the album's ALBUM.
+    const UPLOAD_ROW: &str = r#"{"musicResponsiveListItemRenderer":{"flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"A Sky Full Of Stars","navigationEndpoint":{"watchEndpoint":{"videoId":"FDpg6FxVQZU"}}}]}}},{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Coldplay","navigationEndpoint":{"browseEndpoint":{"browseId":"FEmusic_library_privately_owned_artist_detaila_po_CICr2crg7OWpchIIY29sZHBsYXk","browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_UNKNOWN"}}}}}]}}},{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Ghost Stories","navigationEndpoint":{"browseEndpoint":{"browseId":"FEmusic_library_privately_owned_release_detailb_po_CICr2crg7OWpchIOZ2hvc3Qgc3Rvcmllcw","browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_ALBUM"}}}}}]}}}],"fixedColumns":[{"musicResponsiveListItemFixedColumnRenderer":{"text":{"runs":[{"text":"4:28"}]}}}]}}"#;
+
+    #[test]
+    fn upload_row_keeps_its_artist_and_album_unlinked() {
+        let t = list_item(&row(UPLOAD_ROW)).unwrap();
+        assert_eq!(names(&t), ["Coldplay"]);
+        assert_eq!(t.artists[0].id, None);
+        assert_eq!(t.album.as_ref().map(|a| (a.name.as_str(), a.id.as_deref())), Some(("Ghost Stories", None)));
+        assert_eq!(t.duration, Some(268));
+        // Whatever page type the run carries: none, or a plain artist's.
+        let bare = UPLOAD_ROW.replace(r#","browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_UNKNOWN"}}"#, "");
+        assert_eq!(names(&list_item(&row(&bare)).unwrap()), ["Coldplay"]);
+        let plain = UPLOAD_ROW.replace("MUSIC_PAGE_TYPE_UNKNOWN", "MUSIC_PAGE_TYPE_ARTIST");
+        assert_eq!(list_item(&row(&plain)).unwrap().artists[0].id, None);
     }
 
     #[test]
@@ -2288,6 +2576,47 @@ mod tests {
     }
 
     #[test]
+    fn subscribed_artist_pages() {
+        let artist: Value = serde_json::from_str(ARTIST_ROW).unwrap();
+        let old = json!({"continuationContents": {"musicShelfContinuation": {"contents": [artist], "continuations": [{"nextContinuationData": {"continuation": "P2"}}]}}});
+        let (cards, next) = shelf_continuation(&old);
+        assert!(matches!(&cards[..], [Card { target: Target::Artist(id), .. }] if id == "UClYV6hHlupm_S_ObS1W-DYw"));
+        assert_eq!(next.as_deref(), Some("P2"));
+
+        let new = json!({"onResponseReceivedActions": [{"appendContinuationItemsAction": {"continuationItems": [
+            artist,
+            {"continuationItemRenderer": {"continuationEndpoint": {"continuationCommand": {"token": "P3"}}}}
+        ]}}]});
+        let (cards, next) = shelf_continuation(&new);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(next.as_deref(), Some("P3"));
+
+        assert_eq!(shelf_continuation(&json!({})), (Vec::new(), None));
+    }
+
+    #[test]
+    fn artist_subscription() {
+        let page = |button: Value| json!({"header": {"musicImmersiveHeaderRenderer": {"title": {"runs": [{"text": "Alex G"}]}, "subscriptionButton": button}}});
+        let followed = parse_artist(&page(json!({"subscribeButtonRenderer": {"subscribed": true, "channelId": "UCx"}})), "UCa").unwrap();
+        assert!(followed.subscribed);
+        assert_eq!(followed.channel_id.as_deref(), Some("UCx"));
+        // No button (signed out, or not a channel one can subscribe to): no pill.
+        let none = parse_artist(&page(Value::Null), "UCa").unwrap();
+        assert!(!none.subscribed);
+        assert_eq!(none.channel_id, None);
+
+        // Asked signed in, answered signed out: whether it's followed isn't known.
+        let signed_out = json!({"responseContext": {"serviceTrackingParams": [{"params": [{"key": "logged_in", "value": "0"}]}]}});
+        assert!(answered_signed_out(false, &signed_out));
+        assert!(answered_signed_out(true, &json!({})));
+        assert!(!answered_signed_out(false, &json!({})));
+        let mut p = followed;
+        unknown_subscription(&mut p);
+        assert!(!p.subscribed);
+        assert_eq!(p.channel_id, None);
+    }
+
+    #[test]
     fn counts_and_lengths() {
         assert_eq!(count("3.6B plays"), Some(3_600_000_000));
         assert_eq!(count("40.1M"), Some(40_100_000));
@@ -2344,6 +2673,24 @@ mod tests {
 
     fn video(title: &str, artists: &[&str], secs: u32) -> Track {
         Track { music_video: true, ..song(title, artists, secs) }
+    }
+
+    #[test]
+    fn the_music_video_of_a_song_is_found_by_a_sure_match_only() {
+        let song_of = song("Take On Me", &["a-ha"], 226);
+        let official = video("a-ha - Take On Me (Official Video) [4K]", &["a-ha"], 244);
+        let not_official = Track { music_video: false, video: true, ..official.clone() };
+        assert_eq!(sure_video(&song_of, vec![not_official.clone(), official.clone()]).map(|v| v.id), Some(official.id.clone()));
+        // A fan's upload of the same song isn't its music video.
+        assert_eq!(sure_video(&song_of, vec![not_official]), None);
+        // Nor is a live video, another song's, or one past the first few hits.
+        assert_eq!(sure_video(&song_of, vec![video("Take On Me (Live From MTV Unplugged)", &["a-ha"], 240)]), None);
+        assert_eq!(sure_video(&song_of, vec![video("The Sun Always Shines on T.V.", &["a-ha"], 300)]), None);
+        let others = (0..5).map(|i| video(&format!("Other {i}"), &["a-ha"], 244));
+        assert_eq!(sure_video(&song_of, others.chain([official]).collect()), None);
+        // Everyone on the video is on the song too.
+        assert_eq!(sure_video(&song("Duet", &["Singer A"], 200), vec![video("Duet", &["Singer A", "Singer B"], 200)]), None);
+        assert!(sure_video(&song("Duet", &["Singer A", "Singer B"], 200), vec![video("Duet", &["Singer A"], 200)]).is_some());
     }
 
     #[test]

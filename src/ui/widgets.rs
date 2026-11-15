@@ -683,6 +683,16 @@ pub fn menu_action(ui: &mut Ui, glyph: Option<char>, label: &str) -> bool {
     })
 }
 
+/// A menu row for one of several choices (a Sort menu's orders), ticked when it's the one
+/// on. Looks like [`menu_action`]'s rows, the tick where their icons go.
+pub fn menu_choice(ui: &mut Ui, label: &str, on: bool) -> bool {
+    menu_row(ui, label, |ui, at, color| {
+        if on {
+            icon_at(ui, at, icon::CHECK, 16.0, color);
+        }
+    })
+}
+
 /// A menu row marked with the app's own star, filled once the song is liked.
 fn menu_action_star(ui: &mut Ui, liked: bool, label: &str) -> bool {
     menu_row(ui, label, |ui, at, color| {
