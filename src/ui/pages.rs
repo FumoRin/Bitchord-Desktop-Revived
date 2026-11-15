@@ -3010,6 +3010,20 @@ fn settings_window(app: &mut App, ui: &mut Ui) {
         setting_row(ui, "Close to tray", Some("Clicking × hides the window and keeps the music playing. The tray icon is always up: left-click brings the window back, and its menu has the transport buttons, Launch at login and Quit. If the icon never shows up, launching BitChord again brings the window back; --no-tray starts a session without an icon, where × quits for real. On Linux, clicking the song in the system's media controls brings it back too, and Ctrl+Q quits."), |ui| {
             toggle(ui, &mut app.close_to_tray, "Close to tray");
         });
+        if crate::notify::SUPPORTED {
+            divider(ui);
+            let ok = crate::notify::available();
+            let desc = if ok {
+                "When a new song starts while the window is minimized, in the tray or behind other windows, show its title, artist and cover in a notification."
+            } else {
+                "Needs the installed app: Windows only shows notifications from apps in the Start menu."
+            };
+            ui.add_enabled_ui(ok, |ui| {
+                setting_row(ui, "Song notifications", Some(desc), |ui| {
+                    toggle(ui, &mut app.song_notifications, "Song notifications");
+                });
+            });
+        }
         divider(ui);
         setting_row(ui, "Launch at login", Some("Start BitChord when the computer does. The OS keeps this: the Run key on Windows, an autostart entry on Linux, a launch agent on macOS — and the tray menu's own Launch at login item flips the same switch."), |ui| {
             if toggle(ui, &mut app.launch_at_login, "Launch at login").changed() {
