@@ -218,7 +218,7 @@ pub fn saved_since(from: usize) -> (usize, Vec<Track>) {
         .iter()
         .rev()
         .filter(|id| seen.insert(id.as_str()))
-        .filter_map(|id| st.index.get(id).map(|e| listed(id.clone(), e)))
+        .filter_map(|id| Some(listed(id.clone(), st.index.get(id)?.clone())))
         .collect();
     (st.saved.len(), tracks)
 }
