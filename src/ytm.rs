@@ -1514,8 +1514,11 @@ fn parse_upload_artist(v: &Value, id: &str) -> Option<(ArtistPage, Option<String
         top_playlist: None,
         albums: Vec::new(),
         library: Vec::new(),
+        singles: Vec::new(),
         playlists: Vec::new(),
         similar: Vec::new(),
+        albums_more: None,
+        singles_more: None,
     };
     Some((page, shelf.and_then(continuation)))
 }
