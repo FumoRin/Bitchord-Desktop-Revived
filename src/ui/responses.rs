@@ -617,6 +617,11 @@ impl App {
         if self.page == Page::Home {
             self.loading = false;
         }
+        // Kept for the next launch, unless a mood filters it.
+        if let Some(h) = self.home.as_ref().filter(|h| !self.home_mood && !h.shelves.is_empty() && !h.chips.iter().any(|c| c.selected)) {
+            let cache = super::HomeCache { logged_in: self.logged_in, chips: h.chips.clone(), shelves: h.shelves.clone() };
+            super::HomeCache::store(self.backend.data_dir(), Some(cache));
+        }
     }
 
     /// The Downloads page read whole: every file looked at (disk work, so on a visit,
@@ -812,6 +817,9 @@ impl App {
         }
         self.home = None;
         self.home_loading = true;
+        self.home_mood = false;
+        // The last account's: the next launch waits for this one's.
+        super::HomeCache::store(self.backend.data_dir(), None);
         self.backend.request(Req::Home(None));
         if v {
             self.request_library();
