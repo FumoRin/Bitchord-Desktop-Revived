@@ -1203,6 +1203,8 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
         ui.painter().text(base - vec2(0.0, 18.0), Align2::LEFT_BOTTOM, format!("{} subscribers", compact(s)), theme::regular(14.0), theme::text_dim());
     }
     ui.add_space(18.0);
+    // An artist of your uploads: all your songs by them, as on the website.
+    let uploaded = crate::ytm::uploaded(id);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
         play_pill(ui, acts, &Target::Artist(id.to_owned()), top, None);
@@ -1225,7 +1227,7 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     if !top.is_empty() {
         ui.add_space(26.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Top songs").font(theme::bold(24.0)).color(theme::text()));
+            ui.label(RichText::new(if uploaded { "Songs" } else { "Top songs" }).font(theme::bold(24.0)).color(theme::text()));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // With a "Top songs" playlist behind the shelf, Show all opens it; without
                 // one, the shelf page stands in and lists everything the page holds.
@@ -1241,7 +1243,7 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
         // They can be dragged onto a playlist in the sidebar.
         let drag = &mut app.row_drag;
         let list = egui::Id::unique(("artist-top", id));
-        for (i, t) in top.iter().enumerate().take(5) {
+        for (i, t) in top.iter().enumerate().take(if uploaded { top.len() } else { 5 }) {
             // Its own scope, so a picked-up row dims alone.
             ui.push_id(i, |ui| {
                 row_drag::grip(ui, drag, list, i, t);
