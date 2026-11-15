@@ -13,7 +13,7 @@ use crate::ytm::HomePage;
 use super::{Action, App, Dialog, HomeState, LibTab, MixFrom, Page, PlayingAs, dev_var, shuffle};
 
 impl App {
-    pub(super) fn pump(&mut self, now: f64) {
+    pub(super) fn pump(&mut self, ctx: &egui::Context, now: f64) {
         // Sorted playlists load again when it's time, for their new order. One whose load
         // ended without its first page (it failed) stops waiting, so Sort comes back.
         let mut due = Vec::new();
@@ -104,6 +104,9 @@ impl App {
                 MediaControlEvent::Toggle => self.toggle(),
                 MediaControlEvent::Next => self.next(),
                 MediaControlEvent::Previous => self.prev(),
+                // The window from the OS's media controls (KDE's, say; GNOME's use the .desktop file).
+                MediaControlEvent::Raise => self.show_window(ctx),
+                MediaControlEvent::Quit => self.quit(ctx),
                 MediaControlEvent::SetVolume(v) => {
                     if let Some(v) = crate::media::volume_from_os(v) {
                         self.audio.set_volume(v);

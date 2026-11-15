@@ -331,6 +331,11 @@ impl App {
             keys.matches_once(Cmd::MiniPlayer, ctx),
         );
         let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        // Quits for real, with Close to tray on too: GNOME has no tray to quit from (#143).
+        let quit = ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Q));
+        if quit {
+            self.quit(ctx);
+        }
         if mini {
             self.actions.push(Action::Mini(!self.mini.target()));
         }
