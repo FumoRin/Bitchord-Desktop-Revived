@@ -1476,7 +1476,7 @@ impl Backend {
         // The URL is looked up meanwhile, but the playing song finishes downloading
         // first: it gets the whole bandwidth.
         let playing = self.current.lock().unwrap().as_ref().map(|(_, s)| s.clone());
-        let (found, ()) = tokio::join!(self.find_stream(&video_id, meta.as_ref()), async {
+        let (found, ()) = tokio::join!(self.find_stream(&video_id, meta.as_ref(), true), async {
             if let Some(s) = playing {
                 s.finished().await;
             }

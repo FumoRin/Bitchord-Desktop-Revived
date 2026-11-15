@@ -1870,6 +1870,12 @@ fn settings_account(app: &mut App, ui: &mut Ui) {
                 }
             });
         }
+        divider(ui);
+        // Listen together, under the account it borrows its name from: the page holds
+        // both room kinds, the relay jam and the web app's Listen Together.
+        if open_row(ui, "Listen together", &format!("Play the same music at the same moment, on up to {} devices.", crate::jam::DEFAULT_MEMBERS)) {
+            app.go(Page::Jam);
+        }
     });
     if busy && filter_show(ui, "finish signing in in the window that opened") {
         ui.add_space(6.0);
@@ -3630,6 +3636,27 @@ pub(super) fn divider(ui: &mut Ui) {
     if !filtering() {
         divider_line(ui);
     }
+}
+
+/// A settings row that opens somewhere else: the whole row is the button, with a
+/// chevron on the right. A search that doesn't find it leaves it out.
+pub(super) fn open_row(ui: &mut Ui, title: &str, desc: &str) -> bool {
+    if !filter_show(ui, &format!("{title} {desc}")) {
+        return false;
+    }
+    let w = ui.available_width();
+    let text_w = (w - 230.0).max(200.0);
+    let title_g = widgets::galley(ui, title, theme::semibold(14.5), theme::text(), text_w);
+    let desc_g = widgets::galley_wrapped(ui, desc, theme::regular(12.5), theme::text_dim(), text_w, 3);
+    let text_h = title_g.size().y + desc_g.size().y + 3.0;
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, (text_h + 26.0).max(58.0)), Sense::click());
+    let resp = named(resp, title).on_hover_cursor(egui::CursorIcon::PointingHand);
+    let top = rect.center().y - text_h / 2.0;
+    let title_h = title_g.size().y;
+    ui.painter().galley(pos2(rect.left(), top), title_g, theme::text());
+    ui.painter().galley(pos2(rect.left(), top + title_h + 3.0), desc_g, theme::text_dim());
+    widgets::icon_at(ui, pos2(rect.right() - 8.0, rect.center().y), icon::CHEVRON_RIGHT, 16.0, theme::text_faint());
+    resp.clicked()
 }
 
 fn divider_line(ui: &mut Ui) {

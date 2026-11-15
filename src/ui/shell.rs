@@ -1374,11 +1374,12 @@ pub fn queue_list(app: &mut App, ui: &mut Ui, salt: &str, bar_inset: f32) {
         let width = ui.max_rect().width() - bar_inset;
         ui.allocate_ui(vec2(width, 0.0), |ui| {
             let accent = app.accent_color();
-            let (queue, liked, acts, has_current, by, drag) = (&app.queue.tracks, &app.liked, &mut app.actions, app.queue.index.is_some(), &app.jam.by, &mut app.row_drag);
-            // Songs to come can be dragged into another order; in a jam, by the host.
-            // Kept in app state, so it survives the rows' own ids (the list is
-            // virtualized; a scrolled row hands its id to another).
-            let (list, movable) = (egui::Id::unique(("queue", salt)), !app.jam.guest());
+            let (queue, liked, acts, has_current, drag) = (&app.queue.tracks, &app.liked, &mut app.actions, app.queue.index.is_some(), &mut app.row_drag);
+            // Songs to come can be dragged into another order; in a room only the host
+            // drives, that's the relay's to say. Kept in app state, so it survives the
+            // rows' own ids (the list is virtualized; a scrolled row hands its id to
+            // another).
+            let (list, movable) = (egui::Id::unique(("queue", salt)), !app.jam.locked());
             let top = ui.cursor().top();
             // The whole queue: the songs already played stay above the one playing.
             widgets::visible_rows(ui, queue.len(), |ui, i| {
@@ -1387,7 +1388,7 @@ pub fn queue_list(app: &mut App, ui: &mut Ui, salt: &str, bar_inset: f32) {
                 if movable && (i > start || !has_current) {
                     row_drag::grip(ui, drag, list, i, t);
                 }
-                let o = widgets::RowOpts { current, added_by: by.get(&t.id).cloned(), hide_duration_hover: !current, ..rows.opts(liked, t, None, false) };
+                let o = widgets::RowOpts { current, hide_duration_hover: !current, ..rows.opts(liked, t, None, false) };
                 let resp = widgets::track_row(ui, t, &o, acts);
                 if resp.clicked() {
                     // The playing row pauses/resumes instead of doing nothing.
