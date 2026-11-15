@@ -602,6 +602,9 @@ mod tests {
         assert_eq!(parse("YTM-RS://JAM/aBc234"), Some(Invite::Jam("ABC234".into())));
         assert_eq!(parse("\"ytm-rs://jam/ABC234\""), Some(Invite::Jam("ABC234".into())));
         assert_eq!(parse("ytm-rs://jam/?c=xyz789"), Some(Invite::Jam("XYZ789".into())));
+        // The relay's alphabet has 0 and 1; I, L and O are read as the digits they shadow.
+        assert_eq!(parse("ytm-rs://jam/ABC0I1"), Some(Invite::Jam("ABC011".into())));
+        assert_eq!(parse("ytm-rs://jam/ABCOL"), Some(Invite::Jam("ABC011".into())));
         assert_eq!(parse("bitchord://party/XYZ789"), Some(Invite::Party("XYZ789".into(), None)));
         assert_eq!(
             parse("https://bitchord.kushagrasingh.in/invite/xyz789?server=party.example.com"),
@@ -635,7 +638,7 @@ mod tests {
             "ytm-rs://jam/",
             "ytm-rs://jam/ABC23",      // too short
             "ytm-rs://jam/ABC2345",    // too long
-            "ytm-rs://jam/ABC0I1",     // 0, I, 1 are not in the alphabet
+            "ytm-rs://jam/ÄBC234",     // non-ASCII falls away, and what's left is too short
             "ytm-rs://jam/ABC234/xyz", // extra path
             "ytm-rs://room/ABC234",
             "https://example.com/ytm-rs/jam/?c=ABC234",
