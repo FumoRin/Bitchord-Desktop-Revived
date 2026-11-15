@@ -604,7 +604,7 @@ mod tests {
         assert_eq!(parse("ytm-rs://jam/?c=xyz789"), Some(Invite::Jam("XYZ789".into())));
         // The relay's alphabet has 0 and 1; I, L and O are read as the digits they shadow.
         assert_eq!(parse("ytm-rs://jam/ABC0I1"), Some(Invite::Jam("ABC011".into())));
-        assert_eq!(parse("ytm-rs://jam/ABCOL"), Some(Invite::Jam("ABC011".into())));
+        assert_eq!(parse("ytm-rs://jam/ABCOIL"), Some(Invite::Jam("ABC011".into())));
         assert_eq!(parse("bitchord://party/XYZ789"), Some(Invite::Party("XYZ789".into(), None)));
         assert_eq!(
             parse("https://bitchord.kushagrasingh.in/invite/xyz789?server=party.example.com"),
