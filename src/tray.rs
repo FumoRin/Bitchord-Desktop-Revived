@@ -266,6 +266,7 @@ mod gtk_thread {
     use std::sync::mpsc::RecvTimeoutError;
     use std::time::Duration;
 
+    use super::Unsupported;
     use tray_icon::TrayIcon;
 
     thread_local! {

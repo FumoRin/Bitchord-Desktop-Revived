@@ -1039,6 +1039,8 @@ fn visuals() -> egui::Visuals {
 
 #[cfg(test)]
 mod tests {
+    // Both tests are Linux's (the portal); on other systems there'd be nothing to use.
+    #[cfg(target_os = "linux")]
     use super::*;
 
     #[cfg(target_os = "linux")]
