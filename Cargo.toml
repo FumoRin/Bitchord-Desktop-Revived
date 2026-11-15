@@ -71,6 +71,9 @@ windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_
 keyring = { version = "3.6.3", features = ["sync-secret-service", "crypto-rust"] }
 # The tray icon needs GTK running on a thread of its own.
 gtk = "0.18"
+# The desktop's light or dark style from the settings portal (theme.rs); souvlaki's
+# MPRIS uses it already.
+dbus = "0.9"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The login Keychain for the sign-ins.
