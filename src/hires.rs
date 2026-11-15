@@ -14,16 +14,33 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde_json::Value;
 
 use crate::stream::Format;
 
-/// Addons key off the desktop release line's agent (`BitChord/v1.x`); anything else is
-/// answered `403 UA_BLOCKED`. This build's own 2.x version isn't on that list, so it
-/// identifies as the desktop line the addons accept.
-pub const USER_AGENT: &str = "BitChord/v1.9";
+/// What the addon server is asked to recognise us as. Addons allow-list the desktop
+/// release line's agent (`BitChord/v1.x`) and answer `403 UA_BLOCKED` to anything else,
+/// so this build's own name goes first and the release line's is what a refusal falls
+/// back to.
+pub const USER_AGENT: &str = "Bitchord-Desktop-Revived";
+const RELEASE_AGENT: &str = "BitChord/v1.9";
+/// Set once an addon has refused our own name: it keeps the release line's agent for the
+/// rest of the session instead of being refused on every request.
+static RELEASE_LINE: AtomicBool = AtomicBool::new(false);
+
+/// The agent to ask with right now.
+pub fn agent() -> &'static str {
+    if RELEASE_LINE.load(Ordering::Relaxed) { RELEASE_AGENT } else { USER_AGENT }
+}
+
+/// Moves this session's requests over to the release line's agent.
+fn use_release_agent() {
+    RELEASE_LINE.store(true, Ordering::Relaxed);
+}
+
 const TIER: &str = "LOSSLESS";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -34,6 +51,9 @@ const STREAM_TRIES: usize = 3;
 /// before it plays; the whole race also stays inside the playback path's own budget.
 const ATMOS_GRACE: Duration = Duration::from_secs(5);
 const RACE_BUDGET: Duration = Duration::from_secs(11);
+/// The size given a stream whose addon and server don't say how big it is: room enough
+/// for ranged reads while the download finds the real end.
+pub const UNKNOWN_SIZE: u64 = 512 * 1024 * 1024;
 
 /// What the player says about the stream it is playing.
 #[derive(Clone, Debug, PartialEq)]
@@ -212,9 +232,9 @@ impl Client {
 
     /// The playable stream behind one `picks` row, probed for its size (Dolby Atmos
     /// included). A miss is `None`, not a fault.
-    pub async fn open(&self, http: &reqwest::Client, candidate: &Candidate, atmos: bool) -> anyhow::Result<Option<Stream>> {
+    pub async fn open(&self, http: &reqwest::Client, candidate: &Candidate, atmos: bool, prefetch: bool) -> anyhow::Result<Option<Stream>> {
         let manifest = self.manifest(http).await?;
-        self.stream(http, &manifest, candidate, atmos).await
+        self.stream(http, &manifest, candidate, atmos, prefetch).await
     }
 
     async fn manifest(&self, http: &reqwest::Client) -> anyhow::Result<Manifest> {
@@ -258,7 +278,7 @@ impl Client {
         Ok(found)
     }
 
-    async fn stream(&self, http: &reqwest::Client, manifest: &Manifest, candidate: &Candidate, atmos: bool) -> anyhow::Result<Option<Stream>> {
+    async fn stream(&self, http: &reqwest::Client, manifest: &Manifest, candidate: &Candidate, atmos: bool, prefetch: bool) -> anyhow::Result<Option<Stream>> {
         let mut params = manifest.defaults.clone();
         params.push(("quality".to_owned(), manifest.quality.clone()));
         if atmos {
@@ -287,6 +307,10 @@ impl Client {
             // hi-res FLAC one) is fetched whole and decoded to PCM, so it plays and
             // seeks like any other stream.
             let dash = matches!(transport.trim().to_ascii_lowercase().as_str(), "dash" | "mpd" | "application/dash+xml");
+            // A prefetch only needs somewhere to start. Fetching and decoding a whole
+            // manifest rendition is the play's job: it costs seconds and memory a
+            // prefetch that may never play shouldn't spend.
+            anyhow::ensure!(!prefetch, "a manifest rendition is fetched when the song plays");
             anyhow::ensure!(dash, "the addon returned a streaming manifest, not a file");
             let audio = crate::dash::fetch(http, &stated_url).await?;
             let size = audio.pcm.len() as u64;
@@ -316,7 +340,7 @@ impl Client {
         // large enough for ranged reads and let the download determine the real end.
         if size == 0 {
             log::info!("hi-res: stream size unknown for \"{}\", using ranged placeholder", candidate.title);
-            size = 512 * 1024 * 1024;
+            size = UNKNOWN_SIZE;
         }
         let sample_rate = json.get("sampleRate").and_then(Value::as_f64).filter(|r| *r > 0.0).map(|r| if r < 1000.0 { (r * 1000.0) as u32 } else { r as u32 })
             .or_else(|| number_before(&label, "khz").map(|r| (r * 1000.0) as u32));
@@ -450,7 +474,7 @@ fn base_url_with(base: &str, segments: &[&str]) -> anyhow::Result<url::Url> {
 /// same time; with Atmos off the first usable (lossless) answer plays, and with Atmos on
 /// the first Atmos rendition wins — otherwise the first lossless copy is held for a short
 /// grace while the rest answer, then played. `None` means no source has a copy (YouTube plays).
-pub async fn find_all(http: &reqwest::Client, sources: &[Arc<Client>], track: &crate::model::Track, atmos: bool) -> Option<Stream> {
+pub async fn find_all(http: &reqwest::Client, sources: &[Arc<Client>], track: &crate::model::Track, atmos: bool, prefetch: bool) -> Option<Stream> {
     let mut tasks = tokio::task::JoinSet::new();
     for client in sources.iter().cloned() {
         let (http, track) = (http.clone(), track.clone());
@@ -458,7 +482,7 @@ pub async fn find_all(http: &reqwest::Client, sources: &[Arc<Client>], track: &c
             let found = match find_on_monochrome(&http, &client, &track).await {
                 Some(s) => Ok(Some(s)),
                 None => match client.picks(&http, &track, atmos).await {
-                    Ok(picks) => open_first(&http, &client, &picks, atmos).await,
+                    Ok(picks) => open_first(&http, &client, &picks, atmos, prefetch).await,
                     Err(e) => Err(e),
                 },
             };
@@ -517,7 +541,7 @@ pub async fn find_all(http: &reqwest::Client, sources: &[Arc<Client>], track: &c
 
 /// The best playable row of one source: Atmos rows first when the preference is on (a
 /// miss leaves the first lossless copy held), then the plain rows.
-async fn open_first(http: &reqwest::Client, client: &Client, candidates: &[Candidate], atmos: bool) -> anyhow::Result<Option<Stream>> {
+async fn open_first(http: &reqwest::Client, client: &Client, candidates: &[Candidate], atmos: bool, prefetch: bool) -> anyhow::Result<Option<Stream>> {
     let rounds: &[bool] = if atmos { &[true, false] } else { &[false] };
     let mut held: Option<Stream> = None;
     for &round in rounds {
@@ -530,7 +554,7 @@ async fn open_first(http: &reqwest::Client, client: &Client, candidates: &[Candi
                 break;
             }
             tries += 1;
-            match client.open(http, candidate, atmos && candidate.atmos).await {
+            match client.open(http, candidate, atmos && candidate.atmos, prefetch).await {
                 Ok(Some(s)) if s.info.atmos => return Ok(Some(s)),
                 Ok(Some(s)) if usable(&s) => {
                     held.get_or_insert(s);
@@ -1024,29 +1048,44 @@ const VERSION_WORDS: &[&str] = &[
 // ── HTTP ─────────────────────────────────────────────────────────────────
 
 async fn get_json(http: &reqwest::Client, url: &str) -> anyhow::Result<Value> {
-    let response = http.get(url).timeout(REQUEST_TIMEOUT).header("Accept", "application/json").header("User-Agent", USER_AGENT).send().await.map_err(addon_err)?;
-    let status = response.status();
-    if status == reqwest::StatusCode::NOT_FOUND {
-        anyhow::bail!("not found");
-    }
-    if !status.is_success() {
-        // BitChord addon auth answers 401 (503 while its verifier can't load keys)
-        // with a JSON body naming itself; say what that means rather than "HTTP 401".
-        let body = response.text().await.unwrap_or_default();
-        if let Some(msg) = auth_answer(&body) {
-            anyhow::bail!("{} {msg}", AUTH_DESKTOP_MSG);
+    // Twice at most: a refusal is asked again under the release line's agent, which the
+    // addon does answer, and a second refusal is the addon's real answer to us.
+    for attempt in 0..2 {
+        let response = http.get(url).timeout(REQUEST_TIMEOUT).header("Accept", "application/json").header("User-Agent", agent()).send().await.map_err(addon_err)?;
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            anyhow::bail!("not found");
         }
-        // Other addons guard themselves behind a sign-in on their own site and point
-        // at it ("login":"/auth/discord/login"): they work once the listener has
-        // signed in there and pasted the personal link that comes out of it.
-        if let Some(login_url) = login_url(url, &body) {
-            anyhow::bail!("this addon needs your own sign-in link: open {login_url} in a browser, sign in, and paste the link it gives you here");
+        if !status.is_success() {
+            // A refusal of this app's own name: the release line's agent is asked once,
+            // and kept for the rest of the session if it answers. Before anything that
+            // reads the body — a 403 is the agent, not the link.
+            if status == reqwest::StatusCode::FORBIDDEN {
+                if attempt == 0 {
+                    use_release_agent();
+                    continue;
+                }
+                anyhow::bail!("the addon doesn't answer this app");
+            }
+            // BitChord addon auth answers 401 (503 while its verifier can't load keys)
+            // with a JSON body naming itself; say what that means rather than "HTTP 401".
+            let body = response.text().await.unwrap_or_default();
+            if let Some(msg) = auth_answer(&body) {
+                anyhow::bail!("{} {msg}", AUTH_DESKTOP_MSG);
+            }
+            // Other addons guard themselves behind a sign-in on their own site and point
+            // at it ("login":"/auth/discord/login"): they work once the listener has
+            // signed in there and pasted the personal link that comes out of it.
+            if let Some(login_url) = login_url(url, &body) {
+                anyhow::bail!("this addon needs your own sign-in link: open {login_url} in a browser, sign in, and paste the link it gives you here");
+            }
+            anyhow::bail!("HTTP {}", status.as_u16());
         }
-        anyhow::bail!("HTTP {}", status.as_u16());
+        let bytes = response.bytes().await.map_err(addon_err)?;
+        anyhow::ensure!(!bytes.is_empty(), "the addon answered with nothing");
+        return Ok(serde_json::from_slice(&bytes)?);
     }
-    let bytes = response.bytes().await.map_err(addon_err)?;
-    anyhow::ensure!(!bytes.is_empty(), "the addon answered with nothing");
-    Ok(serde_json::from_slice(&bytes)?)
+    anyhow::bail!("the addon doesn't answer this app")
 }
 
 /// Addon links carry a token: a request failure names its kind, never the URL the
@@ -1091,13 +1130,13 @@ fn login_url(request: &str, body: &str) -> Option<String> {
 
 /// How many bytes the stream holds, from a HEAD or a one-byte range request.
 async fn content_size(http: &reqwest::Client, url: &str) -> Option<u64> {
-    if let Ok(response) = http.head(url).timeout(PROBE_TIMEOUT).header("User-Agent", USER_AGENT).send().await
+    if let Ok(response) = http.head(url).timeout(PROBE_TIMEOUT).header("User-Agent", agent()).send().await
         && response.status().is_success()
         && let Some(size) = response.content_length().filter(|n| *n > 0)
     {
         return Some(size);
     }
-    let response = http.get(url).timeout(PROBE_TIMEOUT).header("User-Agent", USER_AGENT).header("Range", "bytes=0-0").header("Accept-Encoding", "identity").send().await.ok()?;
+    let response = http.get(url).timeout(PROBE_TIMEOUT).header("User-Agent", agent()).header("Range", "bytes=0-0").header("Accept-Encoding", "identity").send().await.ok()?;
     if let Some(range) = response.headers().get(reqwest::header::CONTENT_RANGE).and_then(|v| v.to_str().ok())
         && let Some(total) = range.rsplit('/').next().and_then(|s| s.trim().parse::<u64>().ok())
     {

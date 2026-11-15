@@ -745,6 +745,8 @@ fn cover_column(app: &mut App, ui: &mut Ui, col: Rect, track: &crate::model::Tra
             ui.painter().rect_filled(art, cr, theme::shade(1.0 - cs.brightness));
         }
     }
+    // Stats for nerds, on the foot of the sleeve: what the decoder is being fed.
+    nerd_stats(app, ui, art, round);
     // Title and artists: 17 semibold over 15 secondary, left-aligned to the art.
     let w = side;
     let x0 = art.left();
@@ -1340,7 +1342,7 @@ fn quality_mark_aspect(atmos: bool) -> f32 {
 /// The icon as white pixels with its own alpha, so it takes the badge's tint.
 fn quality_icon_texture(ui: &Ui, atmos: bool, mark: bool) -> egui::TextureHandle {
     let ctx = ui.ctx();
-    let id = egui::Id::unique(("quality-icon", atmos, mark));
+    let id = egui::Id::new(("quality-icon", atmos, mark));
     if let Some(tex) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
         return tex;
     }
@@ -1368,7 +1370,14 @@ fn paint_quality_icon(ui: &Ui, center: egui::Pos2, height: f32, atmos: bool, tin
 
 /// How wide the quality mark is, so a line can leave room for it.
 pub(super) fn audio_badge_width(ui: &Ui, app: &App, small: bool) -> f32 {
-    let Some((_, info)) = app.audio_info.as_ref() else { return 0.0 };
+    let Some((_, info)) = app.audio_info.as_ref() else {
+        if app.upgrading_quality {
+            let label = "Upgrading quality";
+            let text = widgets::galley(ui, label, badge_font(small), Color32::WHITE, 200.0).size().x;
+            return text + glyph_side(small) + 5.0;
+        }
+        return 0.0;
+    };
     let gh = glyph_side(small);
     if info.atmos && !app.mixing() {
         return gh * quality_icon_aspect(true);
@@ -1381,6 +1390,29 @@ pub(super) fn audio_badge_width(ui: &Ui, app: &App, small: bool) -> f32 {
 /// The quality mark — a glyph and the stream's name, tinted with the theme — drawn at
 /// `at`; a click opens its details. Returns how much room it took.
 pub(super) fn audio_badge(app: &App, ui: &mut Ui, at: egui::Pos2, small: bool) -> f32 {
+    if app.audio_info.is_none() && app.upgrading_quality {
+        // A background upgrade at work: the wave pulses while the addons are asked.
+        let font = badge_font(small);
+        let gh = glyph_side(small);
+        let now = ui.input(|i| i.time);
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+        let pulse = ((now * 3.5).sin() * 0.5 + 0.5) as f32;
+        let alpha = 0.35 + 0.65 * pulse;
+        let accent = app.accent_color();
+        let ink = theme::with_alpha(theme::lerp_color(accent, Color32::WHITE, 0.20), alpha);
+        let mark = theme::with_alpha(accent, alpha);
+        let g = widgets::galley(ui, "Upgrading quality", font, ink, 200.0);
+        let w = audio_badge_width(ui, app, small);
+        let h = g.size().y.max(gh);
+        let rect = Rect::from_min_size(at, vec2(w, h));
+        let resp = ui.interact(rect, ui.scope_id().with("audio-badge-upgrading"), Sense::hover());
+        named(resp, "Audio quality").on_hover_text("Checking hi-res addons and upgrading audio quality...");
+        let mut x = at.x;
+        super::glyphs::draw(ui, pos2(x + gh / 2.0, at.y + h / 2.0), gh, super::glyphs::WAVE, mark);
+        x += gh + 5.0;
+        ui.painter().galley(pos2(x, at.y + (h - g.size().y) / 2.0), g, ink);
+        return w;
+    }
     let Some((_, info)) = app.audio_info.as_ref() else { return 0.0 };
     let font = badge_font(small);
     // A mix in progress wears its own name over the quality mark; the details keep the truth.
@@ -1420,11 +1452,25 @@ pub(super) fn audio_badge(app: &App, ui: &mut Ui, at: egui::Pos2, small: bool) -
 
 /// Just the quality glyph, centred on `center`, for the mini player's artist line.
 pub(super) fn audio_badge_icon_width(app: &App, small: bool) -> f32 {
+    if app.audio_info.is_none() && app.upgrading_quality {
+        return glyph_side(small);
+    }
     let Some((_, info)) = app.audio_info.as_ref().filter(|(_, i)| has_quality_glyph(i)) else { return 0.0 };
     glyph_side(small) * quality_mark_aspect(info.atmos)
 }
 
 pub(super) fn audio_badge_icon(app: &App, ui: &mut Ui, center: egui::Pos2, small: bool) {
+    if app.audio_info.is_none() && app.upgrading_quality {
+        let gh = glyph_side(small);
+        let now = ui.input(|i| i.time);
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+        let pulse = ((now * 3.5).sin() * 0.5 + 0.5) as f32;
+        let alpha = 0.35 + 0.65 * pulse;
+        let accent = app.accent_color();
+        let mark = theme::with_alpha(accent, alpha);
+        super::glyphs::draw(ui, center, gh, super::glyphs::WAVE, mark);
+        return;
+    }
     let Some((_, info)) = app.audio_info.as_ref().filter(|(_, i)| has_quality_glyph(i)) else { return };
     let gh = glyph_side(small);
     let rect = Rect::from_center_size(center, vec2(gh * quality_mark_aspect(info.atmos), gh));
@@ -1524,6 +1570,48 @@ fn rate_text(hz: u32) -> String {
 
 fn size_text(bytes: u64) -> String {
     if bytes >= 1024 * 1024 { format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0)) } else { format!("{:.0} KB", bytes as f64 / 1024.0) }
+}
+
+fn channels_text(n: u16) -> String {
+    match n {
+        1 => "Mono".to_owned(),
+        2 => "Stereo".to_owned(),
+        _ => format!("{n} channels"),
+    }
+}
+
+/// Stats for nerds, on the foot of the sleeve: what the decoder is being fed, from
+/// whichever source. Nothing while the setting is off.
+fn nerd_stats(app: &App, ui: &Ui, art: Rect, round: bool) {
+    let Some((_, stats)) = app.stream_stats.as_ref().filter(|_| app.show_nerd_stats) else { return };
+    let ink = theme::with_alpha(Color32::WHITE, 0.65);
+    let g = widgets::galley(ui, &stats_line(stats), theme::semibold(11.0), ink, art.width() - 20.0);
+    // A disc narrows toward its foot: the line rises until it fits across.
+    let foot = if round {
+        let r = art.width() / 2.0;
+        let half = (g.size().x / 2.0 + 10.0).min(r);
+        art.center().y + (r * r - half * half).sqrt() - 8.0
+    } else {
+        art.bottom() - 8.0
+    };
+    let at = pos2(art.center().x - g.size().x / 2.0, foot - g.size().y);
+    // Plain white washes out over a pale cover; the shadow under it keeps it legible.
+    ui.painter().galley_with_override_text_color(at + vec2(0.0, 1.0), g.clone(), Color32::from_black_alpha(140));
+    ui.painter().galley(at, g, ink);
+}
+
+/// The stats as one line: `Opus · 48 kHz · 133 kbps · Stereo`.
+fn stats_line(s: &crate::stream::Stats) -> String {
+    let mut parts = vec![s.codec.clone()];
+    if let Some(bits) = s.bit_depth {
+        parts.push(format!("{bits}-bit"));
+    }
+    parts.push(rate_text(s.sample_rate));
+    if let Some(kbps) = s.bitrate_kbps {
+        parts.push(format!("{} kbps", thousands(kbps)));
+    }
+    parts.push(channels_text(s.channels));
+    parts.join(" · ")
 }
 
 /// A lyrics source: its sync type's dot, name and sync type, with a check on the one shown.

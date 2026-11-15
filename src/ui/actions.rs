@@ -294,12 +294,21 @@ impl App {
                 let listed = self.current_id().map(str::to_owned);
                 let playing = self.playing_track().map(|t| t.id.clone()).or(listed.clone());
                 let Some(id) = playing else { return };
-                let at = self.audio.status.position();
                 self.backend.upgrade_quality(&id);
                 if let Some(listed) = listed.filter(|l| l != &id) {
                     self.backend.upgrade_quality(&listed);
                 }
-                self.play_current_at(at, false);
+                if self.hires_sources.is_empty() {
+                    self.toast("No hi-res source is set. Add one in Settings \u{203a} Music sources first.");
+                } else if self.audio_info.is_none() && self.audio.status.wanted_gen.load(std::sync::atomic::Ordering::Relaxed) == self.generation {
+                    // Ask for the stream that is playing, in place. The backend reports the
+                    // attempt either way, so nothing here claims success on its own.
+                    self.upgrade_asked = true;
+                    self.backend.try_upgrade_active(self.generation, self.playing_track().cloned());
+                } else {
+                    let at = self.audio.status.position();
+                    self.play_current_at(at, false);
+                }
             }
         }
     }
@@ -313,7 +322,7 @@ impl App {
         }
         let keys = &self.keybinds.bindings;
         use keybinds::Cmd;
-        let (space, back, fwd, next, prev, seek_bwd, seek_fwd, lyr, queue, np, full, search, vol_up, vol_down, mini) = (
+        let (space, back, fwd, next, prev, seek_bwd, seek_fwd, lyr, queue, np, full, search, vol_up, vol_down, mute, mini) = (
             keys.matches(Cmd::TogglePlay, ctx),
             keys.matches(Cmd::Back, ctx) || ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Extra1)),
             keys.matches(Cmd::Forward, ctx) || ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Extra2)),
@@ -329,6 +338,7 @@ impl App {
             keys.matches(Cmd::VolumeUp, ctx),
             keys.matches(Cmd::VolumeDown, ctx),
             // Once per press: holding it doesn't flip back and forth.
+            keys.matches_once(Cmd::Mute, ctx),
             keys.matches_once(Cmd::MiniPlayer, ctx),
         );
         let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
@@ -415,6 +425,10 @@ impl App {
         if vol_up || vol_down {
             let v = (self.audio.volume() + if vol_up { 0.05 } else { -0.05 }).clamp(0.0, 1.0);
             self.audio.set_volume(v);
+        }
+        // M, like the player bar's speaker: the volume it was at comes back on unmute.
+        if mute {
+            super::shell::toggle_mute(self, ctx);
         }
     }
 

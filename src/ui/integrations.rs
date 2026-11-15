@@ -120,9 +120,18 @@ impl App {
         let speed = self.audio.status.speed() as f64;
         let start_ms = now - (self.audio.status.position().as_millis() as f64 / speed) as i64;
         let dur = (self.audio.status.duration_ms.load(Ordering::Relaxed) as f64 / speed) as i64;
-        // Position ticks every 100 ms; only a jump of 2 s or more is a real seek.
+        // The full quality line the player's track-info shows; YouTube's own audio is
+        // the plain compressed one, so it has no detail numbers.
+        let quality = self.audio_info.as_ref().map_or_else(|| "High".to_owned(), |(_, i)| i.rpc_line());
+        // Position ticks every 100 ms; only a jump of 2 s or more is a real seek. A
+        // quality change (a hi-res upgrade landing mid-song) is a new card too.
         let same = match (track, &self.discord_sent) {
-            (Some(t), Some(b)) => b.video_id == t.id && (start_ms - b.start_ms).abs() < 2000 && b.end_ms.map_or(dur <= 0, |e| (e - (start_ms + dur)).abs() < 2000),
+            (Some(t), Some(b)) => {
+                b.video_id == t.id
+                    && (start_ms - b.start_ms).abs() < 2000
+                    && b.end_ms.map_or(dur <= 0, |e| (e - (start_ms + dur)).abs() < 2000)
+                    && b.quality.as_deref() == Some(quality.as_str())
+            }
             (None, None) => true,
             _ => false,
         };
@@ -135,6 +144,7 @@ impl App {
             artist: t.artist_line(),
             album: t.album.as_ref().map(|a| a.name.clone()),
             art: backend::art_url(t),
+            quality: Some(quality),
             start_ms,
             end_ms: (dur > 0).then_some(start_ms + dur),
         });

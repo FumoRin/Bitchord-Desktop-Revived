@@ -681,17 +681,18 @@ fn search(app: &mut App, ui: &mut Ui, q: &str, now: f64) {
     // Top result: the first artist when the query names one, otherwise the first song.
     ui.horizontal_top(|ui| {
         if let Some(top) = r.artists.first().filter(|a| a.title.eq_ignore_ascii_case(q.trim())) {
-            top_result(ui, top, false, acts);
+            top_result(ui, top, false, false, acts);
         } else if let Some(t) = tracks.first().copied() {
             let c = Card {
                 title: t.title.clone(),
-                subtitle: format!("Song • {}", t.artist_line()),
+                subtitle: format!("{} • {}", if t.music_video { "Video" } else { "Song" }, t.artist_line()),
                 thumbs: t.thumbs.clone(),
                 target: Target::Song(t.clone()),
                 round: false,
                 links: t.artists.clone(),
             };
-            top_result(ui, &c, pick, acts);
+            let liked_it = liked.contains(&t.id);
+            top_result(ui, &c, pick, liked_it, acts);
         }
         ui.add_space(24.0);
         ui.vertical(|ui| {
@@ -701,7 +702,8 @@ fn search(app: &mut App, ui: &mut Ui, q: &str, now: f64) {
                 // Its own scope, so a picked-up row dims alone.
                 ui.push_id(i, |ui| {
                     row_drag::grip(ui, drag, ids("songs"), i, t);
-                    let o = RowOpts { pick, ..rows.opts(liked, t, None, false) };
+                    // The album beside the artist, as every other song row shows it.
+                    let o = RowOpts { pick, ..rows.opts(liked, t, None, true) };
                     if track_row(ui, t, &o, acts).clicked() {
                         acts.push(play(t));
                     }
@@ -818,7 +820,7 @@ fn recent_searches(ui: &mut Ui, app: &mut App) {
 }
 
 /// `pick`: choosing a transfer match, so clicking a song picks it.
-fn top_result(ui: &mut Ui, c: &Card, pick: bool, acts: &mut Vec<Action>) {    ui.vertical(|ui| {
+fn top_result(ui: &mut Ui, c: &Card, pick: bool, liked: bool, acts: &mut Vec<Action>) {    ui.vertical(|ui| {
         ui.label(RichText::new("Top result").font(theme::bold(24.0)));
         ui.add_space(8.0);
         let (rect, resp) = ui.allocate_exact_size(vec2(420.0, 236.0), Sense::click());
@@ -852,6 +854,8 @@ fn top_result(ui: &mut Ui, c: &Card, pick: bool, acts: &mut Vec<Action>) {    ui
                 t => Action::Open(t.clone()),
             });
         }
+        // Right-click the box for the same menu the tile's ⋮ carries.
+        egui::Popup::context_menu(&resp).show(|ui| widgets::card_menu_contents(ui, c, liked, acts));
     });
 }
 
@@ -2270,6 +2274,23 @@ fn bitchord_addons_editor(app: &mut App, ui: &mut Ui) {
         edited = true;
     }
     if edited {
+        // One row per distinct link: an exact repeat of one already listed is dropped
+        // (it would fire duplicate searches and streams at one server, which is how a
+        // working source starts answering 502). A different link on the same host is a
+        // separate source the user asked for and stays.
+        let mut seen = std::collections::HashSet::new();
+        let mut i = 0;
+        while i < app.hires_sources.len() {
+            let key = app.hires_sources[i].trim().to_owned();
+            if !key.is_empty() && !seen.insert(key) {
+                app.hires_sources.remove(i);
+                if i < app.hires_enabled.len() {
+                    app.hires_enabled.remove(i);
+                }
+            } else {
+                i += 1;
+            }
+        }
         app.backend.set_hires_source(&live_sources(app));
     }
     if app.hires_adding {
@@ -2289,7 +2310,9 @@ fn bitchord_addons_editor(app: &mut App, ui: &mut Ui) {
                 }
             });
             hires_test_line(app, ui, &typed);
-            if resp.lost_focus() {
+            // Enter commits without needing to click away; clicking elsewhere does too.
+            let enter = resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if resp.lost_focus() || enter {
                 let link = app.hires_draft.trim().to_owned();
                 if !link.is_empty() && !app.hires_sources.iter().any(|s| s.trim() == link) {
                     app.hires_sources.push(link);
@@ -2598,6 +2621,14 @@ fn settings_saavn(app: &mut App, ui: &mut Ui) {
             if toggle(ui, &mut app.prefer_atmos, "Prefer Dolby Atmos").changed() {
                 app.backend.set_prefer_atmos(app.prefer_atmos);
             }
+        });
+        setting_row(ui, "Play YouTube first, upgrade after", Some("Start every song from YouTube at once and swap in the hi-res copy in place when an addon answers, instead of waiting for the addons before the song starts."), |ui| {
+            if toggle(ui, &mut app.disable_direct_stream, "Play YouTube first, upgrade after").changed() {
+                app.backend.set_disable_direct_stream(app.disable_direct_stream);
+            }
+        });
+        setting_row(ui, "Stats for nerds", Some("Show the codec, sample rate and bitrate of what's playing at the foot of the cover in Now playing, whatever the source."), |ui| {
+            toggle(ui, &mut app.show_nerd_stats, "Stats for nerds");
         });
     });
 }

@@ -662,7 +662,7 @@ pub fn download_veil(ui: &Ui, img: Rect, radius: f32, id: &str) {
     ui.painter().with_clip_rect(Rect::from_min_max(img.min, pos2(img.right(), y))).rect_filled(img, radius, theme::shade(0.62 * on));
 }
 
-fn card_menu_contents(ui: &mut Ui, c: &Card, liked: bool, acts: &mut Vec<Action>) {
+pub(crate) fn card_menu_contents(ui: &mut Ui, c: &Card, liked: bool, acts: &mut Vec<Action>) {
     match &c.target {
         Target::Song(t) => song_menu(ui, t, liked, None, acts),
         t => {
