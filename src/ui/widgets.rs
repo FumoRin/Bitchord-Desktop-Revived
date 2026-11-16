@@ -762,15 +762,13 @@ pub fn song_menu(ui: &mut Ui, t: &Track, liked: bool, remove: Option<usize>, act
 }
 
 /// The song menu's items, for menus that add their own (now playing's options).
-/// `like`: the Like and Dislike rows — off in now playing's ⋯ menu, where the star
-/// already sits under the cover and a rating doesn't belong.
+/// `like`: the Like row — off in now playing's ⋯ menu, where the star already sits
+/// under the cover and a rating doesn't belong. The Dislike button is gone: the
+/// app's loop and queue tools are the right way to steer what plays next.
 pub fn song_actions(ui: &mut Ui, t: &Track, liked: bool, remove: Option<usize>, acts: &mut Vec<Action>, like: bool) {
     if like {
         if menu_action_star(ui, liked, if liked { "Remove like" } else { "Like song" }) {
             acts.push(Action::Like(t.clone(), !liked));
-        }
-        if menu_action(ui, Some(icon::THUMBS_DOWN), "Dislike") {
-            acts.push(Action::Dislike(t.clone()));
         }
         ui.separator();
     }

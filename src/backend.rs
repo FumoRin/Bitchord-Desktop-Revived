@@ -112,7 +112,6 @@ pub enum Req {
     Like { video_id: String, like: bool },
     /// Several likes (or unlikes) one after another, for a selection.
     LikeMany { video_ids: Vec<String>, like: bool },
-    Dislike(String),
     CreatePlaylist { title: String, video_ids: Vec<String> },
     EditPlaylist { id: String, title: String, description: String, privacy: Option<String> },
     AddToPlaylist { playlist_id: String, video_ids: Vec<String> },
@@ -167,7 +166,6 @@ impl Req {
             Req::Prefetch { .. } => "Prefetch",
             Req::VideoStream { .. } | Req::MusicVideo(_) => "Video",
             Req::Like { .. } | Req::LikeMany { .. } => "Like",
-            Req::Dislike(_) => "Dislike",
             Req::CreatePlaylist { .. } => "Create playlist",
             Req::EditPlaylist { .. } => "Edit playlist",
             Req::AddToPlaylist { .. } => "Add to playlist",
@@ -1246,10 +1244,6 @@ impl Backend {
                     Resp::Liked { video_id, like }
                 }
                 Req::LikeMany { video_ids, like } => self.like_many(video_ids, like).await?,
-                Req::Dislike(video_id) => {
-                    ytm::dislike(api, &video_id).await?;
-                    Resp::Liked { video_id, like: false }
-                }
                 Req::CreatePlaylist { title, video_ids } => {
                     let id = match video_ids.as_slice() {
                         [] => ytm::create_playlist(api, &title, None).await?,
@@ -2513,7 +2507,10 @@ impl Backend {
     }
 
     /// After playback starts on YouTube, opportunistically look for a hi-res
-    /// rendition from the addons and upgrade the playing stream in place.
+    /// rendition from the configured music sources (addons, Monochrome servers the
+    /// listener added, Monochrome's built-in streamer, or JioSaavn) and upgrade the
+    /// playing stream in place. Mirrors `resolve`'s source loop so the same sources
+    /// that would have played directly can still take over after the fact.
     async fn try_upgrade_hires(&self, video_id: String, generation: u64, track: Track) {
         if self.audio.status.wanted_gen.load(Ordering::Relaxed) != generation {
             return;
@@ -2521,8 +2518,14 @@ impl Backend {
         if self.reverted.lock().unwrap().contains(&video_id) {
             return;
         }
-        let hires = self.hires.read().unwrap().clone();
-        if hires.is_empty() {
+        // Snapshot the configured sources and the addon clients together: the
+        // upgrade can come from any of them, in the order Settings › Music sources
+        // lists them. YouTube is the fallback the user is already playing, so it's
+        // skipped here.
+        let sources = self.sources.read().unwrap().clone();
+        let hires_clients = self.hires.read().unwrap().clone();
+        let has_upgrade_path = sources.iter().any(|(kind, on)| *on && *kind != MusicSource::Youtube);
+        if !has_upgrade_path {
             return;
         }
 
@@ -2541,14 +2544,48 @@ impl Backend {
         let _guard = UpgradeGuard { backend: self, generation };
 
         let started = std::time::Instant::now();
-        let stream_res = match tokio::time::timeout(HIRES_WAIT, self.from_hires(&hires, &track, false)).await {
-            Ok(Some(s)) => s,
-            Ok(None) => {
-                log::info!("{video_id}: no hi-res source has a copy ({:.1}s)", started.elapsed().as_secs_f32());
+        // Each source gets its own `HIRES_WAIT`, the way `resolve` does: a slow addon
+        // shouldn't keep a faster provider from answering, and the song keeps playing
+        // from YouTube while this runs.
+        let mut found: Option<(Source, ResolvedStream)> = None;
+        for (kind, on) in sources {
+            if !on || kind == MusicSource::Youtube {
+                continue;
+            }
+            if self.audio.status.wanted_gen.load(Ordering::Relaxed) != generation {
+                log::debug!("hi-res upgrade for {video_id} dropped: generation changed");
                 return;
             }
-            Err(_) => {
-                log::info!("{video_id}: the hi-res sources gave no answer in {HIRES_WAIT:?}");
+            if self.reverted.lock().unwrap().contains(&video_id) {
+                log::debug!("hi-res upgrade for {video_id} dropped: reverted to YouTube");
+                return;
+            }
+            let s = match kind {
+                MusicSource::Addons => {
+                    if hires_clients.is_empty() {
+                        continue;
+                    }
+                    tokio::time::timeout(HIRES_WAIT, self.from_hires(&hires_clients, &track, false))
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|s| (Source::HiRes, s))
+                }
+                MusicSource::MonoServers => tokio::time::timeout(HIRES_WAIT, self.from_mono(providers::Which::Added, &track)).await.ok().flatten().map(|s| (Source::Provider, s)),
+                MusicSource::Monochrome => tokio::time::timeout(HIRES_WAIT, self.from_mono(providers::Which::Builtin, &track)).await.ok().flatten().map(|s| (Source::Provider, s)),
+                MusicSource::JioSaavn => tokio::time::timeout(HIRES_WAIT, self.from_jiosaavn(&track)).await.ok().flatten().map(|s| (Source::Provider, s)),
+                MusicSource::Youtube => continue,
+            };
+            if let Some(s) = s {
+                found = Some(s);
+                break;
+            }
+            log::info!("{video_id}: {} had nothing ({:.1}s)", kind.label(), started.elapsed().as_secs_f32());
+        }
+        let (source, stream_res) = match found {
+            Some(s) => s,
+            None => {
+                log::info!("{video_id}: no hi-res source or provider has a copy ({:.1}s)", started.elapsed().as_secs_f32());
                 return;
             }
         };
@@ -2564,9 +2601,11 @@ impl Backend {
 
         if let Some(info) = stream_res.info.as_ref() {
             log::info!("{video_id}: upgrading to {} audio from {}", info.badge(), info.source);
+        } else {
+            log::info!("{video_id}: upgrading from {:?}", source);
         }
 
-        let (source, s) = (Source::HiRes, stream_res);
+        let (source, s) = (source, stream_res);
         let shared = if let Some(data) = s.data {
             Shared::from_bytes_with_format(data, s.duration_ms, s.loudness_db, s.format.clone(), s.info.clone())
         } else {

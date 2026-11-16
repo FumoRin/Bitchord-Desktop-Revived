@@ -1214,16 +1214,12 @@ fn options_menu(app: &mut App, ui: &mut Ui, rect: Rect, track: &crate::model::Tr
             quality_rows(app, ui);
             menu_divider(ui);
         }
-        // No Like/Dislike here: the star under the cover does the liking, and this menu
+        // No Like here: the star under the cover does the liking, and this menu
         // keeps to what a playing song's ⋯ is for.
         widgets::song_actions(ui, track, false, None, &mut app.actions, false);
         menu_divider(ui);
-        if widgets::menu_action(ui, Some(icon::LIST_PLUS), "Play next") {
-            app.actions.push(Action::PlayNext(track.clone()));
-        }
-        if widgets::menu_action(ui, Some(icon::LIST_MUSIC), "Add to queue") {
-            app.actions.push(Action::Enqueue(track.clone()));
-        }
+        // No "Play next" / "Add to queue" here: the song is already playing, and the
+        // loop button on the player bar is the right tool for what comes next.
         let queue = app.np_tab == NpTab::UpNext;
         if widgets::menu_action(ui, Some(icon::LIST_MUSIC), if queue { "View lyrics" } else { "View queue" }) {
             app.np_tab = if queue { NpTab::Lyrics } else { NpTab::UpNext };
@@ -1239,7 +1235,15 @@ fn options_menu(app: &mut App, ui: &mut Ui, rect: Rect, track: &crate::model::Tr
         }
         // Quality toggle at the bottom: revert when hi-res is playing, upgrade when not.
         let hires_playing = app.audio_info.as_ref().is_some_and(|(_, i)| i.lossless() || i.atmos);
-        if hires_playing || !app.hires_sources.is_empty() {
+        // The upgrade button shows whenever an upgrade could come from somewhere —
+        // any of the configured music sources, not just the custom addon URLs, since
+        // Monochrome servers, Monochrome's built-in streamer, and JioSaavn all swap
+        // a YouTube stream in place the same way (see `try_upgrade_hires`).
+        let addons_ready = app.addons_on && app.hires_sources.iter().enumerate().any(|(i, s)| {
+            !s.trim().is_empty() && app.hires_enabled.get(i).copied().unwrap_or(true)
+        });
+        let any_upgrade_source = addons_ready || app.mono_servers_on || app.monochrome || app.jiosaavn;
+        if hires_playing || any_upgrade_source {
             menu_divider(ui);
             if hires_playing {
                 if widgets::menu_action(ui, Some(icon::MUSIC), "Revert quality") {

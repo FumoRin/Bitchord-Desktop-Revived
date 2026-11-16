@@ -173,11 +173,6 @@ impl App {
                 }
                 self.backend.request(Req::LikeMany { video_ids: tracks.into_iter().map(|t| t.id).collect(), like });
             }
-            Action::Dislike(t) => {
-                if !self.logged_in { self.toast("Sign in to rate songs"); return; }
-                self.set_liked(std::slice::from_ref(&t), false);
-                self.backend.request(Req::Dislike(t.id));
-            }
             Action::Share(target) => {
                 self.share_pending = Some(share_url(&target));
                 self.toast("Link copied");
@@ -295,8 +290,16 @@ impl App {
                 if let Some(listed) = listed.filter(|l| l != &id) {
                     self.backend.upgrade_quality(&listed);
                 }
-                if self.hires_sources.is_empty() {
-                    self.toast("No hi-res source is set. Add one in Settings \u{203a} Music sources first.");
+                // An upgrade can come from any music source that's on, not just the
+                // custom addon URLs: Monochrome servers the listener added, Monochrome's
+                // own streamer, or JioSaavn all take over in place the same way. The
+                // Addons row counts only when it's on and has at least one enabled link.
+                let addons_ready = self.addons_on && self.hires_sources.iter().enumerate().any(|(i, s)| {
+                    !s.trim().is_empty() && self.hires_enabled.get(i).copied().unwrap_or(true)
+                });
+                let any_upgrade_source = addons_ready || self.mono_servers_on || self.monochrome || self.jiosaavn;
+                if !any_upgrade_source {
+                    self.toast("No music source is set to upgrade from. Add one in Settings \u{203a} Music sources first.");
                 } else if self.audio_info.is_none() && self.audio.status.wanted_gen.load(std::sync::atomic::Ordering::Relaxed) == self.generation {
                     // Ask for the stream that is playing, in place. The backend reports the
                     // attempt either way, so nothing here claims success on its own.

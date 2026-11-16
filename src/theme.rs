@@ -437,7 +437,6 @@ pub mod icon {
     pub const VOLUME_1: char = '\u{e1aa}';
     pub const VOLUME_X: char = '\u{e1ac}';
     pub const HEART: char = '\u{e0f2}';
-    pub const THUMBS_DOWN: char = '\u{e189}';
     pub const LIST_MUSIC: char = '\u{e2e0}';
     pub const X: char = '\u{e1b2}';
     pub const HISTORY: char = '\u{e1f5}';
@@ -512,10 +511,15 @@ const LYRIC_FONTS: &[(&str, [&[u8]; 3])] = &[
         include_bytes!("../assets/fonts/InstrumentSans-SemiBold.ttf"),
         include_bytes!("../assets/fonts/InstrumentSans-SemiBold.ttf"),
     ]),
+    ("jetbrainsnerd", [
+        include_bytes!("../assets/fonts/JetBrainsMonoNerdFont-Regular.ttf"),
+        include_bytes!("../assets/fonts/JetBrainsMonoNerdFont-SemiBold.ttf"),
+        include_bytes!("../assets/fonts/JetBrainsMonoNerdFont-Bold.ttf"),
+    ]),
 ];
 
 /// The bundled faces, by the names the font setting shows and stores.
-pub const BUNDLED_FONTS: &[&str] = &["SF Pro Display", "Inter", "DM Sans", "Figtree", "Google Sans Flex", "Instrument Sans"];
+pub const BUNDLED_FONTS: &[&str] = &["SF Pro Display", "Inter", "DM Sans", "Figtree", "Google Sans Flex", "Instrument Sans", "JetBrains Mono Nerd"];
 
 /// The bundled font a preset font name refers to. Fonts that can't be bundled
 /// (Spotify's) map to the closest open one; unknown names to Inter.
@@ -526,6 +530,7 @@ fn lyric_key(name: &str) -> Option<&'static str> {
         "googlesansflex" | "googlesans" => "googlesansflex",
         "figtree" | "spotifymixuititle" | "spotifymix" | "circular" => "figtree",
         "switzer" | "instrumentsans" => "instrumentsans",
+        "jetbrainsmononerd" | "jetbrainsmononerdfont" | "jetbrainsnerd" | "jetbrainsnerdfont" => "jetbrainsnerd",
         _ => return None,
     })
 }
