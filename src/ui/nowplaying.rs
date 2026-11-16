@@ -1205,9 +1205,18 @@ fn options_menu(app: &mut App, ui: &mut Ui, rect: Rect, track: &crate::model::Tr
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         ui.add_space(4.0);
         // Lyrics first: the source, translation and timing are what the menu is for
-        // while the lyrics are up.
+        // while the lyrics are up. Collapsed under a header by default, since these
+        // settings only matter while the lyrics are up and the menu is tight.
         if lyrics {
-            lyric_options(app, ui);
+            let key = ui.id().with("np-lyrics-expanded");
+            let mut expanded: bool = ui.data(|d| d.get_temp::<bool>(key)).unwrap_or(false);
+            if lyrics_options_header(ui, expanded) {
+                expanded = !expanded;
+                ui.data_mut(|d| d.insert_temp(key, expanded));
+            }
+            if expanded {
+                lyric_options(app, ui);
+            }
             menu_divider(ui);
         }
         if app.shown_video().is_some() {
@@ -1249,12 +1258,37 @@ fn options_menu(app: &mut App, ui: &mut Ui, rect: Rect, track: &crate::model::Tr
                 if widgets::menu_action(ui, Some(icon::MUSIC), "Revert quality") {
                     app.actions.push(Action::RevertQuality);
                 }
-            } else if widgets::menu_action(ui, Some(icon::MUSIC), "Upgrade quality") {
+            }
+            // Upgrade stays visible even on a hi-res track: the listener may want to try
+            // another source. Before, `Upgrade quality` was the else-branch of `hires_playing`,
+            // so any song that already played in hi-res looked as if the option had gone
+            // missing from the menu.
+            if any_upgrade_source && widgets::menu_action(ui, Some(icon::MUSIC), "Upgrade quality") {
                 app.actions.push(Action::UpgradeQuality);
             }
         }
         ui.add_space(4.0);
     });
+}
+
+/// The header row that opens [`lyric_options`]. Collapsed by default to save the
+/// menu's vertical space — the source picker, translation toggle, romanization toggle
+/// and timing nudge only matter while the lyrics are up, so they don't need to be on
+/// the menu's first screen. Doesn't close the popup on click: expanding is a state
+/// change, not an action, and the listener should see the rows appear in place.
+fn lyrics_options_header(ui: &mut Ui, expanded: bool) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::click());
+    let resp = named(resp, "Lyrics options").on_hover_cursor(egui::CursorIcon::PointingHand);
+    let h = theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.hovered(), 0.12);
+    if h > 0.0 {
+        ui.painter().rect_filled(rect, 7.0, theme::glass(0.12 * h));
+    }
+    let color = if resp.hovered() { theme::text() } else { theme::text_dim() };
+    widgets::icon_at(ui, pos2(rect.left() + 19.0, rect.center().y), icon::LIST_MUSIC, 16.0, color);
+    ui.painter().text(pos2(rect.left() + 40.0, rect.center().y), egui::Align2::LEFT_CENTER, "Lyrics options", theme::regular(14.0), theme::text());
+    let chevron = if expanded { icon::CHEVRON_DOWN } else { icon::CHEVRON_RIGHT };
+    widgets::icon_at(ui, pos2(rect.right() - 19.0, rect.center().y), chevron, 16.0, color);
+    resp.clicked()
 }
 
 fn lyric_options(app: &mut App, ui: &mut Ui) {

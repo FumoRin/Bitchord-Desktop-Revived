@@ -196,39 +196,40 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
     let w = ui.available_width();
     let full_w = w + (SIDEBAR_W - RAIL_W) * t;
 
-    // The logo keeps the icon column at the very top in both states. The history pair
-    // rides its line at the right while expanded, and slides onto its own line under
-    // the logo as the rail narrows — the rail is too tight to carry all three across,
-    // and the logo no longer fades away to make room for them.
+    // Logo, with the page history on its line. The chevron pair is placed by hand rather
+    // than laid out after the logo, so it can end up centred in the rail: it hugs the
+    // content's right edge when expanded (as flow layout gave it) and slides left as the
+    // panel narrows, landing in the middle of the collapsed rail, where the logo has
+    // faded out to make room. Laid out after the logo instead, both chevrons would end
+    // up past the rail's edge, the forward one entirely outside it.
+    let row_top = ui.cursor().top();
     let row_left = ui.cursor().left();
-    {
-        let (hr, _) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0 + 30.0 * t), Sense::hover());
-        // Full strength in both states: `a` is the label fade, and the rail has no labels
-        // to fade — tinting the mark by it left the collapsed sidebar with no logo at all.
-        let logo = Rect::from_min_size(hr.min + vec2(8.0, 0.0), vec2(32.0, 32.0));
-        mark(ui, Rect::from_center_size(logo.center(), vec2(30.0, 20.0)), theme::text());
-        let resp = named(ui.interact(logo, ui.id().with("sidebar-home"), Sense::click()), "Home");
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.add_space(8.0);
+        let (r, resp) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::click());
+        mark(ui, Rect::from_center_size(r.center(), vec2(30.0, 20.0)), theme::with_alpha(theme::text(), a));
+        let resp = named(resp, "Home");
         let resp = if collapsed { resp } else { resp.on_hover_cursor(egui::CursorIcon::PointingHand) };
         if resp.clicked() && !collapsed {
             app.actions.push(Action::Go(Page::Home));
         }
-        // Expanded the pair sits flush right on the logo's line; on the rail it slides
-        // to the icon column and down onto its own line below the logo.
-        // Two 22 pt chevrons and the 4 pt gap between them.
-        const PAIR_W: f32 = 48.0;
-        let (x0, x1) = (hr.right() - PAIR_W, hr.left());
-        let pair_x = x0 + (x1 - x0) * t;
-        let yc = hr.top() + 16.0 + 31.0 * t;
-        let back_r = Rect::from_min_size(pos2(row_left + pair_x, yc - 11.0), Vec2::splat(22.0));
-        let fwd_r = Rect::from_min_size(pos2(row_left + pair_x + 26.0, yc - 11.0), Vec2::splat(22.0));
-        // Back also closes the now-playing overlay, so it's live whenever that is open.
-        let (can_back, can_forward) = (app.np_open || !app.back.is_empty(), !app.forward.is_empty());
-        if history_button(ui, back_r, icon::CHEVRON_LEFT, "Back", can_back) {
-            app.nav_back();
-        }
-        if history_button(ui, fwd_r, icon::CHEVRON_RIGHT, "Forward", can_forward) {
-            app.nav_forward();
-        }
+    });
+    // Two 22 pt chevrons and the 4 pt gap between them.
+    const PAIR_W: f32 = 48.0;
+    let right_x = full_w - PAIR_W;
+    let centre_x = ((w - PAIR_W) / 2.0).max(0.0);
+    let pair_x = right_x + (centre_x - right_x) * t;
+    let pair_y = row_top + 5.0;
+    let back_r = Rect::from_min_size(pos2(row_left + pair_x, pair_y), Vec2::splat(22.0));
+    let fwd_r = Rect::from_min_size(pos2(back_r.right() + 4.0, pair_y), Vec2::splat(22.0));
+    // Back also closes the now-playing overlay, so it's live whenever that is open.
+    let (can_back, can_forward) = (app.np_open || !app.back.is_empty(), !app.forward.is_empty());
+    if history_button(ui, back_r, icon::CHEVRON_LEFT, "Back", can_back) {
+        app.nav_back();
+    }
+    if history_button(ui, fwd_r, icon::CHEVRON_RIGHT, "Forward", can_forward) {
+        app.nav_forward();
     }
     ui.add_space(14.0);
 
