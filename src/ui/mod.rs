@@ -157,7 +157,6 @@ pub enum Action {
     Like(Track, bool),
     /// Like (or unlike) a selection of songs.
     LikeMany(Vec<Track>, bool),
-    Dislike(Track),
     Share(Target),
     AddToPlaylist(Vec<Track>),
     /// Rows (indices into the open playlist) to take out of it.
@@ -860,7 +859,10 @@ impl App {
     ) -> Self {
         let get = |k: &str| storage.and_then(|s| s.get_string(k));
         // Dev hook: YTM_FONT=<font name> tries a font without saving it.
-        theme::set_font_choice(&dev_var("YTM_FONT").map(str::to_owned).or_else(|| get("font")).unwrap_or_default());
+        // The default font is JetBrains Mono Nerd — a developer-grade monospace that
+        // carries the Nerd Font glyph set. The listener's saved choice (or "Theme's
+        // font" if they cleared it) takes over once they pick one.
+        theme::set_font_choice(&dev_var("YTM_FONT").map(str::to_owned).or_else(|| get("font")).unwrap_or_else(|| "JetBrains Mono Nerd".to_owned()));
         let discord_enabled = get("discord_enabled").is_none_or(|v| v == "1");
         let app_icon = crate::appicon::load(backend.data_dir());
         let wgpu_renderer = crate::renderer::load(backend.data_dir()) == crate::renderer::Renderer::Wgpu;

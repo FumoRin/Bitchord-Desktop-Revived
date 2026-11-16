@@ -1532,11 +1532,6 @@ pub async fn set_like(api: &Api, video_id: &str, like: bool) -> anyhow::Result<(
     Ok(())
 }
 
-pub async fn dislike(api: &Api, video_id: &str) -> anyhow::Result<()> {
-    write(api, "like/dislike", json!({"target": {"videoId": video_id}})).await?;
-    Ok(())
-}
-
 /// Tell YouTube the account played a song, so it lands in watch history (and from
 /// there in Recap, recommendations and "Listen again"), the way music.youtube.com does:
 /// the signed-in player response carries a stats URL that the web player pings once
