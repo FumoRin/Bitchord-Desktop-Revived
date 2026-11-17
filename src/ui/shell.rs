@@ -1096,16 +1096,12 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
                 app.actions.push(Action::OpenNowPlaying(true));
             }
         }
-        let queue_open = if app.np_open { app.np_tab == NpTab::UpNext } else { app.queue_open };
+        // In now playing the queue is its Up next panel; elsewhere, the side panel.
         let r = rbtn(ui, 2, "queue", "Up next");
         let h = theme::anim_bool(&ctx, r.id.with("h"), r.hovered(), 0.15);
-        glyphs::draw(ui, r.rect.center(), 18.0, glyphs::QUEUE, if queue_open { accent } else { ink(h) });
+        glyphs::draw(ui, r.rect.center(), 18.0, glyphs::QUEUE, if app.queue_shown() { accent } else { ink(h) });
         if r.clicked() {
-            if app.np_open {
-                app.np_tab = if queue_open { NpTab::Art } else { NpTab::UpNext };
-            } else {
-                app.queue_open = !app.queue_open;
-            }
+            app.toggle_queue();
         }
     } else {
         volume_slider(app, ui, slider, "bar");

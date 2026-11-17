@@ -22,6 +22,7 @@ mod notes;
 mod nowplaying;
 mod pace;
 mod pages;
+mod palette;
 mod playback;
 mod presence;
 mod queue;
@@ -31,7 +32,9 @@ mod shell;
 mod sorts;
 mod titlebar;
 pub use mini::set_hwnd as set_mini_hwnd;
-pub use titlebar::{custom as custom_titlebar, init as init_titlebar, set_hwnd as set_titlebar_hwnd};
+pub use titlebar::{custom as custom_titlebar, init as init_titlebar, inset as titlebar_inset, set_hwnd as set_titlebar_hwnd};
+#[cfg(target_os = "macos")]
+pub use titlebar::set_view as set_titlebar_view;
 mod transfer;
 mod wheel;
 mod widgets;
@@ -702,6 +705,8 @@ pub struct App {
     extras_asked: Option<(String, String, String)>,
     show_roman: bool,
     show_trans: bool,
+    /// Synced lyrics animate at the screen's refresh rate rather than 60 fps.
+    lyrics_full_rate: bool,
     lyric_prefs: lyric_prefs::Prefs,
     lyric_view: karaoke::View,
     lyric_clock: lyric_prefs::Clock,
@@ -814,6 +819,8 @@ pub struct App {
     settings_search: String,
     /// The category Settings shows, one at a time (a search shows them all).
     settings_tab: pages::SettingsTab,
+    /// The command palette (Ctrl+K).
+    palette: palette::Palette,
     actions: Vec<Action>,
     dialog: Option<Dialog>,
     share_pending: Option<String>,
@@ -1194,6 +1201,7 @@ impl App {
             extras_asked: None,
             show_roman: get("show_roman").is_none_or(|v| v == "1"),
             show_trans: get("show_trans").is_none_or(|v| v == "1"),
+            lyrics_full_rate: get("lyrics_full_rate").is_some_and(|v| v == "1"),
             lyric_prefs: lyric_prefs::Prefs::load(&get),
             lyric_view: Default::default(),
             lyric_clock: Default::default(),
@@ -1211,6 +1219,7 @@ impl App {
             toast: None,
             settings_search: String::new(),
             settings_tab: Default::default(),
+            palette: Default::default(),
             actions: Vec::new(),
             dialog: None,
             share_pending: None,
@@ -1869,6 +1878,8 @@ impl eframe::App for App {
         dev::dev_memory(&ctx, now);
         dev::dev_probe(&ctx);
         let layout = self.mini.layout(&ctx);
+        // Mid-switch to or from the mini player, the frame stays as it is.
+        titlebar::sync(&ctx, (layout != mini::Layout::Blank).then_some(layout == mini::Layout::Full));
         // Picture in picture comes before the rest: the video fills the window, and the
         // window keeps square corners.
         if layout == mini::Layout::Mini && mini::video_active() {
@@ -1913,8 +1924,10 @@ impl eframe::App for App {
         if !self.fullscreen && !covered {
             use crate::preset::SidebarStyle;
             let side_alpha = app_style.sidebar_alpha.clamp(0.0, 1.0);
-            // The logo's row is 32 points tall.
-            let side_margin = egui::Margin { left: 14, right: 14, top: titlebar::top_margin(16, 32.0), bottom: 16 };
+            // The logo's row is 32 points tall. On macOS it starts below the traffic
+            // lights, which have the top row to themselves.
+            let below = titlebar::below_lights(&ctx) as i8;
+            let side_margin = egui::Margin { left: 14, right: 14, top: titlebar::top_margin(16, 32.0) + below, bottom: 16 };
             let side_frame = match app_style.sidebar {
                 SidebarStyle::Glass => egui::Frame::new().fill(theme::panel(side_alpha)).inner_margin(side_margin),
                 SidebarStyle::Transparent => egui::Frame::new().inner_margin(side_margin),
@@ -1923,7 +1936,7 @@ impl eframe::App for App {
                     .fill(theme::panel(side_alpha.max(0.3)))
                     .stroke(egui::Stroke::new(1.0, theme::glass(0.08)))
                     .corner_radius(egui::CornerRadius::same(theme::panel_radius().max(12)))
-                    .outer_margin(egui::Margin { left: 10, right: 4, top: 10, bottom: 10 })
+                    .outer_margin(egui::Margin { left: 10, right: 4, top: 10 + below, bottom: 10 })
                     .inner_margin(egui::Margin::symmetric(12, 14)),
             };
             // The sidebar first, so it runs the window's full height: the player floats
@@ -1972,6 +1985,7 @@ impl eframe::App for App {
             theme::set_mode(&ctx, pages);
         }
         self.draw_dialog(&ctx);
+        palette::show(self, &ctx);
         notes::card(self, &ctx);
         notes::dialog(self, &ctx);
         if let Some(url) = self.share_pending.take() { ctx.copy_text(url); }
@@ -2168,6 +2182,7 @@ impl eframe::App for App {
         storage.set_string("tempo", b(self.tempo_on));
         storage.set_string("show_roman", b(self.show_roman));
         storage.set_string("show_trans", b(self.show_trans));
+        storage.set_string("lyrics_full_rate", b(self.lyrics_full_rate));
         // Background test runs mustn't change the listener's sources or per-song picks.
         if std::env::var_os("YTM_BACKGROUND").is_none() || std::env::var_os("YTM_SAVE_SESSION").is_some() {
             self.lyric_prefs.save(storage);

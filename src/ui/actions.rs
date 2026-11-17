@@ -8,7 +8,7 @@ use crate::model::{Target, Track};
 
 use super::lists::LIKED_MUSIC;
 use super::queue::QueueFill;
-use super::{Action, App, Dialog, LibTab, NpTab, Page, jam, keybinds, transfer};
+use super::{Action, App, Dialog, LibTab, NpTab, Page, jam, keybinds, palette, transfer};
 
 impl App {
     pub(super) fn apply(&mut self, a: Action) {
@@ -320,6 +320,7 @@ impl App {
             keybinds::capture_dialog(self, ctx);
             return;
         }
+        palette::shortcut(self, ctx);
         let keys = &self.keybinds.bindings;
         use keybinds::Cmd;
         let (space, back, fwd, next, prev, seek_bwd, seek_fwd, lyr, queue, np, full, search, vol_up, vol_down, mute, mini) = (
@@ -373,12 +374,7 @@ impl App {
         // L and Q toggle, the trip the comments menu item makes: with their panel
         // already up they fold it back to the artwork instead of reopening it.
         if lyr && self.current().is_some() {
-            if self.np_open && self.np_tab == NpTab::Lyrics {
-                self.np_tab = NpTab::Art;
-            } else {
-                self.np_open = true;
-                self.np_tab = NpTab::Lyrics;
-            }
+            self.toggle_lyrics();
         }
         if queue && self.current().is_some() {
             if self.np_open && self.np_tab == NpTab::UpNext {
@@ -397,17 +393,7 @@ impl App {
             }
         }
         if full && self.current().is_some() {
-            if !self.np_open {
-                self.np_open = true;
-                self.set_fullscreen(ctx, true);
-            } else if self.fullscreen {
-                self.set_fullscreen(ctx, false);
-            } else if self.shown_video().is_some() {
-                // With a video on show, full screen is the video's, as F is on YouTube.
-                self.set_video_fullscreen(ctx, true);
-            } else {
-                self.set_fullscreen(ctx, true);
-            }
+            self.toggle_fullscreen(ctx);
         }
         if search {
             // From any page: the Search page opens, and its box takes the typing. (On
@@ -441,6 +427,50 @@ impl App {
         // M, like the player bar's speaker: the volume it was at comes back on unmute.
         if mute {
             super::shell::toggle_mute(self, ctx);
+        }
+    }
+
+    /// Now playing with its lyrics, or back out of it (L): with the panel already up
+    /// it folds back to the artwork instead of reopening it.
+    pub(super) fn toggle_lyrics(&mut self) {
+        if self.current().is_some() {
+            if self.np_open && self.np_tab == NpTab::Lyrics {
+                self.np_tab = NpTab::Art;
+            } else {
+                self.np_open = true;
+                self.np_tab = NpTab::Lyrics;
+            }
+        }
+    }
+
+    /// Full screen in now playing, or out of it (Shift+F): opening now playing first
+    /// when it isn't up, since the full screen is its view. With a video on show, full
+    /// screen is the video's, as F is on YouTube.
+    pub(super) fn toggle_fullscreen(&mut self, ctx: &egui::Context) {
+        if !self.np_open {
+            self.np_open = true;
+            self.set_fullscreen(ctx, true);
+        } else if self.fullscreen {
+            self.set_fullscreen(ctx, false);
+        } else if self.shown_video().is_some() {
+            self.set_video_fullscreen(ctx, true);
+        } else {
+            self.set_fullscreen(ctx, true);
+        }
+    }
+
+    /// In now playing the queue is its Up next panel; elsewhere, the side panel.
+    pub(super) fn queue_shown(&self) -> bool {
+        if self.np_open { self.np_tab == NpTab::UpNext } else { self.queue_open }
+    }
+
+    /// The player bar's queue button: in now playing its Up next panel, elsewhere the
+    /// side drawer.
+    pub(super) fn toggle_queue(&mut self) {
+        if self.np_open {
+            self.np_tab = if self.queue_shown() { NpTab::Art } else { NpTab::UpNext };
+        } else {
+            self.queue_open = !self.queue_open;
         }
     }
 
