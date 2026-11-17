@@ -123,7 +123,6 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
         Some(_) => app.shown().cloned().unwrap_or(track),
         None => track,
     };
-    let heard = if hold.is_some() { track.clone() } else { app.playing_track().cloned().unwrap_or_else(|| track.clone()) };
     let look = app.look();
     let cs = &look.cover;
     let area = ui.max_rect();
@@ -176,6 +175,7 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
         let cover_hidden = (narrow || cs.layout == Layout::LyricsOnly) && app.np_tab != NpTab::Art && !no_lyrics;
         if cover_hidden {
             let (r, _) = ui.allocate_exact_size(vec2(34.0, 34.0), Sense::hover());
+            let heard = heard_track(app, &track, hold.is_some());
             options_menu(app, ui, r, &heard, app.np_tab == NpTab::Lyrics && !no_lyrics);
         }
     });
@@ -189,6 +189,9 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
         app.video_frame = None;
         app.glow = None;
     }
+    // The sleeve's star and its menus go by what's heard: one clone a frame, shared
+    // with the cover column rather than taken again inside it.
+    let heard = heard_track(app, &track, hold.is_some());
     // What the margins came off: the whole player. The queue panel runs to its edge so
     // its scroll bar hugs the window's edge.
     let full = area.expand2(vec2(32.0, 20.0));
@@ -234,7 +237,7 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
         if art_vis > 0.001 {
             let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(content));
             cui.multiply_opacity(art_vis);
-            cover_column(app, &mut cui, col_art.translate(vec2(-slide * (1.0 - art_vis), 0.0)), &track, no_lyrics, now, px);
+            cover_column(app, &mut cui, col_art.translate(vec2(-slide * (1.0 - art_vis), 0.0)), &track, &heard, no_lyrics, now, px);
         } else {
             // Hidden behind the lyrics: have it loaded for when they're turned off.
             widgets::preload_cover(ui.ctx(), &track.thumbs, px);
@@ -252,7 +255,7 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
         let col = Rect::from_min_max(col_art.min.lerp(col_panel.min, glide), col_art.max.lerp(col_panel.max, glide));
         // One image size for the whole glide, the bigger of its two ends.
         let px = (art_side(cs, col_art).max(art_side(cs, col_panel)) * ppp) as u32;
-        cover_column(app, ui, col, &track, no_lyrics, now, px);
+        cover_column(app, ui, col, &track, &heard, no_lyrics, now, px);
         if cs.side == Side::Right {
             Rect::from_min_max(content.min, pos2(col_panel.left() - 28.0, content.bottom()))
         } else {
@@ -295,6 +298,14 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
             }
         }
     }
+}
+
+/// What's heard while the sleeve shows `track`: a handoff's outgoing song stands in for
+/// the queue's, otherwise it's whatever actually plays. The clone is for the menus,
+/// which need `app` mutably beside it — so it's taken only where they're drawn, not for
+/// the whole frame (the video stage has no use for it).
+fn heard_track(app: &App, track: &crate::model::Track, hold: bool) -> crate::model::Track {
+    if hold { track.clone() } else { app.playing_track().cloned().unwrap_or_else(|| track.clone()) }
 }
 
 /// Song or Video, in the middle of the header, as YouTube Music's own apps have it.
@@ -702,13 +713,13 @@ fn art_side(cs: &crate::preset::CoverStyle, col: Rect) -> f32 {
 }
 
 /// The sleeve: art, title and artists, the seek line with its two times, then the
-/// transport — the order the reference keeps them in. `px`: the size to fetch the image
-/// at (fixed while the column glides).
-fn cover_column(app: &mut App, ui: &mut Ui, col: Rect, track: &crate::model::Track, no_lyrics: bool, now: f64, px: u32) {
+/// transport — the order the reference keeps them in. `heard`: what's heard (the song
+/// version of the video on show, the outgoing song of a handoff), for its star and
+/// menus. `px`: the size to fetch the image at (fixed while the column glides).
+fn cover_column(app: &mut App, ui: &mut Ui, col: Rect, track: &crate::model::Track, heard: &crate::model::Track, no_lyrics: bool, now: f64, px: u32) {
     use crate::preset::Shape;
-    // A handoff's outgoing song is still what's heard: its star, menu and seek are its own.
+    // A handoff's outgoing song is still what's heard: its seek is its own.
     let hold = app.mix_hold().map(|h| (h.total, h.mix, app.mix_hold_pos(h)));
-    let heard = if hold.is_some() { track.clone() } else { app.playing_track().cloned().unwrap_or_else(|| track.clone()) };
     let look = app.look();
     let cs = &look.cover;
     let side = art_side(cs, col);
@@ -817,7 +828,7 @@ fn cover_column(app: &mut App, ui: &mut Ui, col: Rect, track: &crate::model::Tra
     }
     // The song's options, beside the star.
     let options = Rect::from_center_size(pos2(art.right() - 15.0, info_y + 14.0), Vec2::splat(34.0));
-    options_menu(app, ui, options, &heard, app.np_tab == NpTab::Lyrics && !no_lyrics);
+    options_menu(app, ui, options, heard, app.np_tab == NpTab::Lyrics && !no_lyrics);
 
     // Seek: a 4 px line that grows under the pointer, its times below.
     let status = app.audio.status.clone();

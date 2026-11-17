@@ -72,11 +72,6 @@ impl ListSorts {
         }
     }
 
-    /// `list`'s songs are shown in another order than their own.
-    pub fn reordered(&self, list: &str) -> bool {
-        self.sort(list) != Sort::Default
-    }
-
     /// `held`: `list` is still coming in, so it keeps its own order for now (and plays
     /// as it arrives).
     pub fn hold(&mut self, list: &str, held: bool) {

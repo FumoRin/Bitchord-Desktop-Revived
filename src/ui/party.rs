@@ -458,7 +458,7 @@ fn on_event(app: &mut App, e: party::Event) {
                 app.toast("Joined the party");
             }
         }
-        party::Event::Connection(_) => {}
+        party::Event::Connection => {}
         party::Event::Ended(reason) => {
             if app.party.conn.take().is_some() {
                 let error = app.party.error.clone();

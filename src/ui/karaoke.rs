@@ -809,6 +809,8 @@ pub struct View {
     /// Reader scrolling was on last frame: when it ends, scroll back to the current line.
     was_user: bool,
     glow: Glow,
+    /// Scratch for the words' glyph quads, so a frame doesn't allocate a Vec per word.
+    glyphs: Vec<GlyphQuad>,
     /// The look as last resolved, and what it was resolved from: it's only built again
     /// when one of those changes, not on every frame.
     cfg: Option<(CfgKey, String, std::sync::Arc<Cfg>)>,
@@ -1247,7 +1249,7 @@ impl View {
                 if sharp > 0.0 {
                     let opacity = opacity * sharp;
                     let lit = LitState::new(&cfg, st, t, f.now, sung_now || st.selected);
-                    paint_words(&painter, &ctx, &cfg, &b.words, &b.groups, &xf, &lit, dim, opacity, atlas, &mut glow_work, (f.key, i, 0));
+                    paint_words(&painter, &ctx, &cfg, &b.words, &b.groups, &xf, &lit, dim, opacity, atlas, &mut glow_work, &mut self.glyphs, (f.key, i, 0));
                     for (k, d) in b.decos.iter().enumerate() {
                         let dxf = xf;
                         let a = opacity;
@@ -1258,7 +1260,7 @@ impl View {
                         }
                         match &d.body {
                             DecoBody::Timed { words, groups } => {
-                                paint_words(&painter, &ctx, &cfg, words, groups, &dxf, &lit, dim, a, atlas, &mut glow_work, (f.key, i, k as u32 + 1));
+                                paint_words(&painter, &ctx, &cfg, words, groups, &dxf, &lit, dim, a, atlas, &mut glow_work, &mut self.glyphs, (f.key, i, k as u32 + 1));
                             }
                             DecoBody::Text(text, font) => {
                                 let wrap = d.rect.width() + 1.0;
@@ -1717,14 +1719,14 @@ struct GlyphQuad {
 /// A word's glyphs this frame, in content coordinates (before the line transform):
 /// letter floats applied, then the group's wobble. Laid out once, at the font's size,
 /// and scaled with the line: a second size would put a second copy of every glyph in
-/// the shared font atlas, which only ever grows.
-fn word_glyphs(ctx: &egui::Context, w: &Word, lit: &LitState, cfg: &Cfg, wob: Option<(f32, f32, f32)>, atlas: [usize; 2]) -> Vec<GlyphQuad> {
+/// the shared font atlas, which only ever grows. Appended into `out`, which the caller
+/// keeps across words and frames.
+fn word_glyphs(ctx: &egui::Context, w: &Word, lit: &LitState, cfg: &Cfg, wob: Option<(f32, f32, f32)>, atlas: [usize; 2], out: &mut Vec<GlyphQuad>) {
     let g = ctx.fonts_mut(|fv| fv.layout_no_wrap(w.text.clone(), w.font.clone(), Color32::WHITE));
     let n: usize = g.rows.iter().map(|r| r.row.glyphs.len()).sum();
     let waves = if w.letters && lit.live && lit.exit.is_none() { Some(letter_waves(n, w.dur.max(0.0), cfg.wave_duration)) } else { None };
     let e = lit.t - w.start;
     let em = w.font.size;
-    let mut out = Vec::with_capacity(n);
     let mut k = 0;
     for row in &g.rows {
         for gl in &row.row.glyphs {
@@ -1752,17 +1754,25 @@ fn word_glyphs(ctx: &egui::Context, w: &Word, lit: &LitState, cfg: &Cfg, wob: Op
             out.push(GlyphQuad { rect: r, uv: uvr, letter: idx, letters: n });
         }
     }
-    out
 }
 
 /// Draw a glyph quad, alpha following the lit gradient: 1 left of `a`, 0 right of `b`
 /// (screen x), linear between, so the soft edge is exact and never a box.
 fn push_quad(mesh: &mut Mesh, r: Rect, uv: Rect, color: Color32, alpha: &dyn Fn(f32) -> f32, cuts: &[f32]) {
-    let mut xs = vec![r.left()];
-    xs.extend(cuts.iter().copied().filter(|&c| c > r.left() && c < r.right()));
-    xs.push(r.right());
-    for s in xs.windows(2) {
-        let (x0, x1) = (s[0], s[1]);
+    // The two ends and at most the two cuts, on the stack: this runs per glyph of every
+    // word, and a Vec per call was the lyrics' busiest allocation.
+    let mut xs = [r.left(), 0.0, 0.0, r.right()];
+    let mut n = 1;
+    for &c in cuts {
+        if c > r.left() && c < r.right() {
+            xs[n] = c;
+            n += 1;
+        }
+    }
+    xs[n] = r.right();
+    n += 1;
+    for s in 0..n - 1 {
+        let (x0, x1) = (xs[s], xs[s + 1]);
         if x1 - x0 <= 0.0 {
             continue;
         }
@@ -1781,16 +1791,38 @@ fn push_quad(mesh: &mut Mesh, r: Rect, uv: Rect, color: Color32, alpha: &dyn Fn(
     }
 }
 
-/// The lit gradient over one glyph, in screen x: (alpha function, cut points).
-/// Letter mode follows the per-letter masks (index space); otherwise the word box.
-/// `rtl`: the word reads right to left, so it's lit from the right.
-fn lit_gradient(q: &Rect, letter: usize, letters: usize, word: Rect, look: &WordLook, by_letter: bool, rtl: bool) -> (Box<dyn Fn(f32) -> f32>, Vec<f32>) {
+/// The lit gradient over one glyph, in screen x: alpha 1 up to `xs` and 0 from `xe`,
+/// linear between (the other way round for a right-to-left word). A value rather than
+/// a closure, so a lit word costs nothing to build.
+#[derive(Clone, Copy)]
+struct LitMask {
+    xs: f32,
+    xe: f32,
+    rtl: bool,
+}
+
+impl LitMask {
+    fn at(&self, x: f32) -> f32 {
+        if self.rtl {
+            if x >= self.xs { 1.0 } else if x <= self.xe { 0.0 } else { 1.0 - (self.xs - x) / (self.xs - self.xe) }
+        } else {
+            if x <= self.xs { 1.0 } else if x >= self.xe { 0.0 } else { 1.0 - (x - self.xs) / (self.xe - self.xs) }
+        }
+    }
+
+    /// Where the ramp turns, for slicing the quad.
+    fn cuts(&self) -> [f32; 2] {
+        if self.rtl { [self.xe, self.xs] } else { [self.xs, self.xe] }
+    }
+}
+
+/// The lit gradient over one glyph. Letter mode follows the per-letter masks (index
+/// space); otherwise the word box. `rtl`: the word reads right to left, so it's lit
+/// from the right.
+fn lit_gradient(q: &Rect, letter: usize, letters: usize, word: Rect, look: &WordLook, by_letter: bool, rtl: bool) -> LitMask {
     let (s, e) = (look.start, look.end);
     if rtl && !by_letter {
-        let xs = word.right() - word.width() * s;
-        let xe = word.right() - word.width() * e - 1.0;
-        let f = move |x: f32| if x >= xs { 1.0 } else if x <= xe { 0.0 } else { 1.0 - (xs - x) / (xs - xe) };
-        return (Box::new(f), vec![xe, xs]);
+        return LitMask { xs: word.right() - word.width() * s, xe: word.right() - word.width() * e - 1.0, rtl: true };
     }
     if by_letter {
         let n = letters.max(1) as f32;
@@ -1798,14 +1830,9 @@ fn lit_gradient(q: &Rect, letter: usize, letters: usize, word: Rect, look: &Word
         let (l, w) = (q.left(), q.width().max(1e-6));
         let i = letter as f32;
         let x_at = |v: f32| l + (v * n - i) * w; // where X/n == v
-        let (xs, xe) = (x_at(s), x_at(e) + 1.0);
-        let f = move |x: f32| if x <= xs { 1.0 } else if x >= xe { 0.0 } else { 1.0 - (x - xs) / (xe - xs) };
-        (Box::new(f), vec![xs, xe])
+        LitMask { xs: x_at(s), xe: x_at(e) + 1.0, rtl: false }
     } else {
-        let xs = word.left() + word.width() * s;
-        let xe = word.left() + word.width() * e + 1.0;
-        let f = move |x: f32| if x <= xs { 1.0 } else if x >= xe { 0.0 } else { 1.0 - (x - xs) / (xe - xs) };
-        (Box::new(f), vec![xs, xe])
+        LitMask { xs: word.left() + word.width() * s, xe: word.left() + word.width() * e + 1.0, rtl: false }
     }
 }
 
@@ -1822,11 +1849,16 @@ fn paint_words(
     opacity: f32,
     atlas: [usize; 2],
     glow: &mut Vec<GlowJob>,
+    // The words' glyph quads: one scratch for all of them (cleared here, kept across
+    // lines and frames by the caller), where a Vec per word was the renderer's other
+    // per-frame allocation.
+    quads: &mut Vec<GlyphQuad>,
     key: (u64, usize, u32),
 ) {
     let no_cut: [f32; 0] = [];
     let mut base = Mesh::with_texture(TextureId::default());
-    let mut per_word = Vec::with_capacity(words.len());
+    let mut per_word: Vec<(std::ops::Range<usize>, Option<(f32, f32, f32)>)> = Vec::with_capacity(words.len());
+    quads.clear();
     for w in words {
         let gr = &groups[w.group];
         // Wobble: the group pops with its first word's timing (transform-origin: centre).
@@ -1840,17 +1872,18 @@ fn paint_words(
         } else {
             None
         };
-        let quads = word_glyphs(ctx, w, lit, cfg, wob, atlas);
+        let first = quads.len();
+        word_glyphs(ctx, w, lit, cfg, wob, atlas, quads);
         let dim_c = if w.bg { dim * 0.78 } else { dim } * opacity;
-        for q in &quads {
+        for q in &quads[first..] {
             push_quad(&mut base, xf.rect(q.rect), q.uv, theme::with_alpha(Color32::WHITE, dim_c), &|_| 1.0, &no_cut);
         }
-        per_word.push((quads, wob));
+        per_word.push((first..quads.len(), wob));
     }
     // The dim run, then the highlight run over it (`.blyrics-highlight-run`, z-index 1):
     // each word's drop-shadow, then its lit text.
     painter.add(Shape::mesh(base));
-    for (wi, (w, (quads, wob))) in words.iter().zip(per_word).enumerate() {
+    for (wi, (w, (range, wob))) in words.iter().zip(per_word).enumerate() {
         let look = word_look(w, lit, cfg);
         if look.opacity <= 0.0 || look.end <= 0.0 {
             continue;
@@ -1862,11 +1895,12 @@ fn paint_words(
         };
         let mut m = Mesh::with_texture(TextureId::default());
         let color = theme::with_alpha(cfg.active, look.opacity * opacity);
-        let mut screen_quads = Vec::with_capacity(quads.len());
-        for q in &quads {
+        let mut screen_quads = Vec::with_capacity(range.len());
+        for q in &quads[range.clone()] {
             let r = xf.rect(q.rect);
-            let (alpha, cuts) = lit_gradient(&r, q.letter, q.letters, word_box, &look, w.letters, w.rtl);
-            push_quad(&mut m, r, q.uv, color, alpha.as_ref(), &cuts);
+            let mask = lit_gradient(&r, q.letter, q.letters, word_box, &look, w.letters, w.rtl);
+            let cuts = mask.cuts();
+            push_quad(&mut m, r, q.uv, color, &|x| mask.at(x), &cuts);
             screen_quads.push((r, q.uv, q.letter, q.letters, 1.0));
         }
         if look.glow > 0.05 && look.glow_alpha >= GLOW_INVISIBLE && !dev_off("glow") {
@@ -2173,7 +2207,7 @@ fn rasterize_glow(atlas: &Coverage, j: &GlowJob, ppp: f32, scratch: &mut Vec<f32
     }
     let (aw, ah) = (atlas.size[0] as f32, atlas.size[1] as f32);
     for &(r, uv, letter, letters, weight) in &j.quads {
-        let (alpha, _) = lit_gradient(&r, letter, letters, j.word, &j.look, j.by_letter, j.rtl);
+        let alpha = lit_gradient(&r, letter, letters, j.word, &j.look, j.by_letter, j.rtl);
         let tx0 = (uv.left() * aw).round() as isize;
         let ty0 = (uv.top() * ah).round() as isize;
         let tw = ((uv.right() - uv.left()) * aw).round() as isize;
@@ -2209,7 +2243,7 @@ fn rasterize_glow(atlas: &Coverage, j: &GlowJob, ppp: f32, scratch: &mut Vec<f32
                     continue;
                 }
                 let screen_x = origin.x + (x as f32 + 0.5) / ppp;
-                let a = cov * alpha(screen_x) * weight;
+                let a = cov * alpha.at(screen_x) * weight;
                 let d = &mut scratch[y * w + x];
                 *d = (*d + a - *d * a).min(1.0);
             }
@@ -2688,11 +2722,11 @@ mod tests {
     fn gradient_is_soft_and_never_a_box() {
         let look = WordLook { opacity: 1.0, start: 0.5, end: 0.6, glow: 0.0, glow_alpha: 0.5 };
         let word = Rect::from_min_size(pos2(0.0, 0.0), vec2(100.0, 40.0));
-        let (f, cuts) = lit_gradient(&word, 0, 1, word, &look, false, false);
-        assert_eq!(f(10.0), 1.0);
-        assert!(f(55.0) > 0.0 && f(55.0) < 1.0);
-        assert_eq!(f(70.0), 0.0);
-        assert_eq!(cuts.len(), 2);
+        let m = lit_gradient(&word, 0, 1, word, &look, false, false);
+        assert_eq!(m.at(10.0), 1.0);
+        assert!(m.at(55.0) > 0.0 && m.at(55.0) < 1.0);
+        assert_eq!(m.at(70.0), 0.0);
+        assert_eq!(m.cuts().len(), 2);
     }
 
     #[test]

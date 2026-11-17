@@ -181,7 +181,6 @@ pub enum Action {
     SaveCollection(String, bool),
     /// Subscribe to the open artist (true), or unsubscribe.
     Subscribe(bool),
-    HomeChip(Option<String>),
     OpenNowPlaying(bool),
     /// Into the mini player (true) or back to the full window.
     Mini(bool),
@@ -1500,25 +1499,29 @@ impl App {
         if !self.animated_covers || track.id.is_empty() {
             return None;
         }
-        let id = track.id.clone();
-        if let Some(url) = self.canvas_covers.get(&id).cloned() {
+        // Borrowed for the lookups: this runs every frame, and the id only needs
+        // owning on the one frame a lookup is started.
+        let id = track.id.as_str();
+        if let Some(url) = self.canvas_covers.get(id).cloned() {
             return self.motion_sprite(ctx, format!("clip\u{1}{id}"), &url, max_width);
         }
         // Apple first, once per song. `canvas` remembers found clips and misses on
         // disk, so neither is asked again for days.
-        if !self.canvas_apple_done.contains(&id) {
-            if self.canvas_apple_waiting.insert(id.clone()) {
+        if !self.canvas_apple_done.contains(id) {
+            if !self.canvas_apple_waiting.contains(id) {
+                self.canvas_apple_waiting.insert(id.to_owned());
                 self.backend.request(Req::Canvas { track: track.clone() });
             }
             return None;
         }
         // Spotify's canvas for the song, for a listener signed in to Spotify.
-        if self.canvas_missed.get(&id).is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(600)) {
+        if self.canvas_missed.get(id).is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(600)) {
             return None;
         }
-        if self.canvas_waiting.insert(id.clone()) {
+        if !self.canvas_waiting.contains(id) {
+            self.canvas_waiting.insert(id.to_owned());
             let artist = track.artists.first().map(|a| a.name.clone()).unwrap_or_else(|| track.artist_line());
-            self.backend.request(Req::SpotifyCanvas { key: id, title: track.title.clone(), artist, duration_ms: track.duration.map(|d| d as u64 * 1000) });
+            self.backend.request(Req::SpotifyCanvas { key: track.id.clone(), title: track.title.clone(), artist, duration_ms: track.duration.map(|d| d as u64 * 1000) });
         }
         None
     }
