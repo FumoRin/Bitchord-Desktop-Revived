@@ -106,6 +106,11 @@ impl Session {
         self.conn.is_some()
     }
 
+    /// The room's code, or empty outside one: the Discord card's Listen together button.
+    pub fn code(&self) -> String {
+        self.conn.as_ref().map(|c| c.code()).unwrap_or_default()
+    }
+
     pub fn is_host(&self) -> bool {
         self.active() && self.party.you_host()
     }
