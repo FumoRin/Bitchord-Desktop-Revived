@@ -252,17 +252,6 @@ impl App {
                     self.backend.request(Req::Subscribe { channel_id, on });
                 }
             }
-            Action::HomeChip(params) => {
-                self.home_loading = true;
-                if let Some(h) = &mut self.home {
-                    h.shelves.clear();
-                    for c in &mut h.chips {
-                        c.selected = false;
-                    }
-                }
-                self.home_mood = params.is_some();
-                self.backend.request(Req::Home(params));
-            }
             Action::OpenNowPlaying(open) => {
                 if self.current().is_some() {
                     self.np_open = open;

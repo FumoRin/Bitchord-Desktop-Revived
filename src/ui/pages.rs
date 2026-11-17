@@ -3381,13 +3381,6 @@ fn network(app: &mut App, ui: &mut Ui) {
     }
 }
 
-/// Paint `v` into `rect`, from the ICO entry that fits its size in physical pixels.
-pub(super) fn paint_app_icon(ui: &Ui, v: &crate::appicon::Variant, rect: Rect) {
-    let px = (rect.width() * ui.ctx().pixels_per_point()).ceil() as u32;
-    let png = v.png(px);
-    egui::Image::from_bytes(format!("bytes://app-icon/{}-{}.png", v.id, png.len()), png).paint_at(ui, rect);
-}
-
 /// The font setting: the theme's own, a bundled face, or one installed on this PC.
 /// Returns the new choice ("" for the theme's).
 fn font_picker(ui: &mut Ui) -> Option<String> {

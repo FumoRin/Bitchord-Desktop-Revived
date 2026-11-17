@@ -35,8 +35,6 @@ const MAX_W: f32 = 720.0;
 const SEEK_BAND: f32 = 14.0;
 /// Kept above other windows until unpinned.
 const PINNED_BY_DEFAULT: bool = true;
-/// What the strip's × does.
-const CLOSE: CloseButton = CloseButton::LikeFullWindow;
 /// From the work area's corner, the first time.
 const MARGIN: f32 = 16.0;
 /// Picture in picture: the mini player for a video, when first opened, and as small and
@@ -154,15 +152,6 @@ fn mini_size() -> Vec2 {
 
 fn width_limits() -> (f32, f32) {
     if video_active() { (VIDEO_MIN.x, VIDEO_MAX.x) } else { (MIN_W, MAX_W) }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy, PartialEq)]
-enum CloseButton {
-    /// What the full window's × does: quit, or hide to the tray with "Close to tray".
-    LikeFullWindow,
-    /// Back to the full window (the expand button's job too).
-    Expand,
 }
 
 /// Where a window was: its outer corner in physical pixels, its inner size in points,
@@ -776,10 +765,7 @@ pub fn strip(app: &mut App, ui: &mut Ui, now: f64) {
     };
     // The system's frame has its own close button.
     if titlebar::custom() && top_btn(ui, icon::X, "close", "Close", true, false) {
-        match CLOSE {
-            CloseButton::LikeFullWindow => ctx.send_viewport_cmd(ViewportCommand::Close),
-            CloseButton::Expand => app.actions.push(Action::Mini(false)),
-        }
+        ctx.send_viewport_cmd(ViewportCommand::Close);
     }
     if top_btn(ui, icon::MAXIMIZE_2, "full", "Full window (Ctrl+M)", false, false) {
         app.actions.push(Action::Mini(false));
@@ -1011,10 +997,7 @@ pub fn video_pip(app: &mut App, ui: &mut Ui, _now: f64) {
         live(&resp)
     };
     if titlebar::custom() && corner(ui, icon::X, "close", "Close") {
-        match CLOSE {
-            CloseButton::LikeFullWindow => ctx.send_viewport_cmd(ViewportCommand::Close),
-            CloseButton::Expand => app.actions.push(Action::Mini(false)),
-        }
+        ctx.send_viewport_cmd(ViewportCommand::Close);
     }
     if corner(ui, icon::MAXIMIZE_2, "full", "Full window (Ctrl+M)") {
         app.actions.push(Action::Mini(false));

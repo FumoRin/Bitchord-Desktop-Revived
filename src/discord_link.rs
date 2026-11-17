@@ -423,11 +423,6 @@ impl Service {
         self.status.lock().unwrap().clone()
     }
 
-    fn set_status(&self, s: Status) {
-        *self.status.lock().unwrap() = s;
-        self.backend.wake();
-    }
-
     /// ExternalAssets.kt: Discord's CDN mirror of an http image, as an `mp:` asset;
     /// cached (ArtworkCache). A mirror that wouldn't come keeps the raw URL, as
     /// RpcImage.ExternalImage does.

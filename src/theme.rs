@@ -476,7 +476,6 @@ pub mod icon {
     pub const LIST_MINUS: char = '\u{e23e}';
     pub const LIST_CHECKS: char = '\u{e1d0}';
     pub const RADIO: char = '\u{e142}';
-    pub const DISC_3: char = '\u{e494}';
     pub const USER: char = '\u{e19f}';
     pub const SETTINGS: char = '\u{e154}';
     pub const LOG_OUT: char = '\u{e10e}';
