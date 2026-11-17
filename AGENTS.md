@@ -1,64 +1,141 @@
 # AGENTS.md
 
-## Overview
-BitChord Desktop Revived (`bitchord`) is a high-performance native desktop music client built in Rust using `egui` / `eframe` (with optional `wgpu` rendering and embedded `wry` WebViews). It connects to YouTube Music, JioSaavn, Apple Music, Spotify transfers, and custom listening-together / jam sync services.
+## What this is
+
+BitChord Desktop Revived (`bitchord`) is a native desktop music client in
+Rust — `egui`/`eframe` 0.37 for the UI, `rodio`/`symphonia` for audio, an
+opt-in `wgpu` renderer, embedded `wry` WebViews for sign-ins. It plays from
+YouTube Music and the fork's own sources (JioSaavn, MonoServers, addons),
+Dolby Atmos from hi-res addons, and has Listen Together / jam sync through
+its own relay server (`server/`).
+
+It is a **daughter fork of [ytm-rs](https://github.com/grapedjuice/ytm-rs)**
+and a sister fork of [BitChord-PC-Continued](https://github.com/jackychan4891/BitChord-PC-Continued) the style of the fork has to match Bitchord-PC-Continued rather than ytm-rs
+
+most code comes from upstream, and new upstream commits get ported in
+regularly. The fork's own features sit on top and must never be lost.
+
+**Commit as:** `LoserDenji <loserdenji@proton.me>`
 
 ---
 
-## Directory & Architecture Map
+## Build & test
 
-### Core Rust Application (`src/`)
-- `src/main.rs`: Entry point, application initialization, event loop setup, and background worker threads.
-- `src/appicon.rs`, `src/tray.rs`, `src/media.rs`, `src/deeplink.rs`: Operating system integrations (system tray, OS media controls via `souvlaki`, deep link URI handlers, app icons).
-- `src/audio.rs`, `src/stream.rs`, `src/dash.rs`, `src/opus.rs`, `src/hires.rs`: Audio pipeline, streaming decoders (`rodio`, `symphonia`, `filmcraft-ac3` for Dolby Atmos), DASH manifest parsing, and high-resolution playback engines.
-- `src/innertube.rs`, `src/ytm.rs`, `src/ytmapi.rs`, `src/providers.rs`, `src/apple.rs`, `src/lastfm.rs`, `src/sponsorblock.rs`: Music provider integrations (YouTube Music InnerTube API, JioSaavn DES encryption, Apple Music, Last.fm scrobbling, SponsorBlock API).
-- `src/lyrics.rs`, `src/translate.rs`, `src/bidi.rs`: Lyrics parsing (LRC/TTML), line-by-line translation, and Bidirectional (BiDi) text layout engine.
-- `src/jam.rs`: Listen Together / Jam synchronization client (WebSocket-based party playback).
-- `src/vault.rs`, `src/login.rs`, `src/turnstile.rs`, `src/jsc.rs`: Authentication, OS credential storage (`keyring`), YouTube PoToken solving, embedded QuickJS JS engine (`rquickjs`).
-- `src/ui/`: UI components rendered with `egui`:
-  - `src/ui/mod.rs`: Main UI coordinator and state context.
-  - `src/ui/shell.rs`, `src/ui/titlebar.rs`, `src/ui/island.rs`: Window frame, custom titlebar, dynamic island overlay.
-  - `src/ui/nowplaying.rs`, `src/ui/playback.rs`, `src/ui/queue.rs`, `src/ui/karaoke.rs`: Player UI, lyrics overlay, and playback controls.
-  - `src/ui/pages.rs`, `src/ui/collections.rs`, `src/ui/account.rs`, `src/ui/integrations.rs`: Application screens and settings views.
-- `src/transfer/`: Playlist and music library transfer utilities (Spotify import/export).
+### System dependencies (Linux)
 
-### Jam Sync Server (`server/`)
-- `server/src/lib.rs`: Cloudflare Workers / Rust WebSocket relay server for Listen Together session state.
-- `server/smoke/`: Integration/smoke test runner for the sync server.
+CI (ubuntu-24.04) installs:
+```
+libgtk-3-dev libwebkit2gtk-4.1-dev libasound2-dev \
+libayatana-appindicator3-dev libdbus-1-dev libssl-dev pkg-config
+```
 
-### Packaging & OS Distribution
-- `linux/`: Linux desktop integration scripts (`bitchord.desktop`, `deb.sh`, `install.sh`).
-- `macos/`: macOS bundle configuration (`Info.plist`, `bundle.sh`).
-- `installer/`: Inno Setup installer script (`bitchord.iss`) for Windows.
-- `assets/`: Static fonts, SVG glyphs, theme presets, quality badges, and JS solver scripts.
+Without sudo, the same works by downloading and extracting the debs to a
+local prefix:
+
+```bash
+mkdir -p ~/gtk-local && cd /tmp/gtk-deps
+apt-get download libgtk-3-dev libwebkit2gtk-4.1-dev libasound2-dev \
+  libwebkit2gtk-4.1-0 libjavascriptcoregtk-4.1-0 libjavascriptcoregtk-4.1-dev \
+  libsoup-3.0-0 libsoup-3.0-dev libepoxy-dev libatk1.0-dev \
+  libatk-bridge2.0-dev libpango1.0-dev libcairo2-dev libgdk-pixbuf-2.0-dev \
+  libharfbuzz-dev libglib2.0-dev libdbus-1-dev libssl-dev \
+  libfreetype-dev libfontconfig1-dev libffi-dev libpcre2-dev \
+  libwayland-dev libxkbcommon-dev libx11-dev libxext-dev libxi-dev \
+  libxrandr-dev libxcursor-dev libxfixes-dev libxcomposite-dev \
+  libxdamage-dev libxinerama-dev libxtst-dev libxrender-dev libxcb1-dev \
+  libxcb-render0-dev libxcb-shm0-dev libxau-dev libxdmcp-dev \
+  libpixman-1-dev libpng-dev zlib1g-dev
+for d in *.deb; do dpkg-deb -x "$d" ~/gtk-local/; done
+```
+
+Then:
+```bash
+export PKG_CONFIG_PATH=~/gtk-local/usr/lib/x86_64-linux-gnu/pkgconfig:~/gtk-local/usr/share/pkgconfig
+export PKG_CONFIG_SYSROOT_DIR=~/gtk-local
+export RUSTFLAGS="-L ~/gtk-local/usr/lib/x86_64-linux-gnu -L /usr/lib/x86_64-linux-gnu \
+  -C link-arg=-Wl,-rpath,~/gtk-local/usr/lib/x86_64-linux-gnu"
+export LD_LIBRARY_PATH=~/gtk-local/usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu
+```
+
+Two finishing steps the build needs:
+- Stub `.pc` files for `egl`, `gl`, `cloudproviders`, `atspi-2`, and
+  `libsystemd` (version `250`) in the pkgconfig dir — several GTK `.pc`
+  files require them but nothing links them here.
+- `ln -sf libfoo.so.0 libfoo.so` for each library in
+  `~/gtk-local/usr/lib/x86_64-linux-gnu/`, so the linker can find `-lgtk-3`
+  etc.
+
+### Commands
+
+```bash
+cargo check              # type-check — fast, needs no .so files
+cargo check --tests      # also type-check the tests
+cargo test --no-run      # compile tests — needs the .so files above
+cargo test               # compile and run everything
+cargo test module_name::     # one module's tests
+```
+
+`cargo check --tests` is the quick loop for fixing compile errors: it
+skips linking, so it works even without the runtime libraries.
+
+### CI
+
+`.github/workflows/check.yml` runs `cargo test` and `cargo build --release`
+on Linux, Windows and macOS. Warnings never fail the build — only errors
+do. Windows and macOS need no system packages, so a change that compiles
+locally on Linux is nearly always fine there too; what differs is
+`#[cfg(windows)]`/`#[cfg(target_os = "macos")]` code, which the compiler
+still type-checks for the local target only.
 
 ---
 
-## Strict Build & Development Rules
+## Porting from upstream ytm-rs
 
-### 1. No Local Builds Allowed
-- **CRITICAL**: Do **NOT** run `cargo build`, `cargo run`, `npm run build`, or any heavy local build commands on this machine.
-- All compilation, testing, and release verification must be delegated to GitHub Actions workflows (`.github/workflows/check.yml` and `.github/workflows/release.yml`).
+1. Read the upstream diff: `git -C <ytm-rs> show <commit> -- src/`.
+2. Never copy a whole file over the fork's version — the fork's files carry
+   BitChord features upstream doesn't have. Apply the change surgically.
+3. A cherry-pick's conflicts resolved to the upstream side is the classic
+   way features get silently lost; when in doubt, keep the fork's hunk and
+   re-apply upstream's change on top of it.
+4. Upstream commits assume every *earlier* upstream commit is already in.
+   When a ported change references something the fork doesn't have
+   (`crate::backdrop`, `find::ListFind`, a struct field…), port the
+   supporting piece too, never leave a stub.
+5. Prefer commit messages like `fix/feat/port: <upstream message>`
+   for hand-ported work; a bare cherry-pick with the upstream message is a
+   sign the conflicts weren't resolved by hand.
 
-### 2. Triggering Verification & Release Builds
-- To verify changes or produce a release, commit your changes, create a git tag, and push to GitHub:
-  ```bash
-  git tag v2.x.x
-  git push origin v2.x.x
-  ```
-- Make sure `gh` CLI or git credentials are authenticated before pushing.
+---
 
-### 3. File Editing Guidelines
-- **Large Files (>7KB)**: Due to editor tool constraints on large files, use terminal heredoc to rewrite large UI or source files rather than single-line or small multi-line patch replacements if a patch fails:
-  ```bash
-  cat > src/ui/some_file.rs << 'HEREDOC'
-  // file content
-  HEREDOC
-  ```
-- **Scope**: Touch only the relevant code required for the task. Do not make unrelated refactors or reformatting edits.
+## Code style
 
-### 4. Code Standards & Dependencies
-- Core language: Rust (2024 edition).
-- GUI framework: `egui` 0.37 / `eframe` 0.37.
-- Async runtime: `tokio` (multi-thread runtime).
-- Always verify crate additions in `Cargo.toml` before adding imports. Match existing dependencies and feature flags carefully.
+**Match the surrounding code.** Follow the naming, structure and comment
+style of the files you are touching. Don't reformat code you aren't
+changing — no drive-by rewraps, no import sorting, no `cargo fmt` over
+whole files. The diff should read as only the change that was asked for.
+
+**Don't trade features for speed.** Performance work keeps every existing
+animation and visual. If a change alters anything visible, A frame is only
+"spared" when nothing the listener sees is lost.
+
+**Comments say why, not what.** A comment earns its line by explaining
+something the code can't: the reason for a wait, a guard, a reorder.
+Read like this:
+
+```rust
+// wait until the cover is in, otherwise the open spring jumps
+let cover = app.cover_loaded(&song);
+
+// paused while the player covers the page, so the bars stop eating frames
+let playing = is_playing && !obscured;
+```
+
+Not like this:
+
+```rust
+/// NOTE: This function is responsible for retrieving the `cover` resource
+/// and subsequently performing the initialization routine.
+```
+
+The second kind restates the code and rots the moment the code moves;
+the first kind is the reason the line exists.
