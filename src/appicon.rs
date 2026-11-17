@@ -13,18 +13,21 @@ pub struct Variant {
     pub name: &'static str,
     /// An ICO whose entries are PNGs, from 16 to 256 px.
     ico: &'static [u8],
+    /// A PNG of it at its biggest, for a badge cut to a circle (Discord's card): the
+    /// repo serves the same file, at [`Variant::badge_url`].
+    pub badge: &'static [u8],
 }
 
 macro_rules! variant {
     ($id:literal, $name:literal) => {
-        Variant { id: $id, name: $name, ico: include_bytes!(concat!("../assets/icon/variants/", $id, ".ico")) }
+        Variant { id: $id, name: $name, ico: include_bytes!(concat!("../assets/icon/variants/", $id, ".ico")), badge: include_bytes!(concat!("../site/badge/", $id, ".png")) }
     };
 }
 
 pub const CLASSIC: &str = "classic";
 
 pub static ALL: &[Variant] = &[
-    Variant { id: CLASSIC, name: "BitChord", ico: include_bytes!("../assets/icon/icon.ico") },
+    Variant { id: CLASSIC, name: "BitChord", ico: include_bytes!("../assets/icon/icon.ico"), badge: include_bytes!("../site/badge/classic.png") },
     variant!("official", "Original"),
     variant!("smilering", "Smile ring"),
     variant!("gear", "Rust gear"),
@@ -36,11 +39,24 @@ pub static ALL: &[Variant] = &[
     variant!("fluent", "Fluent"),
 ];
 
+/// Where the repo serves the icons' badges (`site/badge`, on the default branch).
+const BADGE_BASE: &str = "https://raw.githubusercontent.com/LoserDenji/Bitchord-Desktop-Revived/main/site/badge/";
+
 pub fn get(id: &str) -> &'static Variant {
     ALL.iter().find(|v| v.id == id).unwrap_or(&ALL[0])
 }
 
 impl Variant {
+    /// Where the repo serves this icon's badge.
+    pub fn badge_url(&self) -> String {
+        format!("{BADGE_BASE}{}.png", self.id)
+    }
+
+    /// The icon whose badge is at `url`.
+    pub fn by_badge_url(url: &str) -> Option<&'static Self> {
+        ALL.iter().find(|v| url.strip_prefix(BADGE_BASE).and_then(|f| f.strip_suffix(".png")) == Some(v.id))
+    }
+
     /// The PNG of the smallest entry at least `size` px wide (else the largest).
     pub fn png(&self, size: u32) -> &'static [u8] {
         let entries = ico_entries(self.ico);

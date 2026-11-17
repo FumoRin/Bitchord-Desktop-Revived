@@ -10,8 +10,11 @@
 //! only when the user clicks Connect. The token lives in the vault, never in
 //! the settings file.
 //!
-//! The plain IPC presence (`crate::discord`) stays as the fallback for a
-//! listener who doesn't link an account.
+//! The card itself is the one `crate::discord` builds for the plain IPC path,
+//! from the same Settings wording, so a linked listener's card is laid out the
+//! same way — only through their own account, with the artwork mirrored onto
+//! Discord's CDN. The plain IPC presence stays as the fallback for a listener
+//! who doesn't link an account.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -27,10 +30,6 @@ use tokio_tungstenite::tungstenite::Message;
 pub const APPLICATION_ID: &str = "1543679166967193620";
 const GATEWAY: &str = "wss://gateway.discord.gg/?v=9&encoding=json";
 const API: &str = "https://discord.com/api/v9";
-const PROJECT_URL: &str = "https://github.com/LoserDenji/Bitchord-Desktop-Revived";
-pub const DEFAULT_BUTTON_1: &str = "Listen on YouTube Music";
-pub const DEFAULT_BUTTON_2: &str = "Bitchord Desktop Revived";
-const APP_NAME: &str = "BitChord";
 
 const INITIAL_RECONNECT_MS: u64 = 1_000;
 const MAX_RECONNECT_MS: u64 = 60_000;
@@ -53,34 +52,6 @@ const OP_HEARTBEAT_ACK: u8 = 11;
 
 // ---- How the card reads -------------------------------------------------------
 
-/// What the card shows and how, as the phone's DiscordScreen picks it.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(default)]
-pub struct Options {
-    /// listening | playing | watching | competing
-    pub activity_type: String,
-    /// Lead with the song title rather than the artist in member lists.
-    pub use_details: bool,
-    /// Replaces "BitChord" after "Listening to"; empty keeps it.
-    pub activity_name: String,
-    /// The two card buttons are fixed — one opens the song on YouTube Music, one
-    /// opens this project's page — and only switched off, not renamed.
-    pub button1_visible: bool,
-    pub button2_visible: bool,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            activity_type: "listening".into(),
-            use_details: false,
-            activity_name: String::new(),
-            button1_visible: true,
-            button2_visible: true,
-        }
-    }
-}
-
 /// The linked account, as Settings shows it (KizzyRPC.getUserInfo).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct User {
@@ -99,20 +70,14 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn activity_type_id(name: &str) -> u8 {
-    match name {
-        "playing" => 0,
-        "watching" => 3,
-        "competing" => 5,
-        _ => 2, // listening
+/// Which line the member list repeats, as Discord's number for it (the IPC payload's
+/// `StatusDisplayType`, which the gateway takes too).
+fn status_display_type(s: crate::discord::Status) -> u8 {
+    match s {
+        crate::discord::Status::Name => 0,
+        crate::discord::Status::Line1 => 2,
+        crate::discord::Status::Line2 => 1,
     }
-}
-
-/// {song_name}, {artist_name} and {album_name} in a presence text field.
-fn resolve_variables(text: &str, title: &str, artist: &str, album: Option<&str>) -> String {
-    text.replace("{song_name}", title)
-        .replace("{artist_name}", artist)
-        .replace("{album_name}", album.unwrap_or(""))
 }
 
 /// Identify.toIdentifyPayload, with the web client's properties.
@@ -503,34 +468,34 @@ impl Service {
         result
     }
 
-    /// DiscordRPC.updateSong: timestamps with the rate divided out, the rate tag,
-    /// external-asset artwork. The buttons are fixed: the song on YouTube Music and
-    /// this project's page, each switchable from Settings but never renamed.
-    async fn build_presence(
-        &self,
-        token: &str,
-        p: &crate::discord::Presence,
-        options: &Options,
-        rate: f64,
-    ) -> Value {
+    /// The card as the gateway takes it: the same fields the IPC payload carries
+    /// (name, the two lines and their links, the assets with the badge and the
+    /// hover text, the timestamps, the buttons), with the artwork mirrored onto
+    /// Discord's CDN as an `mp:` asset. `DiscordRPC.updateSong`'s shape.
+    async fn build_presence(&self, token: &str, c: &crate::discord::Card) -> Value {
         let now = now_ms();
-        let rate = if rate > 0.0 { rate } else { 1.0 };
-        // The card's bar runs at the listening rate: its span is the song's, divided out.
-        let position_ms = (now - p.start_ms).max(0);
-        let remain_ms = p.end_ms.map(|end| (end - now).max(0));
-        let watch_url = format!("https://music.youtube.com/watch?v={}", p.video_id);
-        let album = p.album.as_deref();
-        let mut buttons: Vec<(String, String)> = Vec::new();
-        if options.button1_visible {
-            buttons.push((DEFAULT_BUTTON_1.to_owned(), watch_url.clone()));
+        // "Listening": the verb the card carries, as the IPC one's does.
+        let mut activity = json!({
+            "name": crate::discord::field(c.name()),
+            "type": 2,
+            "status_display_type": status_display_type(c.status),
+            "url": Value::Null,
+        });
+        let object = activity.as_object_mut().unwrap();
+        if let Some(l) = &c.lines[0] {
+            object.insert("details".into(), json!(crate::discord::field(&l.text)));
+            object.insert("details_url".into(), l.url.clone().map(Value::String).unwrap_or(Value::Null));
         }
-        if options.button2_visible {
-            buttons.push((resolve_variables(DEFAULT_BUTTON_2, &p.title, &p.artist, album), PROJECT_URL.to_string()));
+        if let Some(l) = &c.lines[1] {
+            object.insert("state".into(), json!(crate::discord::field(&l.text)));
+            object.insert("state_url".into(), l.url.clone().map(Value::String).unwrap_or(Value::Null));
         }
-        let art = p
-            .art
-            .as_deref()
-            .filter(|u| u.starts_with("https://") || u.starts_with("http://"));
+        // The clock the card's bar runs on: real time, the listening rate already
+        // divided out where the card was built.
+        if let Some((start, end)) = c.times {
+            object.insert("timestamps".into(), json!({ "start": start, "end": end }));
+        }
+        let art = c.art.as_deref().filter(|u| u.starts_with("https://") || u.starts_with("http://"));
         let large_image = match art {
             Some(url) => Some(
                 self.external_asset(token, url)
@@ -539,33 +504,22 @@ impl Service {
             ),
             None => None,
         };
-        let mut activity = json!({
-            "name": if options.activity_name.trim().is_empty() { APP_NAME } else { options.activity_name.trim() },
-            "details": if rate != 1.0 { format!("{} [{:.2}x]", p.title, rate) } else { p.title.clone() },
-            "details_url": watch_url,
-            "state": p.artist,
-            "state_url": Value::Null,
-            "type": activity_type_id(&options.activity_type),
-            "status_display_type": if options.use_details { 2 } else { 1 },
-            "timestamps": {
-                "start": now - (position_ms as f64 / rate).round() as i64,
-                "end": remain_ms.map(|ms| json!(now + (ms as f64 / rate).round() as i64)).unwrap_or(Value::Null),
-            },
-            "assets": { "large_image": large_image, "small_image": Value::Null, "large_text": Value::Null, "small_text": Value::Null },
-            "url": Value::Null,
+        let mut assets = json!({
+            "large_image": large_image,
+            "small_image": c.badge.as_ref().map(|b| json!(b.url)).unwrap_or(Value::Null),
+            "large_text": c.lines[2].as_ref().map(|l| json!(crate::discord::field(&l.text))).unwrap_or(Value::Null),
+            "small_text": c.badge.as_ref().map(|b| json!(crate::discord::field(&b.name))).unwrap_or(Value::Null),
         });
-        if !buttons.is_empty() {
-            let object = activity.as_object_mut().unwrap();
+        if let Some(u) = &c.art_url {
+            assets.as_object_mut().unwrap().insert("large_url".into(), json!(u));
+        }
+        object.insert("assets".into(), assets);
+        if !c.buttons.is_empty() {
             object.insert(
                 "buttons".into(),
-                Value::Array(
-                    buttons
-                        .iter()
-                        .map(|(label, _)| Value::String(label.clone()))
-                        .collect(),
-                ),
+                Value::Array(c.buttons.iter().map(|(label, _)| Value::String((*label).to_owned())).collect()),
             );
-            object.insert("metadata".into(), json!({ "button_urls": buttons.iter().map(|(_, url)| Value::String(url.clone())).collect::<Vec<_>>() }));
+            object.insert("metadata".into(), json!({ "button_urls": c.buttons.iter().map(|(_, url)| Value::String(url.clone())).collect::<Vec<_>>() }));
             object.insert(
                 "application_id".into(),
                 Value::String(APPLICATION_ID.into()),
@@ -584,20 +538,14 @@ impl Service {
     /// The page reports what's playing; `None` takes the card down but leaves the
     /// socket up for a while (an idle close puts the socket away later, so an idle
     /// app doesn't hold the account online).
-    pub fn set_presence(
-        self: &Arc<Self>,
-        token: String,
-        track: Option<crate::discord::Presence>,
-        options: Options,
-        rate: f64,
-    ) {
+    pub fn set_presence(self: &Arc<Self>, token: String, card: Option<crate::discord::Card>) {
         let this = self.clone();
         self.backend.spawn(async move {
             // Cancel any pending idle close.
             if let Some(handle) = this.idle.lock().await.take() {
                 handle.abort();
             }
-            let Some(track) = track else {
+            let Some(card) = card else {
                 if let Some(gateway) = this.gateway.lock().await.clone() {
                     gateway.send(Command::ClearActivity);
                 }
@@ -628,7 +576,7 @@ impl Service {
                 }
             };
             gateway.send(Command::SetPresence(
-                this.build_presence(&token, &track, &options, rate).await,
+                this.build_presence(&token, &card).await,
             ));
             // Wait a while for a session; a push that times out is replayed when one arrives.
             let deadline = tokio::time::Instant::now() + Duration::from_millis(SESSION_WAIT_MS);
@@ -638,8 +586,10 @@ impl Service {
                 }
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
+            // Sent again on the session that answered: the first one's artwork mirror
+            // warmed the cache, so this is the one that carries it.
             gateway.send(Command::SetPresence(
-                this.build_presence(&token, &track, &options, rate).await,
+                this.build_presence(&token, &card).await,
             ));
         });
     }
@@ -710,37 +660,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn presence_options_round_trip() {
-        let o = Options::default();
-        let v = serde_json::to_string(&o).unwrap();
-        assert_eq!(serde_json::from_str::<Options>(&v).unwrap(), o);
-        // A settings file saved by an older version: the status and the button labels
-        // it carries are dropped, and what's left still reads.
-        let old = r#"{ "activity_type": "playing", "status": "dnd", "use_details": true, "activity_name": "My app", "button1_text": "Play {song_name}", "button1_visible": false, "button2_text": "", "button2_visible": false }"#;
-        let o = Options {
-            activity_type: "playing".into(),
-            use_details: true,
-            activity_name: "My app".into(),
-            button1_visible: false,
-            button2_visible: false,
-        };
-        assert_eq!(serde_json::from_str::<Options>(old).unwrap(), o);
-    }
-
-    #[test]
-    fn activity_type_ids() {
-        assert_eq!(activity_type_id("listening"), 2);
-        assert_eq!(activity_type_id("playing"), 0);
-        assert_eq!(activity_type_id("watching"), 3);
-        assert_eq!(activity_type_id("competing"), 5);
-        assert_eq!(activity_type_id("anything"), 2);
-    }
-
-    #[test]
-    fn variables() {
-        assert_eq!(resolve_variables(DEFAULT_BUTTON_2, "Song", "Artist", Some("Album")), DEFAULT_BUTTON_2);
-        assert_eq!(resolve_variables("Play {song_name}", "Song", "Artist", None), "Play Song");
-        assert_eq!(resolve_variables("{album_name}", "Song", "Artist", None), "");
+    fn the_member_list_line_is_discords_number_for_it() {
+        assert_eq!(status_display_type(crate::discord::Status::Name), 0);
+        assert_eq!(status_display_type(crate::discord::Status::Line1), 2);
+        assert_eq!(status_display_type(crate::discord::Status::Line2), 1);
     }
 
     #[test]

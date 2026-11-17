@@ -49,6 +49,27 @@ pub fn on_text() -> Color32 {
     if light() { Color32::WHITE } else { Color32::from_gray(15) }
 }
 
+/// Relative luminance of an opaque colour, as WCAG words it.
+fn luminance(c: Color32) -> f32 {
+    let lin = |v: u8| {
+        let v = v as f32 / 255.0;
+        if v <= 0.040_45 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+    };
+    0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+}
+
+/// WCAG contrast between two opaque colours.
+fn contrast(a: Color32, b: Color32) -> f32 {
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+/// Text and icons on a fill of this colour: dark or white, whichever reads better.
+pub fn on_fill(fill: Color32) -> Color32 {
+    let dark = Color32::from_gray(15);
+    if contrast(dark, fill) > contrast(Color32::WHITE, fill) { dark } else { Color32::WHITE }
+}
+
 /// Least important text: counts, hints, placeholders.
 pub fn text_faint() -> Color32 {
     if light() { TEXT_FAINT_LIGHT } else { TEXT_FAINT }
@@ -395,6 +416,12 @@ pub fn anim_bool(ctx: &egui::Context, id: impl std::hash::Hash + std::fmt::Debug
 /// leaves it alone (BitChord's `anim_bool` carries no such fade yet: the two agree).
 pub fn anim_bool_timed(ctx: &egui::Context, id: impl std::hash::Hash + std::fmt::Debug, on: bool, secs: f32) -> f32 {
     ease_out(ctx.animate_bool_with_time(egui::Id::unique(id), on, secs * SPEED))
+}
+
+/// [`anim_bool`] that eases in and out, for a fold that opens and closes (Discord's
+/// settings): the change of direction should never read as a snap.
+pub fn anim_bool_soft(ctx: &egui::Context, id: impl std::hash::Hash + std::fmt::Debug, on: bool, secs: f32) -> f32 {
+    ease_in_out(ctx.animate_bool_with_time(egui::Id::unique(id), on, secs * SPEED))
 }
 
 // ------------------------------------------------------------------ type

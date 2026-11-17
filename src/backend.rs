@@ -70,6 +70,8 @@ pub enum Req {
     Lyrics(Track),
     /// SponsorBlock's parts of a video to skip.
     Segments { video_id: String },
+    /// An artist's picture, for the badge on Discord's card: `id`'s, looked up by `name`.
+    ArtistPicture { id: String, name: String },
     /// Romanization and translation for the lyric lines of one source.
     LyricsExtras { video_id: String, source: String, lines: Vec<String>, lang: Option<String>, target: String },
     /// Process cover art for the background; `key` is echoed back.
@@ -154,6 +156,7 @@ impl Req {
             Req::Download { .. } | Req::DownloadMany { .. } => "Download",
             Req::Lyrics(_) => "Lyrics",
             Req::Segments { .. } => "SponsorBlock",
+            Req::ArtistPicture { .. } => "Artist picture",
             Req::LyricsExtras { .. } => "Translation",
             Req::Art { .. } => "Art",
             Req::Canvas { .. } => "Animated cover",
@@ -183,7 +186,7 @@ impl Req {
 
     /// Background requests fail quietly (logged, no toast).
     fn quiet(&self) -> bool {
-        matches!(self, Req::Suggest { .. } | Req::Account | Req::Channels | Req::ServerQueue | Req::Art { .. } | Req::Canvas { .. } | Req::SpotifyCanvas { .. } | Req::ArtistSignature { .. } | Req::Prefetch { .. } | Req::HomeMore(_) | Req::MusicVideo(_) | Req::Lyrics(_) | Req::Segments { .. } | Req::LyricsExtras { .. } | Req::Comments { .. } | Req::CommentsPage { .. } | Req::CommentAction { .. })
+        matches!(self, Req::Suggest { .. } | Req::Account | Req::Channels | Req::ServerQueue | Req::Art { .. } | Req::Canvas { .. } | Req::SpotifyCanvas { .. } | Req::ArtistSignature { .. } | Req::ArtistPicture { .. } | Req::Prefetch { .. } | Req::HomeMore(_) | Req::MusicVideo(_) | Req::Lyrics(_) | Req::Segments { .. } | Req::LyricsExtras { .. } | Req::Comments { .. } | Req::CommentsPage { .. } | Req::CommentAction { .. })
     }
 }
 
@@ -379,6 +382,8 @@ pub enum Resp {
     /// Every source's lyrics for a song (empty when nobody has them).
     Lyrics { video_id: String, lyrics: LyricsSet },
     Segments { video_id: String, segments: Vec<crate::sponsorblock::Segment> },
+    /// An artist's picture for Discord's card; `None`: none was found.
+    ArtistPicture { id: String, pic: Option<crate::discord::Badge> },
     /// Romanization/translation for one source's lines, arriving after them.
     LyricsExtras { video_id: String, source: String, target: String, extras: crate::translate::Extras },
     Art { key: String, art: Art },
@@ -1162,6 +1167,10 @@ impl Backend {
                 Req::Segments { video_id } => {
                     let segments = crate::sponsorblock::segments(&self.http(), &video_id).await?;
                     Resp::Segments { video_id, segments }
+                }
+                Req::ArtistPicture { id, name } => {
+                    let found = ytm::search_cards(api, &name, ytm::Filter::Artists, me).await?;
+                    Resp::ArtistPicture { pic: artist_pic(&found, &id, &name), id }
                 }
                 Req::LyricsExtras { video_id, source, lines, lang, target } => {
                     let key = format!("{video_id}_{source}");
@@ -2985,6 +2994,14 @@ pub fn compact(n: u64) -> String {
 // Larger art URL for the background / now-playing view.
 pub fn art_url(t: &Track) -> Option<String> {
     model::pick(&t.thumbs, 120).map(|u| sized(u, 544))
+}
+
+/// The picture of artist `id` among artists found by `name`: the one with that id, or else
+/// one with that very name (a channel's songs can name an id search doesn't list).
+fn artist_pic(found: &[Card], id: &str, name: &str) -> Option<crate::discord::Badge> {
+    let hit = found.iter().find(|c| matches!(&c.target, Target::Artist(a) if a == id)).or_else(|| found.iter().find(|c| c.title.eq_ignore_ascii_case(name)))?;
+    let url = sized(model::pick(&hit.thumbs, 120)?, 160);
+    Some(crate::discord::Badge { name: hit.title.clone(), url })
 }
 
 #[cfg(test)]

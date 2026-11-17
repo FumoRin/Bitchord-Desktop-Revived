@@ -23,6 +23,7 @@ mod nowplaying;
 mod pace;
 mod pages;
 mod playback;
+mod presence;
 mod queue;
 mod responses;
 mod row_drag;
@@ -350,8 +351,11 @@ pub struct App {
     media: Option<Media>,
     discord: Option<crate::discord::Discord>,
     discord_enabled: bool,
-    /// Last state sent to Discord, to send only real changes.
-    discord_sent: Option<crate::discord::Presence>,
+    /// Last card sent to Discord, to send only real changes.
+    discord_sent: Option<crate::discord::Card>,
+    /// How the card reads: one wording for both paths, the plain IPC card and the
+    /// linked account's gateway one.
+    discord_prefs: crate::discord::Prefs,
     /// The linked Discord account ("Discord via link"): its gateway service, the
     /// token (kept in the vault), and who the account is, for the settings row.
     discord_link: Option<Arc<crate::discord_link::Service>>,
@@ -359,8 +363,8 @@ pub struct App {
     discord_link_user: Option<crate::discord_link::User>,
     /// A Discord sign-in window is up; its outcome lands in between.
     discord_link_busy: bool,
-    /// How the linked account's card reads (status, buttons, the activity name).
-    discord_options: crate::discord_link::Options,
+    /// The playing artist's picture, for the badge on the card (`None` while looked up).
+    artist_pics: HashMap<String, Option<crate::discord::Badge>>,
     /// The Last.fm account scrobbles go to; a sign-in in progress and its outcome.
     lastfm_user: Option<String>,
     lastfm_busy: Arc<AtomicBool>,
@@ -950,7 +954,12 @@ impl App {
             discord_link_token: crate::vault::get("discord token", &data_dir).and_then(|b| String::from_utf8(b).ok()),
             discord_link_user: get("discord_user").and_then(|s| serde_json::from_str(&s).ok()),
             discord_link_busy: false,
-            discord_options: get("discord_options").and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default(),
+            // The card's wording; a settings file saved by the old Discord carries the
+            // linked card's options over the first time (see `Prefs::migrated`).
+            discord_prefs: get("discord")
+                .and_then(|s| serde_json::from_str::<crate::discord::Prefs>(&s).ok())
+                .unwrap_or_else(|| crate::discord::Prefs::migrated(&get("discord_options").unwrap_or_default())),
+            artist_pics: HashMap::new(),
             discord_enabled,
             discord_sent: None,
             lastfm_user: crate::lastfm::user(),
@@ -1762,7 +1771,7 @@ impl eframe::App for App {
         self.tray_window(ctx, frame);
         self.window_hidden = self.hidden_to_tray || ctx.input(|i| i.viewport().minimized == Some(true));
         self.sync_tempo();
-        self.sync_discord();
+        self.sync_discord(ctx);
         self.sync_song_notification(ctx);
         self.sync_lastfm();
         self.sync_server_queue(ctx, now);
@@ -2117,7 +2126,7 @@ impl eframe::App for App {
         }
         storage.set_string("update_channel", if self.update_nightly { "nightly" } else { "stable" }.to_owned());
         storage.set_string("discord_enabled", b(self.discord_enabled));
-        storage.set_string("discord_options", serde_json::to_string(&self.discord_options).unwrap_or_default());
+        storage.set_string("discord", serde_json::to_string(&self.discord_prefs).unwrap_or_default());
         storage.set_string("discord_user", self.discord_link_user.as_ref().and_then(|u| serde_json::to_string(u).ok()).unwrap_or_default());
         if dev_var("YTM_APPEARANCE").is_none() {
             storage.set_string("appearance", self.appearance.key().to_owned());

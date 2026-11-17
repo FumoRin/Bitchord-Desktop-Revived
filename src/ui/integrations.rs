@@ -97,24 +97,9 @@ impl App {
         });
     }
 
-    /// Mirror playback into Discord. Cheap enough to run every frame: it only sends on a
-    /// new song, play/pause, a seek, or a newly learned duration.
-    pub(super) fn sync_discord(&mut self) {
-        if !self.discord_enabled {
-            return;
-        }
-        // A saved link comes back as a service on the first frame; the plain IPC
-        // one stays for a listener who never linked Discord.
-        if self.discord_link.is_none() && self.discord_link_token.is_some() {
-            self.discord_link = Some(Arc::new(crate::discord_link::Service::new(&self.backend)));
-        }
-        // The linked account's card goes through the account's own gateway; the plain
-        // IPC one stays for a listener who never linked Discord.
-        let linked = self.discord_link.is_some() && self.discord_link_token.is_some();
-        if !linked && self.discord.is_none() {
-            return;
-        }
-        let track = self.playing_track().filter(|_| self.playing() && !self.buffering);
+    /// What's playing, as Discord would get it, paused or not.
+    pub(super) fn discord_presence(&self) -> Option<crate::discord::Presence> {
+        let t = self.playing_track()?;
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
         // In real time: a song at 2x is over in half its length.
         let speed = self.audio.status.speed() as f64;
@@ -123,39 +108,84 @@ impl App {
         // The full quality line the player's track-info shows; YouTube's own audio is
         // the plain compressed one, so it has no detail numbers.
         let quality = self.audio_info.as_ref().map_or_else(|| "High".to_owned(), |(_, i)| i.rpc_line());
-        // Position ticks every 100 ms; only a jump of 2 s or more is a real seek. A
-        // quality change (a hi-res upgrade landing mid-song) is a new card too.
-        let same = match (track, &self.discord_sent) {
-            (Some(t), Some(b)) => {
-                b.video_id == t.id
-                    && (start_ms - b.start_ms).abs() < 2000
-                    && b.end_ms.map_or(dur <= 0, |e| (e - (start_ms + dur)).abs() < 2000)
-                    && b.quality.as_deref() == Some(quality.as_str())
-            }
-            (None, None) => true,
-            _ => false,
-        };
-        if same {
-            return;
-        }
-        let want = track.map(|t| crate::discord::Presence {
+        let code = self.jam.code();
+        Some(crate::discord::Presence {
             video_id: t.id.clone(),
             title: t.title.clone(),
             artist: t.artist_line(),
+            artist_id: t.first_artist_id().map(str::to_owned),
             album: t.album.as_ref().map(|a| a.name.clone()),
+            album_id: t.album.as_ref().and_then(|a| a.id.clone()),
             art: backend::art_url(t),
+            artist_pic: t.first_artist_id().and_then(|id| self.artist_pics.get(id).cloned().flatten()),
+            app_icon: self.app_icon,
             quality: Some(quality),
             start_ms,
             end_ms: (dur > 0).then_some(start_ms + dur),
-        });
-        if linked {
-            let link = self.discord_link.as_ref().expect("checked above").clone();
-            let token = self.discord_link_token.clone().expect("checked above");
-            link.set_presence(token, want.clone(), self.discord_options.clone(), 1.0);
-        } else if let Some(d) = &self.discord {
-            d.set(want.clone());
+            paused: !self.playing() || self.buffering,
+            jam: (!code.is_empty()).then(|| crate::jam::share_link(&self.jam_server, &code)),
+        })
+    }
+
+    /// Mirror playback into Discord. Cheap enough to run every frame: it only sends when
+    /// the card would look different, as on a new song, play/pause, a seek or new settings.
+    /// A linked account gets the card through its own gateway; a listener who never
+    /// linked one gets the plain IPC card — both laid out by the same wording.
+    pub(super) fn sync_discord(&mut self, ctx: &egui::Context) {
+        if !self.discord_enabled {
+            return;
         }
-        self.discord_sent = want;
+        // A saved link comes back as a service on the first frame.
+        if self.discord_link.is_none() && self.discord_link_token.is_some() {
+            self.discord_link = Some(Arc::new(crate::discord_link::Service::new(&self.backend)));
+        }
+        let linked = self.discord_link.is_some() && self.discord_link_token.is_some();
+        if !linked && self.discord.is_none() {
+            return;
+        }
+        self.want_artist_pic();
+        // A name is sent once it's typed, not a letter at a time: Discord limits how often
+        // the card may change.
+        let typing = ctx.memory(|m| m.has_focus(super::presence::name_id()));
+        let prefs = &self.discord_prefs;
+        let typed;
+        let prefs = if typing {
+            let name = self.discord_sent.as_ref().and_then(|c| c.name.clone()).unwrap_or_default();
+            typed = crate::discord::Prefs { app_name: name, ..prefs.clone() };
+            &typed
+        } else {
+            prefs
+        };
+        let want = self.discord_presence().filter(|p| !p.paused || prefs.when_paused).map(|p| crate::discord::Card::new(&p, prefs));
+        let same = match (&want, &self.discord_sent) {
+            (Some(a), Some(b)) => a.same(b),
+            (a, b) => a.is_none() && b.is_none(),
+        };
+        if !same {
+            if linked {
+                let link = self.discord_link.as_ref().expect("checked above").clone();
+                let token = self.discord_link_token.clone().expect("checked above");
+                link.set_presence(token, want.clone());
+            } else if let Some(d) = &self.discord {
+                d.set(want.clone());
+            }
+            self.discord_sent = want;
+        }
+    }
+
+    /// Look up the playing artist's picture once, when the card's badge shows it.
+    fn want_artist_pic(&mut self) {
+        let p = &self.discord_prefs;
+        if p.badge != crate::discord::BadgeShows::Artist || !p.art || p.hide_details {
+            return;
+        }
+        let Some(a) = self.playing_track().and_then(|t| t.artists.iter().find(|a| a.id.is_some())) else { return };
+        let id = a.id.clone().unwrap_or_default();
+        if !self.artist_pics.contains_key(&id) {
+            let name = a.name.clone();
+            self.artist_pics.insert(id.clone(), None);
+            self.backend.request(backend::Req::ArtistPicture { id, name });
+        }
     }
 
     /// Connect Discord: the sign-in window opens discord.com; the token it hides

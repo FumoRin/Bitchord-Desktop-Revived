@@ -1621,7 +1621,7 @@ fn words_match(words: &[String], section: &str, text: &str) -> bool {
     words.iter().all(|w| section.contains(w.as_str()) || text.contains(w.as_str()))
 }
 
-fn filtering() -> bool {
+pub(super) fn filtering() -> bool {
     FILTER.with_borrow(|f| !f.words.is_empty())
 }
 
@@ -1730,6 +1730,8 @@ fn settings_tab(app: &mut App, ui: &mut Ui, tab: SettingsTab) {
         SettingsTab::Account => {
             settings_account(app, ui);
             settings_connections(app, ui);
+            // The Discord card: its wording, and a preview of it, under the link.
+            super::presence::settings(app, ui);
             // Spotify, with the accounts it signs into: its transfer card and its
             // account row belong with the Google account above them.
             if filter_show(ui, "Import Spotify transfer Liked Songs playlists account") {
@@ -2881,7 +2883,7 @@ fn settings_lyrics(app: &mut App, ui: &mut Ui) {
         let desc = "Tried in this order. Switch one off to skip it; the toolbar under the lyrics picks a different one for a single song.";
         let names = app.lyric_prefs.order.iter().map(|(p, _)| p.name()).collect::<Vec<_>>().join(" ");
         if filter_show(ui, &format!("Lyrics sources {desc} {names} order arrows")) {
-            setting_row_shown(ui, "Lyrics sources", Some(desc), |_| {});
+            setting_row_shown(ui, "Lyrics sources", Some(desc), 210.0, |_| {});
             let n = app.lyric_prefs.order.len();
             let mut swap: Option<(usize, usize)> = None;
             for (i, entry) in app.lyric_prefs.order.iter_mut().enumerate() {
@@ -2924,7 +2926,7 @@ fn settings_artists(app: &mut App, ui: &mut Ui) {
         // The row and its link field are one unit in a search.
         let desc = "A link to your own signature API. Artists get their handwritten signature, with “Signed by …” above it, standing in for their name in the page header; without a signature, their name is set in type.";
         if filter_show(ui, &format!("Signature service {desc} link")) {
-            setting_row_shown(ui, "Signature service", Some(desc), |_| {});
+            setting_row_shown(ui, "Signature service", Some(desc), 210.0, |_| {});
             divider(ui);
             ui.add_space(12.0);
             if super::text_field(ui, "Link", &mut app.signature_api, false, "https://your-signature-service.example").changed() {
@@ -3154,34 +3156,35 @@ fn settings_window(app: &mut App, ui: &mut Ui) {
     });
 }
 
-/// Settings › Connections.
+/// Settings › Connections: the Discord sign-in and Last.fm. The Discord card itself is
+/// laid out in the Discord section under this one (`presence::settings`).
 fn settings_connections(app: &mut App, ui: &mut Ui) {
-    let mut discord_enabled = app.discord_enabled;
     let linked = app.discord_link_token.is_some();
     let (mut connect, mut disconnect) = (false, false);
     settings_section(ui, "Connections", None, None, |ui| {
-        let detail = match (&app.discord_link_user, linked) {
-            (Some(u), _) => format!("Showing what you play on {}'s Discord profile.", u.name),
-            (None, true) => "Discord is linked; presence shows on the linked account.".to_owned(),
-            (None, false) => "Show what you're playing on your Discord profile. Link an account for a card with buttons and cover art on your own profile.".to_owned(),
+        // Without a linked account the plain IPC card shows (the app id's, through the
+        // Discord app); a linked one puts the same card on the user's own profile.
+        let detail = if linked {
+            match &app.discord_link_user {
+                Some(u) => format!("The Discord card shows on {}'s profile.", u.name),
+                None => "Discord is linked; the card shows on the linked account.".to_owned(),
+            }
+        } else {
+            "Sign Discord in once and the card shows on your own profile, buttons and artwork included, without the Discord app running. Without a link, the card shows through the Discord app's rich presence instead.".to_owned()
         };
-        setting_row(ui, "Discord", Some(&detail), |ui| {
-            toggle(ui, &mut discord_enabled, "Discord");
-        });
-        divider(ui);
         let status = app.discord_link.as_ref().map(|s| s.status()).unwrap_or(("off", None));
         let link_detail = match (&status.1, app.discord_link_busy) {
-            (Some(p), _) => p.as_str(),
-            (None, true) => "Waiting for the Discord page…",
+            (Some(p), _) => p.clone(),
+            (None, true) => "Waiting for the Discord page…".to_owned(),
             (None, false) if linked => match status.0 {
-                "ready" => "Linked account's presence is live.",
-                "connecting" => "Bringing the linked account's gateway up…",
-                "error" => "The linked account's gateway is down.",
-                _ => "Linked. Presence starts with the switch above.",
+                "ready" => detail,
+                "connecting" => "Bringing the linked account's gateway up…".to_owned(),
+                "error" => "The linked account's gateway is down.".to_owned(),
+                _ => "Linked. The card starts with the Rich Presence switch below.".to_owned(),
             },
-            (None, false) => "Open discord.com and sign in; the app takes it from there.",
+            (None, false) => detail,
         };
-        setting_row(ui, "Link account", Some(link_detail), |ui| {
+        setting_row(ui, "Link Discord", Some(&link_detail), |ui| {
             if linked {
                 disconnect = pill(ui, "Disconnect", None, false).clicked();
             } else if app.discord_link_busy {
@@ -3190,20 +3193,6 @@ fn settings_connections(app: &mut App, ui: &mut Ui) {
                 connect = pill(ui, "Connect", None, false).clicked();
             }
         });
-        if linked {
-            divider(ui);
-            setting_row(ui, "Lead with the song", Some("Name the song, not the artist, in member lists."), |ui| {
-                toggle(ui, &mut app.discord_options.use_details, "song-first");
-            });
-            divider(ui);
-            text_option(ui, &mut app.discord_options.activity_name, "Listening to :", "BitChord");
-            divider(ui);
-            setting_row(ui, "Buttons on the card", Some("Two taps on the profile card, fixed: one opens the song on YouTube Music, one opens this project's page. The labels can't be changed, only switched off."), |ui| {
-                toggle(ui, &mut app.discord_options.button1_visible, crate::discord_link::DEFAULT_BUTTON_1);
-                ui.add_space(8.0);
-                toggle(ui, &mut app.discord_options.button2_visible, crate::discord_link::DEFAULT_BUTTON_2);
-            });
-        }
         divider(ui);
         let busy = app.lastfm_busy.load(Ordering::Relaxed);
         let desc = match &app.lastfm_user {
@@ -3234,22 +3223,6 @@ fn settings_connections(app: &mut App, ui: &mut Ui) {
     if disconnect {
         app.unlink_discord();
     }
-    if discord_enabled != app.discord_enabled {
-        app.set_discord_enabled(discord_enabled);
-    }
-}
-
-/// A one-line option the listener types over (the card's labels).
-fn text_option(ui: &mut Ui, value: &mut String, label: &str, placeholder: &str) {
-    setting_row(ui, label, Some(&format!("Empty: \"{placeholder}\".")), |ui| {
-        let width = ui.available_width() - 140.0;
-        ui.add(
-            egui::TextEdit::singleline(value)
-                .hint_text(egui::RichText::new(placeholder).color(theme::text_faint()))
-                .font(theme::regular(13.0))
-                .desired_width(width.max(120.0)),
-        );
-    });
 }
 
 /// Settings › Network: the proxy everything goes through, a connection test, and a
@@ -3492,7 +3465,7 @@ fn normalization_desc(app: &App) -> String {
 }
 
 /// A dropdown's closed state: the chosen value and a chevron on a glass pill.
-fn dropdown_button(ui: &mut Ui, value: &str, width: f32, name: &str) -> egui::Response {
+pub(super) fn dropdown_button(ui: &mut Ui, value: &str, width: f32, name: &str) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 36.0), Sense::click());
     let resp = widgets::named(resp, name).on_hover_cursor(egui::CursorIcon::PointingHand);
     let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
@@ -3606,14 +3579,23 @@ pub(super) fn setting_row(ui: &mut Ui, title: &str, desc: Option<&str>, control:
     if !filter_show(ui, &format!("{title} {}", desc.unwrap_or_default())) {
         return;
     }
-    setting_row_shown(ui, title, desc, control);
+    setting_row_shown(ui, title, desc, 210.0, control);
+}
+
+/// A settings row whose controls take `control_w` rather than one control's 230, for a
+/// dropdown with a switch beside it (Discord's card lines).
+pub(super) fn setting_row_wide(ui: &mut Ui, title: &str, desc: Option<&str>, control_w: f32, control: impl FnOnce(&mut Ui)) {
+    if !filter_show(ui, &format!("{title} {}", desc.unwrap_or_default())) {
+        return;
+    }
+    setting_row_shown(ui, title, desc, control_w, control);
 }
 
 /// The row itself, without the filter check: for a block that's gated as one unit — a row
 /// and the widgets that belong to it show together or not at all.
-fn setting_row_shown(ui: &mut Ui, title: &str, desc: Option<&str>, control: impl FnOnce(&mut Ui)) {
+fn setting_row_shown(ui: &mut Ui, title: &str, desc: Option<&str>, control_w: f32, control: impl FnOnce(&mut Ui)) {
     let w = ui.available_width();
-    let text_w = (w - 230.0).max(200.0);
+    let text_w = (w - control_w - 20.0).max(200.0);
     let title_g = widgets::galley(ui, title, theme::semibold(14.5), theme::text(), text_w);
     // Up to three lines, and as many again for each line the description starts itself.
     let desc_g = desc.map(|d| widgets::galley_wrapped(ui, d, theme::regular(12.5), theme::text_dim(), text_w, 3 * (1 + d.matches('\n').count())));
