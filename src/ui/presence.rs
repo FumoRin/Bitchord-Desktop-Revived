@@ -6,7 +6,7 @@ use egui::{Align2, Color32, Id, Layout, Rect, RichText, Sense, Ui, UiBuilder, Ve
 
 use super::pages::{divider, dropdown_button, filtering, option_row, section_label, setting_row, setting_row_wide, settings_card, settings_section, toggle};
 use super::{App, widgets};
-use crate::discord::{self, BadgeShows, Card, Page, Prefs, Presence, Show, Status};
+use crate::discord::{self, Card, Page, Prefs, Presence, Show, Status};
 use crate::theme::{self, icon};
 
 /// Dropdowns and the name box share a width, so the column lines up.
@@ -96,10 +96,6 @@ fn rest(app: &App, ui: &mut Ui, prefs: &mut Prefs) {
                 link_toggle(ui, &mut prefs.art_link, "Album art is clickable", prefs.art);
             });
             ui.add_enabled_ui(prefs.art, |ui| {
-                divider(ui);
-                setting_row(ui, "Badge", Some("A small picture on the artwork's corner: the artist's, or the app icon picked in Appearance."), |ui| {
-                    dropdown(ui, "Badge", &mut prefs.badge, &BadgeShows::ALL, |b| b.label().to_owned());
-                });
                 divider(ui);
                 setting_row(ui, "Line 3", Some("The last line, on the artwork's hover. The quality line shows the format the song plays at, as the player's track-info does."), |ui| {
                     dropdown(ui, "Line 3", &mut prefs.lines[2], &Show::ALL, |s| s.label().to_owned());
@@ -227,7 +223,7 @@ fn now_ms() -> i64 {
 }
 
 /// Shown with nothing playing.
-fn example(app_icon: &'static str) -> Presence {
+fn example() -> Presence {
     let now = now_ms();
     Presence {
         video_id: String::new(),
@@ -237,8 +233,6 @@ fn example(app_icon: &'static str) -> Presence {
         album: Some("Album".into()),
         album_id: None,
         art: Some(discord::ICON.into()),
-        artist_pic: None,
-        app_icon,
         // The mark the quality line carries when a hi-res copy plays.
         quality: Some("Hi-Res Lossless · FLAC · 1641 kbps · 24-bit · Stereo".into()),
         start_ms: now - 79_000,
@@ -318,7 +312,7 @@ fn shown(app: &App) -> (Presence, &'static str) {
         Some(p) if p.paused => "Paused",
         Some(_) => "Now playing",
     };
-    (p.unwrap_or_else(|| example(app.app_icon)), state)
+    (p.unwrap_or_else(example), state)
 }
 
 /// What the preview can't show by itself.
@@ -374,16 +368,6 @@ fn profile_card(ui: &mut Ui, c: &Card, width: f32) {
         let r = Rect::from_min_size(pos2(x, y), Vec2::splat(ART));
         ui.painter().rect_filled(r, 8.0, theme::glass(0.08));
         widgets::paint_remote(ui, art, r, 8.0, full_uv(), Color32::WHITE);
-        if let Some(pic) = &c.badge {
-            let b = Rect::from_center_size(r.right_bottom() - vec2(3.0, 3.0), Vec2::splat(22.0));
-            ui.painter().circle_filled(b.center(), 13.5, Color32::from_black_alpha(200));
-            ui.painter().circle_filled(b.center(), 11.0, theme::glass(0.12));
-            // The app icon's badge is in the app: the repo may not serve it yet.
-            match crate::appicon::Variant::by_badge_url(&pic.url) {
-                Some(v) => egui::Image::from_bytes(format!("bytes://discord-badge/{}.png", v.id), v.badge).corner_radius(11.0).paint_at(ui, b),
-                None => widgets::paint_remote(ui, &pic.url, b, 11.0, full_uv(), Color32::WHITE),
-            }
-        }
         x += ART + 12.0;
     }
     let tw = rect.right() - PAD - x;

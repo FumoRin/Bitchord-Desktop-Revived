@@ -28,7 +28,9 @@ const SEARCH_LIMIT: usize = 8;
 /// A stream whose size stays unknown gets this placeholder; the download finds the real
 /// end (the same trick the hi-res sources use).
 const SIZE_PLACEHOLDER: u64 = 512 * 1024 * 1024;
-const MONO_STREAMER: &str = "https://tracks.monochrome.st";
+/// Monochrome's own track streamer, which needs no setup: the settings' Test probes it
+/// the same way a pasted link is probed.
+pub const MONO_STREAMER: &str = "https://tracks.monochrome.st";
 /// The relay only answers clients that say which version of its api they speak.
 const RELAY_CLIENT: &str = "relay/2";
 

@@ -469,9 +469,9 @@ impl Service {
     }
 
     /// The card as the gateway takes it: the same fields the IPC payload carries
-    /// (name, the two lines and their links, the assets with the badge and the
-    /// hover text, the timestamps, the buttons), with the artwork mirrored onto
-    /// Discord's CDN as an `mp:` asset. `DiscordRPC.updateSong`'s shape.
+    /// (name, the two lines and their links, the assets with the hover text, the
+    /// timestamps, the buttons), with the artwork mirrored onto Discord's CDN as an
+    /// `mp:` asset. `DiscordRPC.updateSong`'s shape.
     async fn build_presence(&self, token: &str, c: &crate::discord::Card) -> Value {
         let now = now_ms();
         // "Listening": the verb the card carries, as the IPC one's does.
@@ -506,9 +506,7 @@ impl Service {
         };
         let mut assets = json!({
             "large_image": large_image,
-            "small_image": c.badge.as_ref().map(|b| json!(b.url)).unwrap_or(Value::Null),
             "large_text": c.lines[2].as_ref().map(|l| json!(crate::discord::field(&l.text))).unwrap_or(Value::Null),
-            "small_text": c.badge.as_ref().map(|b| json!(crate::discord::field(&b.name))).unwrap_or(Value::Null),
         });
         if let Some(u) = &c.art_url {
             assets.as_object_mut().unwrap().insert("large_url".into(), json!(u));

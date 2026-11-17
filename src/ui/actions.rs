@@ -330,8 +330,10 @@ impl App {
             keys.matches(Cmd::Prev, ctx),
             keys.matches(Cmd::SeekBackward, ctx),
             keys.matches(Cmd::SeekForward, ctx),
-            keys.matches(Cmd::Lyrics, ctx),
-            keys.matches(Cmd::Queue, ctx),
+            // Once per press, like the toggles below: L and Q flip their panel, and
+            // holding the key doesn't flip back and forth.
+            keys.matches_once(Cmd::Lyrics, ctx),
+            keys.matches_once(Cmd::Queue, ctx),
             keys.matches(Cmd::NowPlaying, ctx),
             keys.matches(Cmd::FullScreen, ctx) || ctx.input(|i| i.key_pressed(egui::Key::F11)),
             keys.matches(Cmd::Search, ctx),
@@ -368,13 +370,23 @@ impl App {
         if prev {
             self.prev();
         }
+        // L and Q toggle, the trip the comments menu item makes: with their panel
+        // already up they fold it back to the artwork instead of reopening it.
         if lyr && self.current().is_some() {
-            self.np_open = true;
-            self.np_tab = NpTab::Lyrics;
+            if self.np_open && self.np_tab == NpTab::Lyrics {
+                self.np_tab = NpTab::Art;
+            } else {
+                self.np_open = true;
+                self.np_tab = NpTab::Lyrics;
+            }
         }
         if queue && self.current().is_some() {
-            self.np_open = true;
-            self.np_tab = NpTab::UpNext;
+            if self.np_open && self.np_tab == NpTab::UpNext {
+                self.np_tab = NpTab::Art;
+            } else {
+                self.np_open = true;
+                self.np_tab = NpTab::UpNext;
+            }
         }
         // F opens and closes the now playing view; Shift+F is the player full screen
         // (opening now playing first when it isn't up, since the full screen is its view).
