@@ -1585,7 +1585,7 @@ pub(super) enum SettingsTab {
 impl SettingsTab {
     const ALL: [Self; 7] = [Self::Account, Self::Playback, Self::Sources, Self::Lyrics, Self::Appearance, Self::General, Self::Shortcuts];
 
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         match self {
             Self::Account => "Account",
             Self::Playback => "Playback",
@@ -2860,6 +2860,10 @@ fn settings_lyrics(app: &mut App, ui: &mut Ui) {
             if ui.add_enabled(*v > min + 0.01, egui::Button::new("−").min_size(vec2(28.0, 26.0))).on_hover_text("Smaller").clicked() {
                 *v = ((*v - step) * 10.0).round() / 10.0;
             }
+        });
+        divider(ui);
+        setting_row(ui, "Lyrics at the screen's refresh rate", Some("Synced lyrics animate as fast as your screen refreshes, such as 144 fps on a 144 Hz monitor, instead of 60. Smoother on fast screens, for more CPU and graphics work."), |ui| {
+            toggle(ui, &mut app.lyrics_full_rate, "Lyrics at the screen's refresh rate");
         });
         divider(ui);
         // Intensive glow: the sung words' drop-shadow lit much harder than the look

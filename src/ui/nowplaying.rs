@@ -144,6 +144,11 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
         song_video_switch(app, ui, header);
     }
     let mut hui = ui.new_child(egui::UiBuilder::new().max_rect(header).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    // macOS: past the traffic lights, which stay over now playing.
+    let gap = super::titlebar::left_gap(hui.ctx(), hui.max_rect(), 0.0);
+    if gap > 0.0 {
+        hui.add_space(gap);
+    }
     // The player's own close, top left; the window buttons keep the top right. The
     // chevron is drawn with strokes rather than read from the icon font: a glyph the
     // atlas hasn't got paints nothing at all, which used to leave this button
@@ -400,7 +405,8 @@ fn video_fullscreen(app: &mut App, ui: &mut Ui, rect: Rect, track: &crate::model
     ui.painter().rect_filled(rect, 0.0, Color32::BLACK);
     let frame = video_frame(app, &ctx, track);
     let (w, h) = frame.as_ref().map_or((16.0, 9.0), |t| (t.size()[0] as f32, t.size()[1] as f32));
-    if ui.input(|i| i.key_pressed(egui::Key::Z) && !i.modifiers.any()) {
+    // Not while typing: into the command palette, say.
+    if !ctx.egui_wants_keyboard_input() && ui.input(|i| i.key_pressed(egui::Key::Z) && !i.modifiers.any()) {
         set_video_fill(app, !app.video_fill);
     }
     // Filling: the picture inside its own bars, as large as covers the screen, its edges cut.
@@ -1104,8 +1110,13 @@ fn synced(app: &mut App, ui: &mut Ui, rect: Rect, id: &str, lyrics: &Lyrics, now
         app.actions.push(Action::Seek(s as f32));
     }
     if out.animating {
-        // Smooth, without following a fast monitor: frame rate is the main CPU and GPU cost.
-        super::pace::repaint_after(ui.ctx(), std::time::Duration::from_millis(16));
+        if app.lyrics_full_rate {
+            // As fast as the screen shows them: vsync, or `pace::frame`, sets the rate.
+            ui.ctx().request_repaint();
+        } else {
+            // Smooth, without following a fast monitor: frame rate is the main CPU and GPU cost.
+            super::pace::repaint_after(ui.ctx(), std::time::Duration::from_millis(16));
+        }
     }
     // The extension's `.autoscroll-resume-button` (YouTube Music's rem is 10 px): a frosted
     // pill under the top edge in the lyrics font at 600, 1.75rem; padding .5rem 1rem;

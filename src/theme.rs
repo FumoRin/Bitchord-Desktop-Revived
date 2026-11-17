@@ -460,11 +460,14 @@ pub mod icon {
     pub const SKIP_BACK: char = '\u{e15f}';
     pub const SKIP_FORWARD: char = '\u{e160}';
     pub const SHUFFLE: char = '\u{e15e}';
+    pub const REPEAT: char = '\u{e146}';
+    pub const REPEAT_1: char = '\u{e1fd}';
     pub const VOLUME_2: char = '\u{e1ab}';
     pub const VOLUME_1: char = '\u{e1aa}';
     pub const VOLUME_X: char = '\u{e1ac}';
     pub const HEART: char = '\u{e0f2}';
     pub const LIST_MUSIC: char = '\u{e2e0}';
+    pub const MIC_VOCAL: char = '\u{e349}';
     pub const X: char = '\u{e1b2}';
     pub const HISTORY: char = '\u{e1f5}';
     pub const TRASH_2: char = '\u{e18e}';
