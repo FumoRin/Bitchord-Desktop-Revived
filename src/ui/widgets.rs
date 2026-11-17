@@ -700,7 +700,9 @@ fn more_button(ui: &mut Ui, rect: Rect, id: egui::Id, label: &str) -> Response {
     response
 }
 
-fn menu_row(ui: &mut Ui, label: &str, draw: impl FnOnce(&Ui, Pos2, Color32)) -> bool {
+/// A menu row with its own drawing, for the marks that aren't in the Lucide char set
+/// (the player bar's own lyrics/queue glyphs).
+pub fn menu_row(ui: &mut Ui, label: &str, draw: impl FnOnce(&Ui, Pos2, Color32)) -> bool {
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::click());
     let response = named(response, label).on_hover_cursor(egui::CursorIcon::PointingHand);
     if response.hovered() {

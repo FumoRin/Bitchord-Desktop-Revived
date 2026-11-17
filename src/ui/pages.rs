@@ -2391,6 +2391,22 @@ fn live_sources(app: &App) -> String {
 /// song, its copy plays instead of YouTube's, and its quality shows in the player.
 fn settings_sources(app: &mut App, ui: &mut Ui) {
     settings_section(ui, "Source priority", None, Some("Other catalogs that can stand in for YouTube's stream when they have the song: the first source in the priority list that holds the song plays its own copy, and when none does, YouTube plays as usual."), |ui| {
+        // How a song plays, before whose catalog answers it: every source below plays by
+        // these, so they lead the list.
+        setting_row(ui, "Prefer Dolby Atmos", Some("Ask the addons for a Dolby Atmos copy when they offer one. Falls back to the best stereo copy when the stream's codec can't be decoded."), |ui| {
+            if toggle(ui, &mut app.prefer_atmos, "Prefer Dolby Atmos").changed() {
+                app.backend.set_prefer_atmos(app.prefer_atmos);
+            }
+        });
+        setting_row(ui, "Play YouTube first, upgrade after", Some("Start every song from YouTube at once and swap in the hi-res copy in place when an addon answers, instead of waiting for the addons before the song starts."), |ui| {
+            if toggle(ui, &mut app.disable_direct_stream, "Play YouTube first, upgrade after").changed() {
+                app.backend.set_disable_direct_stream(app.disable_direct_stream);
+            }
+        });
+        setting_row(ui, "Stats for nerds", Some("Show the codec, sample rate and bitrate of what's playing at the foot of the cover in Now playing, whatever the source."), |ui| {
+            toggle(ui, &mut app.show_nerd_stats, "Stats for nerds");
+        });
+        divider(ui);
         for i in 0..app.source_order.len() {
             let kind = app.source_order[i];
             if i > 0 {
@@ -2431,10 +2447,34 @@ fn settings_sources(app: &mut App, ui: &mut Ui) {
                     }
                 });
             });
+            // The built-in streamer gets the same Test JioSaavn has, under its own row:
+            // its own unit in a search, like JioSaavn's is.
+            if kind == crate::backend::MusicSource::Monochrome && filter_show(ui, "Monochrome test connection") {
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    let slot = app.monochrome_test.clone();
+                    let state = slot.lock().unwrap().clone();
+                    if matches!(state, Some(None)) {
+                        ui.add_space(ui.available_width().min(76.0));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.spinner();
+                        });
+                    } else if pill(ui, "Test", None, false).clicked() {
+                        *slot.lock().unwrap() = Some(None);
+                        let (slot, http) = (slot, app.backend.http());
+                        app.backend.spawn(async move {
+                            let (good, msg) = crate::providers::probe_monochrome(&http, crate::providers::MONO_STREAMER).await;
+                            *slot.lock().unwrap() = Some(Some((good, msg)));
+                        });
+                    }
+                });
+                test_line(ui, &app.monochrome_test.lock().unwrap().clone());
+                ui.add_space(10.0);
+            }
         }
     });
-    settings_sources_lists(app, ui);
     settings_provider_add(app, ui);
+    settings_sources_lists(app, ui);
 }
 
 /// One source's row: what it is and what turning it off means.
@@ -2577,14 +2617,15 @@ fn settings_sources_lists(app: &mut App, ui: &mut Ui) {
     settings_section(ui, "Bitchord addons", None, Some("Addon servers that serve hi-res copies of songs. A switched-off addon keeps its place in the list, but no song is looked up on it."), |ui| {
         bitchord_addons_editor(app, ui);
     });
-    settings_section(ui, "Monochrome servers", None, Some("Monochrome-format servers you've added, tried before Monochrome's own streamer — they were added for a reason. A site's link is read for the server it plays from. New servers come from \"Add a custom provider\" below, which asks both formats at once."), |ui| {
+    settings_section(ui, "Monochrome servers", None, Some("Monochrome-format servers you've added, tried before Monochrome's own streamer — they were added for a reason. A site's link is read for the server it plays from. New servers come from \"Add a custom provider\" above, which asks both formats at once."), |ui| {
         mono_servers_editor(app, ui);
     });
 }
 
-/// JioSaavn's stream quality, its Test, and the addons' Dolby Atmos switch.
+/// JioSaavn's stream quality and its Test. The stream behaviour every source plays by
+/// — Atmos, the YouTube-first upgrade, the nerds' stats — leads Source priority above.
 fn settings_saavn(app: &mut App, ui: &mut Ui) {
-    settings_section(ui, "Streams", None, None, |ui| {
+    settings_section(ui, "JioSaavn", None, None, |ui| {
         setting_row(ui, "JioSaavn stream", Some("How much data a JioSaavn copy uses. 320 is its best; songs that don't have it play 160."), |ui| {
             let btn = dropdown_button(ui, app.jiosaavn_quality.label(), 200.0, "JioSaavn stream");
             egui::Popup::menu(&btn).show(|ui| {
@@ -2624,20 +2665,6 @@ fn settings_saavn(app: &mut App, ui: &mut Ui) {
             test_line(ui, &app.saavn_test.lock().unwrap().clone());
             ui.add_space(10.0);
         }
-        divider(ui);
-        setting_row(ui, "Prefer Dolby Atmos", Some("Ask the addons for a Dolby Atmos copy when they offer one. Falls back to the best stereo copy when the stream's codec can't be decoded."), |ui| {
-            if toggle(ui, &mut app.prefer_atmos, "Prefer Dolby Atmos").changed() {
-                app.backend.set_prefer_atmos(app.prefer_atmos);
-            }
-        });
-        setting_row(ui, "Play YouTube first, upgrade after", Some("Start every song from YouTube at once and swap in the hi-res copy in place when an addon answers, instead of waiting for the addons before the song starts."), |ui| {
-            if toggle(ui, &mut app.disable_direct_stream, "Play YouTube first, upgrade after").changed() {
-                app.backend.set_disable_direct_stream(app.disable_direct_stream);
-            }
-        });
-        setting_row(ui, "Stats for nerds", Some("Show the codec, sample rate and bitrate of what's playing at the foot of the cover in Now playing, whatever the source."), |ui| {
-            toggle(ui, &mut app.show_nerd_stats, "Stats for nerds");
-        });
     });
 }
 

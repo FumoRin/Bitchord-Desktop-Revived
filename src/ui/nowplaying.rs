@@ -5,7 +5,7 @@
 use egui::{Color32, Rect, Sense, Ui, Vec2, pos2, vec2};
 
 use super::widgets::{self, named, text_at};
-use super::{Action, App, NpTab, Repeat, karaoke};
+use super::{Action, App, NpTab, Repeat, glyphs, karaoke};
 use crate::lyrics::{Lyrics, Sync, SyncKind};
 use crate::shader::Params;
 use crate::theme::{self, icon};
@@ -1228,10 +1228,16 @@ fn options_menu(app: &mut App, ui: &mut Ui, rect: Rect, track: &crate::model::Tr
         widgets::song_actions(ui, track, false, None, &mut app.actions, false);
         menu_divider(ui);
         // No "Play next" / "Add to queue" here: the song is already playing, and the
-        // loop button on the player bar is the right tool for what comes next.
+        // loop button on the player bar is the right tool for what comes next. Each
+        // panel hides the way comments does — back to the artwork, the same trip the
+        // L/Q keys make — and its glyph is the one the player bar's button carries.
+        let lyrics = app.np_tab == NpTab::Lyrics;
+        if widgets::menu_row(ui, if lyrics { "Hide lyrics" } else { "View lyrics" }, |ui, at, color| glyphs::draw(ui, at, 18.0, glyphs::LYRICS, color)) {
+            app.np_tab = if lyrics { NpTab::Art } else { NpTab::Lyrics };
+        }
         let queue = app.np_tab == NpTab::UpNext;
-        if widgets::menu_action(ui, Some(icon::LIST_MUSIC), if queue { "View lyrics" } else { "View queue" }) {
-            app.np_tab = if queue { NpTab::Lyrics } else { NpTab::UpNext };
+        if widgets::menu_row(ui, if queue { "Hide queue" } else { "View queue" }, |ui, at, color| glyphs::draw(ui, at, 18.0, glyphs::QUEUE, color)) {
+            app.np_tab = if queue { NpTab::Art } else { NpTab::UpNext };
         }
         if app.show_comments {
             let tab = app.np_tab == NpTab::Comments;

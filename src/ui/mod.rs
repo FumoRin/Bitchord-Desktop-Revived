@@ -363,8 +363,6 @@ pub struct App {
     discord_link_user: Option<crate::discord_link::User>,
     /// A Discord sign-in window is up; its outcome lands in between.
     discord_link_busy: bool,
-    /// The playing artist's picture, for the badge on the card (`None` while looked up).
-    artist_pics: HashMap<String, Option<crate::discord::Badge>>,
     /// The Last.fm account scrobbles go to; a sign-in in progress and its outcome.
     lastfm_user: Option<String>,
     lastfm_busy: Arc<AtomicBool>,
@@ -608,6 +606,8 @@ pub struct App {
     /// run: a slot the check's thread fills while the page draws. JioSaavn has one too.
     mono_tests: HashMap<String, Arc<std::sync::Mutex<SourceTest>>>,
     saavn_test: Arc<std::sync::Mutex<SourceTest>>,
+    /// The built-in Monochrome streamer's Test, the same run JioSaavn's takes.
+    monochrome_test: Arc<std::sync::Mutex<SourceTest>>,
     /// What the playing stream is (codec, rate, depth, size), when a hi-res source
     /// supplied it, with the generation it belongs to.
     audio_info: Option<(u64, crate::hires::Info)>,
@@ -895,7 +895,9 @@ impl App {
         let prefer_atmos = get("prefer_atmos").is_some_and(|v| v == "1");
         backend.set_prefer_atmos(prefer_atmos);
         let show_nerd_stats = get("show_nerd_stats").is_some_and(|v| v == "1");
-        let disable_direct_stream = get("disable_direct_stream").is_some_and(|v| v == "1");
+        // The fork's own default: start every song from YouTube at once and swap the
+        // hi-res copy in when a source answers. A save that turned it off ("0") keeps it off.
+        let disable_direct_stream = get("disable_direct_stream").is_none_or(|v| v == "1");
         backend.set_disable_direct_stream(disable_direct_stream);
         // Before any request: a song started at launch must see the music sources too.
         let jiosaavn = get("jiosaavn").is_some_and(|v| v == "1");
@@ -959,7 +961,6 @@ impl App {
             discord_prefs: get("discord")
                 .and_then(|s| serde_json::from_str::<crate::discord::Prefs>(&s).ok())
                 .unwrap_or_else(|| crate::discord::Prefs::migrated(&get("discord_options").unwrap_or_default())),
-            artist_pics: HashMap::new(),
             discord_enabled,
             discord_sent: None,
             lastfm_user: crate::lastfm::user(),
@@ -1135,6 +1136,7 @@ impl App {
             mono_servers,
             mono_tests: Default::default(),
             saavn_test: Default::default(),
+            monochrome_test: Default::default(),
             provider_adding: false,
             provider_draft: String::new(),
             provider_focus: false,
