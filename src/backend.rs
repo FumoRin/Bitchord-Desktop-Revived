@@ -825,8 +825,37 @@ pub struct Backend {
     /// Spotify's web-player client for canvas lookups, kept for the sign-in it was built
     /// with: its tokens and query hashes cost several round trips.
     canvas_spotify: Arc<tokio::sync::Mutex<Option<(String, Arc<crate::transfer::spotify::Client>)>>>,
-    /// Canvas answers per song (`None`: Spotify has none, or nobody's signed in).
-    canvas_cache: Arc<std::sync::Mutex<std::collections::HashMap<String, Option<String>>>>,
+    /// Canvas answers per song (`None`: Spotify has none, or nobody's signed in),
+    /// shedding the oldest when full rather than everything at once.
+    canvas_cache: Arc<std::sync::Mutex<CanvasCache>>,
+}
+
+/// Spotify canvas answers by song, remembering arrival order so a full cache sheds its
+/// oldest entries (a clear-all refetched the whole recent room's worth at once).
+#[derive(Default)]
+struct CanvasCache {
+    answers: std::collections::HashMap<String, Option<String>>,
+    order: std::collections::VecDeque<String>,
+}
+
+const CANVAS_CACHE: usize = 128;
+
+impl CanvasCache {
+    fn get(&self, key: &str) -> Option<&Option<String>> {
+        self.answers.get(key)
+    }
+
+    fn insert(&mut self, key: &str, answer: Option<String>) {
+        if !self.answers.contains_key(key) {
+            self.order.push_back(key.to_owned());
+            while self.order.len() > CANVAS_CACHE {
+                if let Some(oldest) = self.order.pop_front() {
+                    self.answers.remove(&oldest);
+                }
+            }
+        }
+        self.answers.insert(key.to_owned(), answer);
+    }
 }
 
 impl Backend {
@@ -963,11 +992,7 @@ impl Backend {
             return hit.clone();
         }
         let hit = self.spotify_canvas_inner(title, artist, duration_ms).await;
-        let mut cache = self.canvas_cache.lock().unwrap();
-        if cache.len() > 128 {
-            cache.clear();
-        }
-        cache.insert(key.to_owned(), hit.clone());
+        self.canvas_cache.lock().unwrap().insert(key, hit.clone());
         hit
     }
 
@@ -2514,7 +2539,13 @@ impl Backend {
 
     /// Send a song back to YouTube audio: later plays of it skip the hi-res sources.
     pub fn revert_quality(&self, video_id: &str) {
-        self.reverted.lock().unwrap().insert(video_id.to_owned());
+        let mut reverted = self.reverted.lock().unwrap();
+        // One id per user action; a session that long has forgotten songs worth
+        // re-asking the sources about anyway.
+        if reverted.len() >= 512 {
+            reverted.clear();
+        }
+        reverted.insert(video_id.to_owned());
     }
 
     /// Allow hi-res sources again for a song that was sent back to YouTube audio.

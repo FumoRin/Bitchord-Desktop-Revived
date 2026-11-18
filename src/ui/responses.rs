@@ -14,6 +14,16 @@ use super::{Action, App, Dialog, HomeState, LibTab, MixFrom, Page, PlayingAs, de
 
 impl App {
     pub(super) fn pump(&mut self, ctx: &egui::Context, now: f64) {
+        // The per-song canvas bookkeeping grows a little with every track played; keep
+        // it bounded. A forgotten song asks again — Apple's answers are on disk, and a
+        // Spotify miss only means a fresh 10-minute window.
+        if self.canvas_missed.len() > 512 {
+            self.canvas_missed.retain(|_, t| t.elapsed() < std::time::Duration::from_secs(600));
+        }
+        if self.canvas_covers.len() > 512 {
+            self.canvas_covers.clear();
+            self.canvas_apple_done.clear();
+        }
         // Sorted playlists load again when it's time, for their new order. One whose load
         // ended without its first page (it failed) stops waiting, so Sort comes back.
         let mut due = Vec::new();

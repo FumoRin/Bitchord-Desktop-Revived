@@ -182,7 +182,7 @@ pub struct Stream {
 pub struct Client {
     base: String,
     manifest: tokio::sync::Mutex<Option<Manifest>>,
-    searches: tokio::sync::Mutex<HashMap<String, Vec<Candidate>>>,
+    searches: tokio::sync::Mutex<SearchCache>,
 }
 
 struct Manifest {
@@ -204,6 +204,35 @@ pub(crate) struct Candidate {
     format: String,
     atmos: bool,
     stream_url: Option<String>,
+}
+
+/// A server's recent searches, remembering the order they arrived: a full cache sheds
+/// its oldest entries, not everything at once (a clear-all made the next burst of songs
+/// each re-ask a server that had just answered them).
+#[derive(Default)]
+struct SearchCache {
+    answers: HashMap<String, Vec<Candidate>>,
+    order: std::collections::VecDeque<String>,
+}
+
+const SEARCH_CACHE: usize = 64;
+
+impl SearchCache {
+    fn get(&self, key: &str) -> Option<&Vec<Candidate>> {
+        self.answers.get(key)
+    }
+
+    fn insert(&mut self, key: String, found: Vec<Candidate>) {
+        if !self.answers.contains_key(&key) {
+            self.order.push_back(key.clone());
+            while self.order.len() > SEARCH_CACHE {
+                if let Some(oldest) = self.order.pop_front() {
+                    self.answers.remove(&oldest);
+                }
+            }
+        }
+        self.answers.insert(key, found);
+    }
 }
 
 impl Client {
@@ -306,11 +335,7 @@ impl Client {
         let json = get_json(http, &url, REQUEST_TIMEOUT).await?;
         let tracks = json.get("tracks").and_then(Value::as_array).cloned().unwrap_or_default();
         let found: Vec<Candidate> = tracks.iter().filter_map(candidate).take(400).collect();
-        let mut cache = self.searches.lock().await;
-        if cache.len() > 64 {
-            cache.clear();
-        }
-        cache.insert(key, found.clone());
+        self.searches.lock().await.insert(key, found.clone());
         Ok(found)
     }
 
