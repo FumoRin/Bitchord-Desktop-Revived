@@ -1337,8 +1337,10 @@ fn run(
                 // A seekable decoder already indexed the (fully downloaded) file. Without a
                 // device to take the seek, a new decoder (below) instead. Likewise for a
                 // podcast feed's file not all in memory: its seek reads at the new spot,
-                // which would wait on the download inside the device's callback.
-                let in_place = seekable && shared.as_ref().is_none_or(|s| !s.feed || s.is_complete());
+                // which would wait on the download inside the device's callback. A windowed
+                // file's seek reads may hit blocks already dropped behind the reader, which
+                // waits the same way: those rebuild off-thread too.
+                let in_place = seekable && shared.as_ref().is_none_or(|s| (!s.feed && !s.windowed()) || s.is_complete());
                 if in_place && player.try_seek(pos).is_ok() {
                     log::debug!("audio: seek to {pos:?} in place");
                     status.set_position(pos.as_millis() as u64);
