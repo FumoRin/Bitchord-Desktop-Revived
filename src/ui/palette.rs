@@ -91,7 +91,7 @@ struct Entry {
 
 /// Settings' categories and sections, by their titles. One named as its category opens
 /// that; any other is looked for with Settings' own search.
-const SECTIONS: [(&str, SettingsTab); 24] = {
+const SECTIONS: [(&str, SettingsTab); 25] = {
     use SettingsTab::*;
     [
         ("Account", Account),
@@ -105,14 +105,15 @@ const SECTIONS: [(&str, SettingsTab); 24] = {
         ("Playback speed", Playback),
         ("Equalizer", Playback),
         ("Music sources", Sources),
+        ("How songs play", Sources),
         ("Source priority", Sources),
         ("Add a custom provider", Sources),
         ("Bitchord addons", Sources),
         ("Monochrome servers", Sources),
-        ("JioSaavn", Sources),
         ("Lyrics", Lyrics),
         ("Appearance", Appearance),
         ("Artist pages", Appearance),
+        ("Community", General),
         ("Window", General),
         ("Downloads", General),
         ("Network", General),
