@@ -19,6 +19,9 @@ use crate::innertube::VideoStream;
 
 /// Frames kept ready: under half a second, about 30 MB at 720p.
 const READY: usize = 12;
+/// …and never more than this much decoded picture waiting: 12 frames at 1080p is a
+/// hundred megabytes, so bigger streams keep fewer.
+const READY_BYTES: usize = 48 * 1024 * 1024;
 /// Decoded this far behind the clock, a frame isn't worth converting: it would never show.
 const LATE: f64 = 0.05;
 /// The clock this far before what's waiting to show is a seek back.
@@ -586,6 +589,8 @@ fn run(stream: &VideoStream, http: &reqwest::Client, status: &AudioStatus, share
     log::info!("video: {}x{}, {} fragments", stream.width, stream.height, fragments.len());
 
     let mut decoder = new_decoder(&track)?;
+    let frame_bytes = stream.width as usize * stream.height as usize * 4;
+    let ready = (READY_BYTES / frame_bytes.max(1)).clamp(4, READY);
     let mut next = fragment_at(&fragments, status.position_smooth().as_secs_f64());
     let mut pending: BinaryHeap<Pts> = BinaryHeap::new();
     // The last frame out of the decoder: with none waiting to show, where the picture is.
@@ -647,7 +652,7 @@ fn run(stream: &VideoStream, http: &reqwest::Client, status: &AudioStatus, share
                         restart = Some(at);
                         continue 'play;
                     }
-                    if shared.frames.lock().unwrap().len() < READY {
+                    if shared.frames.lock().unwrap().len() < ready {
                         break;
                     }
                     std::thread::sleep(Duration::from_millis(10));

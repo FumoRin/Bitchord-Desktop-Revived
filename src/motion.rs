@@ -71,10 +71,38 @@ impl Drop for Motion {
 
 static STREAMS: LazyLock<Mutex<HashMap<String, Weak<Motion>>>> = LazyLock::new(Default::default);
 
+/// Clips the disk cache keeps, dropping the oldest first; a dropped one re-downloads
+/// when its sleeve shows again.
+const DISK_BUDGET: u64 = 128 * 1024 * 1024;
+
+/// Keep the clip cache under its budget, dropping the least recently written files.
+fn trim(dir: &std::path::Path) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let mut files: Vec<_> = rd
+        .flatten()
+        .filter_map(|f| {
+            let m = f.metadata().ok()?;
+            Some((m.modified().ok()?, m.len(), f.path()))
+        })
+        .collect();
+    let mut total: u64 = files.iter().map(|f| f.1).sum();
+    files.sort();
+    for (_, len, path) in files {
+        if total <= DISK_BUDGET {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            total -= len;
+        }
+    }
+}
+
 /// Start (or reuse) the clip at `master`, decoded no wider than `max_width`.
 pub fn play(ctx: &egui::Context, master: &str, max_width: u32) -> Arc<Motion> {
     let key = format!("{max_width}:{master}");
     if let Ok(mut streams) = STREAMS.lock() {
+        // Views come and go; without this their keys' dead Weaks pile up for the session.
+        streams.retain(|_, w| w.strong_count() > 0);
         if let Some(m) = streams.get(&key).and_then(Weak::upgrade) {
             return m;
         }
@@ -91,6 +119,7 @@ pub fn play(ctx: &egui::Context, master: &str, max_width: u32) -> Arc<Motion> {
 pub fn play_mp4(ctx: &egui::Context, url: &str, max_width: u32) -> Arc<Motion> {
     let key = format!("mp4:{max_width}:{url}");
     if let Ok(mut streams) = STREAMS.lock() {
+        streams.retain(|_, w| w.strong_count() > 0);
         if let Some(m) = streams.get(&key).and_then(Weak::upgrade) {
             return m;
         }
@@ -146,6 +175,7 @@ fn fetch_mp4(url: &str) -> Option<PathBuf> {
         let tmp = path.with_extension("part");
         std::fs::write(&tmp, &bytes).ok()?;
         std::fs::rename(&tmp, &path).ok()?;
+        trim(&dir);
         log::info!("canvas: clip {:.0} KB cached", bytes.len() as f64 / 1024.0);
         Some(path)
     })
@@ -177,6 +207,7 @@ fn fetch(master: &str, max_width: u32) -> Option<PathBuf> {
         let tmp = path.with_extension("part");
         std::fs::write(&tmp, &bytes).ok()?;
         std::fs::rename(&tmp, &path).ok()?;
+        trim(&dir);
         log::info!("animated cover: clip {:.0} KB cached", bytes.len() as f64 / 1024.0);
         Some(path)
     })

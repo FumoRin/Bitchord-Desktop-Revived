@@ -13,6 +13,8 @@ const DIRS: &[&str] = &[
     "translations",
     // The browser profile the lyrics check runs in (its token, `lyrics_jwt`, stays).
     "webview-lyrics",
+    // Animated covers and Spotify canvas clips.
+    "motion",
     // Downloaded updates: an installer, an unpacked build, the last install's log.
     "updates",
     // Error reports from versions up to 0.2.11.
