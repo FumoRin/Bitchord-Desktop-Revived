@@ -709,9 +709,11 @@ pub struct App {
     /// The mini player: the window shrunk to a strip.
     mini: mini::Mini,
     /// Every source's lyrics for the current song (by video ID).
-    lyrics: Option<(String, LyricsSet)>,
+    lyrics: Option<(String, Arc<LyricsSet>)>,
     /// Romanization/translation for one source's lines: (video ID, source key, language, extras).
-    lyrics_extras: Option<(String, String, String, crate::translate::Extras)>,
+    lyrics_extras: Option<Arc<(String, String, String, crate::translate::Extras)>>,
+    /// The lyrics' decoration key with the identity it was hashed at (see `synced`).
+    decorations_key: Option<(u64, u64)>,
     /// The extras last asked for, so each is requested once.
     extras_asked: Option<(String, String, String)>,
     show_roman: bool,
@@ -1216,6 +1218,7 @@ impl App {
             mini: mini::Mini::load(get),
             lyrics: None,
             lyrics_extras: None,
+            decorations_key: None,
             extras_asked: None,
             show_roman: get("show_roman").is_none_or(|v| v == "1"),
             show_trans: get("show_trans").is_none_or(|v| v == "1"),

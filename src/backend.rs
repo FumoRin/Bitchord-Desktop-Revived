@@ -377,7 +377,7 @@ pub enum Resp {
     /// sending the same `Req::DownloadMany` again, `confirmed`.
     ConfirmDownload { target: Option<Target>, title: String, tracks: Vec<Track>, count: usize },
     /// Every source's lyrics for a song (empty when nobody has them).
-    Lyrics { video_id: String, lyrics: LyricsSet },
+    Lyrics { video_id: String, lyrics: std::sync::Arc<LyricsSet> },
     Segments { video_id: String, segments: Vec<crate::sponsorblock::Segment> },
     /// Romanization/translation for one source's lines, arriving after them.
     LyricsExtras { video_id: String, source: String, target: String, extras: crate::translate::Extras },
@@ -1486,8 +1486,14 @@ impl Backend {
         Ok(())
     }
 
-    async fn lyrics_for(&self, t: &Track) -> LyricsSet {
+    async fn lyrics_for(&self, t: &Track) -> std::sync::Arc<LyricsSet> {
         let artist = t.artist_line();
+        // The playing video's own sources, alongside the outside ones: its captions
+        // and its Lyrics tab, straight from YouTube (ForkChord's YouTubeLyrics.kt).
+        // A replay's cached copy already carries them (they're folded in below), so
+        // the two API calls are skipped.
+        let cached = self.lyrics.cached_for(&t.id);
+        let have_ytm = cached.as_ref().is_some_and(|s| s.sources.iter().any(|l| matches!(l.provider, lyrics::Provider::YoutubeCaptions | lyrics::Provider::YoutubePlain)));
         let query = lyrics::Query {
             video_id: &t.id,
             song: &t.title,
@@ -1498,26 +1504,35 @@ impl Backend {
                 None => self.stream_duration(&t.id).await,
             },
         };
-        // The playing video's own sources, alongside the outside ones: its captions
-        // and its Lyrics tab, straight from YouTube (ForkChord's YouTubeLyrics.kt).
-        let (res, caps, tab) = tokio::join!(self.lyrics.fetch(&query), crate::ytm::captions(&self.api, &t.id), crate::ytm::lyrics_tab(&self.api, &t.id));
-        let mut set = res.unwrap_or_else(|e| {
+        let (res, caps, tab) = if have_ytm {
+            (self.lyrics.fetch(&query).await, Vec::new(), Vec::new())
+        } else {
+            tokio::join!(self.lyrics.fetch(&query), crate::ytm::captions(&self.api, &t.id), crate::ytm::lyrics_tab(&self.api, &t.id))
+        };
+        let set = res.unwrap_or_else(|e| {
             log::warn!("lyrics failed: {e:#}");
-            LyricsSet::default()
+            std::sync::Arc::new(LyricsSet::default())
         });
         let mut extra = caps;
         extra.extend(tab);
         extra.retain(|l| !set.sources.iter().any(|s| s.provider == l.provider));
-        if !extra.is_empty() {
-            set.sources.extend(extra.iter().cloned());
-            set.sources.sort_by_key(|l| lyrics::Provider::ALL.iter().position(|p| *p == l.provider));
-            // The sources arrived after `fetch` cached the song: fold them into
-            // that cache too, so replays keep them.
-            self.lyrics.merge_cached(&t.id, extra);
-        }
+        let mut set = if extra.is_empty() {
+            set
+        } else {
+            // YouTube's sources arrived after `fetch` cached the song: the grown set
+            // replaces the cached one, so replays keep them.
+            let mut sources = set.sources.clone();
+            sources.extend(extra.iter().cloned());
+            sources.sort_by_key(|l| lyrics::Provider::ALL.iter().position(|p| *p == l.provider));
+            let grown = std::sync::Arc::new(LyricsSet { sources });
+            self.lyrics.replace_cached(&t.id, grown.clone());
+            grown
+        };
         // Dev hook: YTM_LYRICS_FAIL=<source key>[,<key>…] makes those sources come back empty.
         if let Ok(fail) = std::env::var("YTM_LYRICS_FAIL") {
-            set.sources.retain(|l| !fail.split(',').any(|k| k.trim() == l.provider.key()));
+            let mut filtered = (*set).clone();
+            filtered.sources.retain(|l| !fail.split(',').any(|k| k.trim() == l.provider.key()));
+            set = std::sync::Arc::new(filtered);
         }
         set
     }
