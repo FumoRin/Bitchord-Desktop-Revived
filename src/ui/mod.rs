@@ -1933,6 +1933,9 @@ impl eframe::App for App {
         titlebar::set_fullscreen(&ctx, self.fullscreen);
         // The mini player, or nothing but the background while the window changes size.
         dev::dev_memory(&ctx, now);
+        // Decoded copies of thumbnails whose widgets went away before a texture existed
+        // (fast scrolling): egui's loaders keep them until forgotten by name.
+        crate::images::sweep(&ctx);
         dev::dev_probe(&ctx);
         let layout = self.mini.layout(&ctx);
         // Mid-switch to or from the mini player, the frame stays as it is.
