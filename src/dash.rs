@@ -79,7 +79,7 @@ pub async fn fetch(http: &reqwest::Client, mpd_url: &str) -> anyhow::Result<Audi
 
 async fn get(http: &reqwest::Client, url: &str) -> anyhow::Result<bytes::Bytes> {
     let r = http.get(url).timeout(FETCH_TIMEOUT).header("User-Agent", crate::hires::agent()).send().await.map_err(wire)?.error_for_status().map_err(wire)?;
-    Ok(r.bytes().await.map_err(wire)?)
+    r.bytes().await.map_err(wire)
 }
 
 /// Manifest and segment URLs can carry a token: a failure names its kind, never the

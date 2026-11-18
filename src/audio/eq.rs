@@ -214,7 +214,14 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 /// low tone past it: ~0.55 dB lifting a big cut off sub-bass. Under 20 Hz, where music
 /// hardly goes, a full-scale tone can still go ~0.5 dB over for a moment; making room
 /// for that too would dip the level on every drag.
-fn room(from: Gains, from_pre: f32, target: Gains, target_pre: f32, no_clip: bool, rate: f64) -> f32 {
+fn room(
+    from: Gains,
+    from_pre: f32,
+    target: Gains,
+    target_pre: f32,
+    no_clip: bool,
+    rate: f64,
+) -> f32 {
     let far = (0..BANDS.len()).map(|i| (target[i] - from[i]).abs()).fold(0.0, f32::max);
     let mut floor = from_pre.min(target_pre);
     if no_clip {
@@ -274,7 +281,11 @@ impl EqParams {
             r => r as f64,
         };
         let target = fit(&sliders, rate);
-        let target_pre = if no_clip { headroom_db(&target, rate) } else { 0.0 };
+        let target_pre = if no_clip {
+            headroom_db(&target, rate)
+        } else {
+            0.0
+        };
         let from = std::array::from_fn(|i| f32::from_bits(self.at[i].load(Ordering::Relaxed)));
         let from_pre = f32::from_bits(self.at_pre.load(Ordering::Relaxed));
         let floor = room(from, from_pre, target, target_pre, no_clip, rate);
@@ -374,7 +385,8 @@ impl Eq {
     fn read(&mut self) {
         let p = &self.params;
         self.seen = p.version.load(Ordering::Acquire);
-        let (target, target_pre, floor) = if p.fit_rate.load(Ordering::Acquire) as f64 == self.rate {
+        let fitted = p.fit_rate.load(Ordering::Acquire) as f64 == self.rate;
+        let (target, target_pre, floor) = if fitted {
             (
                 std::array::from_fn(|i| f32::from_bits(p.target[i].load(Ordering::Relaxed))),
                 f32::from_bits(p.target_pre.load(Ordering::Relaxed)),
@@ -391,7 +403,11 @@ impl Eq {
             };
             let no_clip = p.no_clip.load(Ordering::Relaxed);
             let target = fit(&sliders, self.rate);
-            let target_pre = if no_clip { headroom_db(&target, self.rate) } else { 0.0 };
+            let target_pre = if no_clip {
+                headroom_db(&target, self.rate)
+            } else {
+                0.0
+            };
             let floor = room(self.gains, self.pre, target, target_pre, no_clip, self.rate);
             (target, target_pre, floor)
         };
@@ -401,7 +417,9 @@ impl Eq {
         self.target_pre = target_pre;
         self.floor = floor;
         self.publish();
-        let far = (0..BANDS.len()).map(|i| (self.target[i] - self.from[i]).abs()).fold(0.0, f32::max);
+        let far = (0..BANDS.len())
+            .map(|i| (self.target[i] - self.from[i]).abs())
+            .fold(0.0, f32::max);
         let steps = |db: f32| (db / STEP_DB).ceil() as u32;
         (self.down, self.moving) = (steps(self.from_pre - self.floor), (far / MOVE_DB).ceil() as u32);
         self.step = 0;
