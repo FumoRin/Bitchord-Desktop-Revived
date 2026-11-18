@@ -1819,6 +1819,8 @@ fn settings_tab(app: &mut App, ui: &mut Ui, tab: SettingsTab) {
             settings_downloads(ui);
             settings_updates(app, ui);
             settings_section(ui, "Network", None, None, |ui| network(app, ui));
+            // Last, as most apps keep it.
+            super::storage::settings_section(app, ui);
         }
         SettingsTab::Shortcuts => {
             if filter_show(ui, "Keyboard shortcuts keys hotkeys shortcuts combo") {

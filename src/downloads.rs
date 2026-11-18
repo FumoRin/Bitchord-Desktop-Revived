@@ -199,6 +199,47 @@ pub fn list() -> Vec<Track> {
     found.into_iter().map(|(_, t)| t).collect()
 }
 
+/// How many songs are downloaded, as last looked: no look at the files now, so it's
+/// quick enough for Settings › Storage. `list` looks, and corrects this.
+pub fn count() -> usize {
+    let st = STATE.read().unwrap();
+    st.index.len() - st.gone.len()
+}
+
+/// Delete every downloaded song's file and empty the index (Settings › Storage). The
+/// songs stay in the library and stream again when played. A file that can't be
+/// deleted — the song playing, on Windows — keeps its place until it can. Returns how
+/// many went and the bytes they took.
+pub fn remove_all_files() -> (usize, u64) {
+    let mut st = STATE.write().unwrap();
+    let mut keep = HashMap::new();
+    let (mut songs, mut bytes) = (0, 0);
+    for (id, e) in st.index.drain() {
+        let len = std::fs::metadata(&e.path).map_or(0, |m| m.len());
+        let gone = match std::fs::remove_file(&e.path) {
+            Ok(()) => true,
+            // Already deleted by hand: nothing to keep.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+            Err(err) => {
+                log::warn!("couldn't remove {}: {err}", e.path.display());
+                false
+            }
+        };
+        if gone {
+            songs += 1;
+            bytes += len;
+        } else {
+            keep.insert(id, e);
+        }
+    }
+    st.index = keep;
+    st.gone.clear();
+    st.saved.clear();
+    drop(st);
+    write_index();
+    (songs, bytes)
+}
+
 /// How many songs have been saved this session. Read before `list`: `saved_since` from
 /// it gives the ones saved after.
 pub fn saves() -> usize {
@@ -449,6 +490,13 @@ mod tests {
         assert_eq!(new.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["a", "b"]);
         assert_eq!(new[0].duration, Some(61));
         assert_eq!(saved_since(seen), (seen, Vec::new()));
+
+        // Removal takes the files and the index with it, and says what went.
+        let were = (a.metadata().unwrap().len(), b.metadata().unwrap().len());
+        let (songs, bytes) = remove_all_files();
+        assert_eq!((songs, bytes), (2, were.0 + were.1));
+        assert!(list().is_empty() && count() == 0);
+        assert!(!a.is_file() && !b.is_file());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
