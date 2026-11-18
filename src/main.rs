@@ -23,6 +23,7 @@ mod jam;
 mod innertube;
 mod jsc;
 mod lastfm;
+mod local;
 mod logging;
 mod login;
 mod lyrics;

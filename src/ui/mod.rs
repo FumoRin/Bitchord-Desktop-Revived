@@ -452,6 +452,13 @@ pub struct App {
     library_requested: std::time::Instant,
     history: Option<Vec<Track>>,
     uploads: Option<Vec<Track>>,
+    /// The Library's local music (see [`crate::local`]), read when the page opens or
+    /// the index changes under it.
+    local: Vec<Track>,
+    /// The local index as this page last read it (`local::revision`).
+    local_seen: u64,
+    /// How many songs the last local add brought in, for a toast (set on the picker's thread).
+    local_added: Arc<std::sync::Mutex<Option<usize>>>,
     /// The Downloads page, read from the download index when the page opens.
     downloads: Option<Vec<Track>>,
     /// How many of this session's saves `downloads` has (`downloads::saved_since`).
@@ -881,6 +888,7 @@ impl App {
         crate::appicon::sync_shortcuts(app_icon, backend.data_dir());
         crate::downloads::init(backend.data_dir(), &get("download_dir").unwrap_or_default());
         crate::lastfm::init(backend.data_dir());
+        crate::local::init(backend.data_dir());
         let logged_in = backend.is_logged_in();
         // Before any request: a song started at launch (dev hooks) must see this setting.
         backend.set_high_quality(get("high_quality").is_none_or(|v| v == "1"));
@@ -1018,6 +1026,9 @@ impl App {
             library_requested: std::time::Instant::now(),
             history: None,
             uploads: None,
+            local: crate::local::tracks(),
+            local_seen: crate::local::revision(),
+            local_added: Default::default(),
             downloads: None,
             downloads_seen: 0,
             download_runs: Vec::new(),
@@ -1406,7 +1417,12 @@ impl App {
             Page::Artist(id) => Some(Req::Artist(id.clone())),
             Page::ArtistShelf { artist, title } => self.open_shelf(artist, title),
             Page::Library(LibTab::History) if self.logged_in => Some(Req::History),
-            Page::Library(LibTab::Uploads) if self.logged_in => Some(Req::Uploads),
+            // The tab's local half is on this computer: the files are read again on each
+            // visit, and the uploads above them only ask when signed in.
+            Page::Library(LibTab::Uploads) => {
+                self.read_local();
+                self.logged_in.then(|| Req::Uploads)
+            }
             // On this computer: no request, and the files are read again on each visit.
             Page::Downloads => {
                 self.read_downloads();
@@ -1431,7 +1447,7 @@ impl App {
             Page::Artist(id) => self.artist.as_ref().is_some_and(|a| &a.id == id),
             Page::ArtistShelf { artist, title } => self.shelf.as_ref().is_some_and(|s| s.key == (artist.clone(), title.clone()) && !s.loading),
             Page::Library(LibTab::History) => self.history.is_some(),
-            Page::Library(LibTab::Uploads) => self.uploads.is_some(),
+            Page::Library(LibTab::Uploads) => self.uploads.is_some() || !self.logged_in,
             Page::Downloads => true,
             Page::Library(LibTab::Songs) => self.opened(LIKED_MUSIC).is_some(),
             Page::Library(_) => self.library.is_some(),
@@ -1704,11 +1720,29 @@ impl eframe::App for App {
             }
         }
         self.request_lyric_extras();
-        // Upload: files from the picker, or dropped onto the window.
-        let mut files = self.picked_uploads.lock().unwrap().take().unwrap_or_default();
-        files.extend(ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_owned()).filter(|p| !p.as_os_str().is_empty()).collect::<Vec<_>>()));
-        if !files.is_empty() {
-            self.upload_files(files);
+        // Upload: files from the picker. Files dropped on the window are local music:
+        // they play from where they are, which is what dropping them in asks for.
+        let picked = self.picked_uploads.lock().unwrap().take().unwrap_or_default();
+        let dropped: Vec<std::path::PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_owned()).filter(|p| !p.as_os_str().is_empty()).collect());
+        if !picked.is_empty() {
+            self.upload_files(picked);
+        }
+        if !dropped.is_empty() {
+            self.add_local(ctx, dropped);
+        }
+        // Local music: files added or removed since the page last looked, and the last
+        // add's count for its toast.
+        if self.local_seen != crate::local::revision() {
+            self.read_local();
+        }
+        if let Some(n) = self.take_local_added() {
+            self.toast(if n == 0 {
+                "No new songs in those files".to_owned()
+            } else if n == 1 {
+                "Added 1 song to Local music".to_owned()
+            } else {
+                format!("Added {n} songs to Local music")
+            });
         }
         transfer::poll(self, ctx, now);
         let wayland = integrations::is_wayland(frame);

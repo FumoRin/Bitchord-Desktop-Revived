@@ -1674,10 +1674,13 @@ impl Backend {
         // header); from the top, the non-seekable one starts sooner.
         let seek = !at.is_zero();
         let shared2 = shared.clone();
-        let report = (report && self.is_logged_in() && reports_plays()).then(|| (self.clone(), video_id.to_owned()));
+        // A local play is the listener's own file: nothing to report to YouTube, and no
+        // addon is asked to better the copy they picked.
+        let local = crate::local::is_local(listed);
+        let report = (report && !local && self.is_logged_in() && reports_plays()).then(|| (self.clone(), video_id.to_owned()));
         // A stream that started from YouTube can still be upgraded in place once an
         // addon answers (see `try_upgrade_hires`); one that already plays hi-res can't.
-        let upgrade = shared2.info.is_none().then(|| (self.clone(), video_id.to_owned(), meta));
+        let upgrade = (!local && shared2.info.is_none()).then(|| (self.clone(), video_id.to_owned(), meta));
         let open = move || -> anyhow::Result<crate::audio::TrackDecoder> {
             let mut d = stream::decoder(shared.clone(), seek)?;
             if seek {
@@ -1799,6 +1802,10 @@ impl Backend {
     /// is downloaded (that file plays, offline too). A failed lookup isn't remembered,
     /// so the next play tries again.
     async fn song_version(&self, listed: &str, song_of: Option<&Track>, wait: std::time::Duration) -> Option<Track> {
+        // A local song is never a music video: there's nothing to look up.
+        if crate::local::is_local(listed) {
+            return None;
+        }
         let video = song_of.filter(|t| t.id == listed && t.music_video)?;
         if crate::downloads::path(listed).is_some() {
             return None;
@@ -1888,12 +1895,12 @@ impl Backend {
         Ok(self.start_stream(video_id, found, prefetch, track))
     }
 
-    /// The saved download, or a stream URL to download from. `prefetch`: only somewhere
-    /// to start is needed, so an addon rendition that has to be fetched and decoded
-    /// whole is left for the play.
+    /// The saved download, a file of this computer's, or a stream URL to download from.
+    /// `prefetch`: only somewhere to start is needed, so an addon rendition that has to
+    /// be fetched and decoded whole is left for the play.
     async fn find_stream(&self, video_id: &str, track: Option<&Track>, prefetch: bool) -> anyhow::Result<Found> {
         let id = video_id.to_owned();
-        if let Some(shared) = tokio::task::spawn_blocking(move || crate::downloads::open(&id)).await? {
+        if let Some(shared) = tokio::task::spawn_blocking(move || crate::downloads::open(&id).or_else(|| crate::local::open(&id))).await? {
             return Ok(Found::Saved(shared));
         }
         // With "play YouTube first" on, the addons are left to the background upgrade

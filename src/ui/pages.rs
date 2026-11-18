@@ -333,12 +333,19 @@ fn select_pill(ui: &mut Ui, sel: &mut Selection, page: &Page) {
 
 /// A list's Sort button, with its orders in a menu. Away while the list is still coming in.
 fn sort_pill(ui: &mut Ui, sorts: &mut super::sorts::ListSorts, page: &Page, held: bool) {
+    if let Some(list) = super::sorts::list_id(page) {
+        sort_pill_list(ui, sorts, page, &list, held);
+    }
+}
+
+/// The same Sort button for a list that isn't the page's only one (the Uploads page's
+/// local music): the page's orders, kept under the list's own id.
+fn sort_pill_list(ui: &mut Ui, sorts: &mut super::sorts::ListSorts, page: &Page, list: &str, held: bool) {
     if held {
         return;
     }
-    let Some(list) = super::sorts::list_id(page) else { return };
     let options = super::sorts::options(page);
-    let now = sorts.sort(&list);
+    let now = sorts.sort(list);
     let label = match options.iter().find(|(s, _)| *s == now && now != super::sorts::Sort::Default) {
         Some((_, name)) => format!("Sort: {name}"),
         None => "Sort".to_owned(),
@@ -349,7 +356,7 @@ fn sort_pill(ui: &mut Ui, sorts: &mut super::sorts::ListSorts, page: &Page, held
         ui.add_space(3.0);
         for (s, name) in options {
             if widgets::menu_choice(ui, name, s == now) {
-                sorts.set_sort(&list, s);
+                sorts.set_sort(list, s);
             }
         }
         ui.add_space(3.0);
@@ -447,8 +454,10 @@ fn selection_bar(app: &mut App, ctx: &egui::Context, page: &Page, area: Rect) {
                             if button(ui, "Add to queue", icon::LIST_MUSIC, false).clicked() {
                                 acts.extend(picked.iter().cloned().map(Action::Enqueue));
                             }
-                            if !matches!(page, Page::Downloads) && button(ui, "Download", icon::DOWNLOAD, false).clicked() {
-                                acts.push(Action::DownloadMany(None, String::new(), Some(picked.clone())));
+                            // Local songs have nothing to download: their file is already here.
+                            let downloadable: Vec<Track> = picked.iter().filter(|t| !crate::local::is_local(&t.id)).cloned().collect();
+                            if !downloadable.is_empty() && !matches!(page, Page::Downloads) && button(ui, "Download", icon::DOWNLOAD, false).clicked() {
+                                acts.push(Action::DownloadMany(None, String::new(), Some(downloadable)));
                             }
                         }
                         toggle_all = button(ui, if all { "Select none" } else { "Select all" }, icon::LIST_CHECKS, false).clicked();
@@ -1351,7 +1360,9 @@ fn artist_shelf(app: &mut App, ui: &mut Ui, artist: &str, title: &str, now: f64)
 
 fn library(app: &mut App, ui: &mut Ui, tab: LibTab, now: f64) {
     page_title(ui, "Library");
-    if !app.logged_in {
+    // The Uploads tab holds this computer's songs too, below the account's: it opens
+    // signed out, with its upload half asking for a sign-in.
+    if !app.logged_in && tab != LibTab::Uploads {
         ui.add_space(10.0);
         ui.label(RichText::new("Sign in to see your playlists, liked songs and history.").color(theme::text_dim()));
         ui.add_space(12.0);
@@ -1401,36 +1412,7 @@ fn library(app: &mut App, ui: &mut Ui, tab: LibTab, now: f64) {
             let order = app.sorts.order("history", h);
             list(ui, &rows, &app.liked, h, order.as_deref(), true, plain, ListCtx { sel: &mut app.selection, page: &app.page, own: false }, &mut app.row_drag, egui::Id::unique("history"), &mut app.actions);
         }
-        LibTab::Uploads => {
-            ui.horizontal(|ui| {
-                if pill(ui, "Upload music", Some(icon::UPLOAD), true).clicked() {
-                    app.pick_uploads(ui.ctx());
-                }
-                if app.uploads.as_ref().is_some_and(|u| !u.is_empty()) && pill(ui, "Shuffle", Some(icon::SHUFFLE), false).clicked() {
-                    let mut t = app.uploads.clone().unwrap_or_default();
-                    super::shuffle(&mut t);
-                    app.actions.push(Action::Play(t, 0));
-                }
-            });
-            ui.add_space(6.0);
-            ui.label(RichText::new("Or drop audio files anywhere on the window. MP3, M4A, FLAC, OGG and WMA.").font(theme::regular(13.0)).color(theme::text_dim()));
-            ui.add_space(12.0);
-            if app.uploads.is_none() {
-                placeholder(app, ui, now, 1, 48.0);
-                return;
-            }
-            let Some(up) = &app.uploads else { return };
-            if up.is_empty() {
-                ui.add_space(20.0);
-                ui.label(RichText::new("No uploads yet").color(theme::text_dim()));
-            }
-            ui.horizontal(|ui| {
-                sort_pill(ui, &mut app.sorts, &app.page, false);
-            });
-            ui.add_space(10.0);
-            let order = app.sorts.order("uploads", up);
-            list(ui, &rows, &app.liked, up, order.as_deref(), true, plain, ListCtx { sel: &mut app.selection, page: &app.page, own: false }, &mut app.row_drag, egui::Id::unique("uploads"), &mut app.actions);
-        }
+        LibTab::Uploads => uploads_tab(app, ui, now, &rows),
         // Liked Music, kept like any playlist.
         LibTab::Songs => {
             if app.opened(super::LIKED_MUSIC).is_none() {
@@ -1496,6 +1478,88 @@ fn library(app: &mut App, ui: &mut Ui, tab: LibTab, now: f64) {
 }
 
 // ------------------------------------------------------------------ downloads
+
+/// Library › Uploads: two ways to have songs of your own. Uploading puts them in the
+/// account's cloud library — playable on any device, but YouTube Music converts what it
+/// takes, so a FLAC doesn't stay lossless. Local music plays straight from this
+/// computer, each file as it is.
+fn uploads_tab(app: &mut App, ui: &mut Ui, now: f64, rows: &Rows) {
+    let plain = |_: usize, _: &Track| None;
+    ui.label(RichText::new("Upload to YouTube Music").font(theme::bold(15.0)).color(theme::text()));
+    ui.add_space(4.0);
+    ui.label(RichText::new("Songs go into the account's cloud library, playable on any device. YouTube Music converts what it takes — MP3, M4A, FLAC, OGG and WMA — so a FLAC doesn't stay lossless.").font(theme::regular(13.0)).color(theme::text_dim()));
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        if pill(ui, "Upload to YouTube Music", Some(icon::UPLOAD), true).clicked() {
+            app.pick_uploads(ui.ctx());
+        }
+        if app.uploads.as_ref().is_some_and(|u| !u.is_empty()) && pill(ui, "Shuffle", Some(icon::SHUFFLE), false).clicked() {
+            let mut t = app.uploads.clone().unwrap_or_default();
+            super::shuffle(&mut t);
+            app.actions.push(Action::Play(t, 0));
+        }
+    });
+    ui.add_space(12.0);
+    if !app.logged_in {
+        ui.label(RichText::new("Sign in to upload. Local music below works without an account.").font(theme::regular(13.0)).color(theme::text_dim()));
+    } else if app.uploads.is_none() {
+        placeholder(app, ui, now, 1, 48.0);
+    } else if let Some(up) = &app.uploads {
+        if up.is_empty() {
+            ui.add_space(8.0);
+            ui.label(RichText::new("No uploads yet").color(theme::text_dim()));
+        } else {
+            ui.horizontal(|ui| {
+                sort_pill(ui, &mut app.sorts, &app.page, false);
+            });
+            ui.add_space(10.0);
+        }
+        let order = app.sorts.order("uploads", up);
+        list(ui, rows, &app.liked, up, order.as_deref(), true, plain, ListCtx { sel: &mut app.selection, page: &app.page, own: false }, &mut app.row_drag, egui::Id::unique("uploads"), &mut app.actions);
+    }
+    ui.add_space(30.0);
+    ui.label(RichText::new("Local music").font(theme::bold(15.0)).color(theme::text()));
+    ui.add_space(4.0);
+    ui.label(RichText::new("Songs from this computer, played straight from their files: nothing is uploaded, and a FLAC plays as the FLAC it is. Add files or a folder, or drop them anywhere on the window.").font(theme::regular(13.0)).color(theme::text_dim()));
+    ui.add_space(10.0);
+    let empty = app.local.is_empty();
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        if pill(ui, "Add music", Some(icon::MUSIC), false).clicked() {
+            app.pick_local(ui.ctx());
+        }
+        if pill(ui, "Add folder", Some(icon::FOLDER_OPEN), false).clicked() {
+            app.pick_local_folder(ui.ctx());
+        }
+        if !empty {
+            if pill(ui, "Play", Some(icon::PLAY), true).clicked() {
+                // All of them from the top, in the order it's sorted.
+                let plays = match app.sorts.sorted("local", &app.local) {
+                    Some(o) => o.iter().map(|&i| app.local[i].clone()).collect(),
+                    None => app.local.clone(),
+                };
+                app.actions.push(Action::Play(plays, 0));
+            }
+            if pill(ui, "Shuffle", Some(icon::SHUFFLE), false).clicked() {
+                let mut t = app.local.clone();
+                super::shuffle(&mut t);
+                app.actions.push(Action::Play(t, 0));
+            }
+            sort_pill_list(ui, &mut app.sorts, &app.page, "local", false);
+        }
+    });
+    ui.add_space(12.0);
+    if empty {
+        ui.label(RichText::new("No local music yet").color(theme::text_dim()));
+        return;
+    }
+    let order = app.sorts.order("local", &app.local);
+    // Its rows pick nothing: the Select bar belongs to the uploads above, whose rows
+    // are a different list.
+    let mut no_sel = Selection::default();
+    list(ui, rows, &app.liked, &app.local, order.as_deref(), true, plain, ListCtx { sel: &mut no_sel, page: &app.page, own: false }, &mut app.row_drag, egui::Id::unique("local"), &mut app.actions);
+}
 
 fn downloads(app: &mut App, ui: &mut Ui, now: f64) {
     page_title(ui, "Downloads");
@@ -1741,7 +1805,6 @@ fn settings_tab(app: &mut App, ui: &mut Ui, tab: SettingsTab) {
         SettingsTab::Playback => settings_playback(app, ui),
         SettingsTab::Sources => {
             settings_sources(app, ui);
-            settings_saavn(app, ui);
         }
         SettingsTab::Lyrics => {
             settings_lyrics(app, ui);
@@ -1751,6 +1814,7 @@ fn settings_tab(app: &mut App, ui: &mut Ui, tab: SettingsTab) {
             settings_artists(app, ui);
         }
         SettingsTab::General => {
+            settings_community(ui);
             settings_window(app, ui);
             settings_downloads(ui);
             settings_updates(app, ui);
@@ -2389,24 +2453,28 @@ fn live_sources(app: &App) -> String {
 
 /// Settings › Music sources: the providers ported from Mochy-Music. When one has the
 /// song, its copy plays instead of YouTube's, and its quality shows in the player.
+/// The page reads one way: how a song plays, then the sources in the order they're
+/// asked — each with its own settings under its row, like every other — then the
+/// servers themselves.
 fn settings_sources(app: &mut App, ui: &mut Ui) {
-    settings_section(ui, "Source priority", None, Some("Other catalogs that can stand in for YouTube's stream when they have the song: the first source in the priority list that holds the song plays its own copy, and when none does, YouTube plays as usual."), |ui| {
-        // How a song plays, before whose catalog answers it: every source below plays by
-        // these, so they lead the list.
+    settings_section(ui, "How songs play", None, Some("Every source on this page plays by these, whichever one a song comes from."), |ui| {
         setting_row(ui, "Prefer Dolby Atmos", Some("Ask the addons for a Dolby Atmos copy when they offer one. Falls back to the best stereo copy when the stream's codec can't be decoded."), |ui| {
             if toggle(ui, &mut app.prefer_atmos, "Prefer Dolby Atmos").changed() {
                 app.backend.set_prefer_atmos(app.prefer_atmos);
             }
         });
+        divider(ui);
         setting_row(ui, "Play YouTube first, upgrade after", Some("Start every song from YouTube at once and swap in the hi-res copy in place when an addon answers, instead of waiting for the addons before the song starts."), |ui| {
             if toggle(ui, &mut app.disable_direct_stream, "Play YouTube first, upgrade after").changed() {
                 app.backend.set_disable_direct_stream(app.disable_direct_stream);
             }
         });
+        divider(ui);
         setting_row(ui, "Stats for nerds", Some("Show the codec, sample rate and bitrate of what's playing at the foot of the cover in Now playing, whatever the source."), |ui| {
             toggle(ui, &mut app.show_nerd_stats, "Stats for nerds");
         });
-        divider(ui);
+    });
+    settings_section(ui, "Source priority", None, Some("The first source in this list that has the song plays its own copy; when none does, YouTube Music plays as usual. The arrows beside a source's switch move it up and down."), |ui| {
         for i in 0..app.source_order.len() {
             let kind = app.source_order[i];
             if i > 0 {
@@ -2447,8 +2515,7 @@ fn settings_sources(app: &mut App, ui: &mut Ui) {
                     }
                 });
             });
-            // The built-in streamer gets the same Test JioSaavn has, under its own row:
-            // its own unit in a search, like JioSaavn's is.
+            // The built-in streamer's check, under its own row: its own unit in a search.
             if kind == crate::backend::MusicSource::Monochrome && filter_show(ui, "Monochrome test connection") {
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
@@ -2469,6 +2536,42 @@ fn settings_sources(app: &mut App, ui: &mut Ui) {
                     }
                 });
                 test_line(ui, &app.monochrome_test.lock().unwrap().clone());
+                ui.add_space(10.0);
+            }
+            // JioSaavn's own settings, under its row the same way: its stream quality and
+            // its check, one unit in a search. Which quality plays is the row's say above.
+            if kind == crate::backend::MusicSource::JioSaavn && filter_show(ui, "JioSaavn stream quality test connection") {
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    let btn = dropdown_button(ui, app.jiosaavn_quality.label(), 200.0, "JioSaavn stream");
+                    egui::Popup::menu(&btn).show(|ui| {
+                        ui.set_width(200.0);
+                        ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                        ui.add_space(4.0);
+                        for quality in crate::providers::SaavnQuality::ALL {
+                            if option_row(ui, quality.label(), app.jiosaavn_quality == quality).clicked() {
+                                app.jiosaavn_quality = quality;
+                                app.backend.set_saavn_quality(quality);
+                                ui.close();
+                            }
+                        }
+                        ui.add_space(4.0);
+                    });
+                    let slot = app.saavn_test.clone();
+                    let state = slot.lock().unwrap().clone();
+                    if matches!(state, Some(None)) {
+                        ui.spinner();
+                    } else if pill(ui, "Test", None, false).clicked() {
+                        *slot.lock().unwrap() = Some(None);
+                        let (slot, http) = (slot, app.backend.http());
+                        app.backend.spawn(async move {
+                            let (good, msg) = crate::providers::probe_saavn(&http).await;
+                            *slot.lock().unwrap() = Some(Some((good, msg)));
+                        });
+                    }
+                });
+                test_line(ui, &app.saavn_test.lock().unwrap().clone());
                 ui.add_space(10.0);
             }
         }
@@ -2619,52 +2722,6 @@ fn settings_sources_lists(app: &mut App, ui: &mut Ui) {
     });
     settings_section(ui, "Monochrome servers", None, Some("Monochrome-format servers you've added, tried before Monochrome's own streamer — they were added for a reason. A site's link is read for the server it plays from. New servers come from \"Add a custom provider\" above, which asks both formats at once."), |ui| {
         mono_servers_editor(app, ui);
-    });
-}
-
-/// JioSaavn's stream quality and its Test. The stream behaviour every source plays by
-/// — Atmos, the YouTube-first upgrade, the nerds' stats — leads Source priority above.
-fn settings_saavn(app: &mut App, ui: &mut Ui) {
-    settings_section(ui, "JioSaavn", None, None, |ui| {
-        setting_row(ui, "JioSaavn stream", Some("How much data a JioSaavn copy uses. 320 is its best; songs that don't have it play 160."), |ui| {
-            let btn = dropdown_button(ui, app.jiosaavn_quality.label(), 200.0, "JioSaavn stream");
-            egui::Popup::menu(&btn).show(|ui| {
-                ui.set_width(200.0);
-                ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-                ui.add_space(4.0);
-                for quality in crate::providers::SaavnQuality::ALL {
-                    if option_row(ui, quality.label(), app.jiosaavn_quality == quality).clicked() {
-                        app.jiosaavn_quality = quality;
-                        app.backend.set_saavn_quality(quality);
-                        ui.close();
-                    }
-                }
-            });
-        });
-        divider(ui);
-        // JioSaavn's own check is its own unit: searching "test" finds it alone.
-        if filter_show(ui, "JioSaavn test connection") {
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                let slot = app.saavn_test.clone();
-                let state = slot.lock().unwrap().clone();
-                if matches!(state, Some(None)) {
-                    ui.add_space(ui.available_width().min(76.0));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.spinner();
-                    });
-                } else if pill(ui, "Test", None, false).clicked() {
-                    *slot.lock().unwrap() = Some(None);
-                    let (slot, http) = (slot, app.backend.http());
-                    app.backend.spawn(async move {
-                        let (good, msg) = crate::providers::probe_saavn(&http).await;
-                        *slot.lock().unwrap() = Some(Some((good, msg)));
-                    });
-                }
-            });
-            test_line(ui, &app.saavn_test.lock().unwrap().clone());
-            ui.add_space(10.0);
-        }
     });
 }
 
@@ -3090,6 +3147,18 @@ fn settings_zoom(ui: &mut Ui) {
     if let Some(z) = pick {
         ui.ctx().set_zoom_factor(z);
     }
+}
+
+/// Settings › General's first card: the project's Discord server — the same place the
+/// update catalogue's news lands first.
+fn settings_community(ui: &mut Ui) {
+    settings_section(ui, "Community", None, None, |ui| {
+        setting_row(ui, "Join the Discord server", Some("Release news as it happens, help with the app, and the talk the project runs on."), |ui| {
+            if pill(ui, "Join server", Some(icon::USERS), true).clicked() {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(crate::discord::DISCORD_INVITE));
+            }
+        });
+    });
 }
 
 /// Settings › Window.
