@@ -2,7 +2,7 @@
 //! animated background. The lyrics themselves are drawn by `karaoke` (a port of the
 //! better-lyrics renderer); this adds their toolbar and the plain-text fallback.
 
-use egui::{Color32, Rect, Sense, Ui, Vec2, pos2, vec2};
+use egui::{Color32, Pos2, Rect, Sense, Ui, Vec2, pos2, vec2};
 
 use super::widgets::{self, named, text_at};
 use super::{Action, App, NpTab, Repeat, glyphs, karaoke};
@@ -304,7 +304,7 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
     // artwork alone — the same trip the ⋯ menu's rows and the L/Q keys make.
     let accent = app.accent_color();
     let ink = |h: f32| theme::lerp_color(theme::text_dim(), theme::text(), h);
-    let corner = |ui: &mut Ui, center: pos2, key: &str, name: &str| -> egui::Response {
+    let corner = |ui: &mut Ui, center: Pos2, key: &str, name: &str| -> egui::Response {
         let r = Rect::from_center_size(center, Vec2::splat(34.0));
         let resp = ui.interact(r, egui::Id::unique(("np-corner", key)), Sense::click());
         named(resp, name).on_hover_text(name).on_hover_cursor(egui::CursorIcon::PointingHand)
