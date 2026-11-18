@@ -17,6 +17,12 @@ regularly. The fork's own features sit on top and must never be lost.
 
 **Commit as:** `LoserDenji <loserdenji@proton.me>`
 
+Work is handed over as patches: commit on top of the branch, then
+`git format-patch -1 <sha>` (applied on the receiving end with `git am`).
+One logical change per commit; the repo's message style is
+`feat:`/`fix:`/`perf:`/`port:` lowercase prefixes, ported commits titled
+`Port ytm-rs <sha>…`.
+
 ---
 
 ## Build & test
@@ -29,11 +35,18 @@ libgtk-3-dev libwebkit2gtk-4.1-dev libasound2-dev \
 libayatana-appindicator3-dev libdbus-1-dev libssl-dev pkg-config
 ```
 
-Without sudo, the same works by downloading and extracting the debs to a
-local prefix:
+With sudo, that's all you need. The rest of this section is the no-sudo
+case (a container, a hosted workspace, a bare runner), from nothing:
+
+1. the one-paste bootstrap below — a local prefix, `~/gtk-local`
+2. the exports below it — every shell that builds or runs the app
+3. `cargo check --tests` — the quick loop
+4. to see it run: *Running the app headless*, two sections down
+
+### The no-sudo bootstrap (one paste, a few minutes)
 
 ```bash
-mkdir -p ~/gtk-local && cd /tmp/gtk-deps
+mkdir -p ~/gtk-local /tmp/gtk-debs && cd /tmp/gtk-debs
 apt-get download libgtk-3-dev libwebkit2gtk-4.1-dev libasound2-dev \
   libwebkit2gtk-4.1-0 libjavascriptcoregtk-4.1-0 libjavascriptcoregtk-4.1-dev \
   libsoup-3.0-0 libsoup-3.0-dev libepoxy-dev libatk1.0-dev \
@@ -46,24 +59,54 @@ apt-get download libgtk-3-dev libwebkit2gtk-4.1-dev libasound2-dev \
   libxcb-render0-dev libxcb-shm0-dev libxau-dev libxdmcp-dev \
   libpixman-1-dev libpng-dev zlib1g-dev
 for d in *.deb; do dpkg-deb -x "$d" ~/gtk-local/; done
+cd ~/gtk-local/usr/lib/x86_64-linux-gnu
+# the linker wants a plain libfoo.so for every libfoo.so.N
+for f in *.so.*; do b=$(echo "$f" | sed -E 's/\.so\..*$//'); [ -e "$b.so" ] || ln -sf "$f" "$b.so"; done
+# the deb list skips the runtime packages: stand the system's own .so.N in
+for lib in gtk-3 atk-1.0 gdk-3 asound epoxy harfbuzz pango-1.0 cairo \
+           gdk_pixbuf-2.0 gio-2.0 gobject-2.0 glib-2.0; do
+  s=$(ls /usr/lib/x86_64-linux-gnu/lib$lib.so.* 2>/dev/null | head -1)
+  [ -e "lib$lib.so" ] || [ -z "$s" ] || ln -sf "$s" "lib$lib.so"
+done
+# a symlink left dangling points at a version this prefix doesn't carry
+for l in $(find . -maxdepth 1 -type l); do
+  [ -e "$l" ] || { s=$(ls /usr/lib/x86_64-linux-gnu/$(basename "$l").* 2>/dev/null | head -1); [ -n "$s" ] && ln -sf "$s" "$l"; }
+done
+rm -f ./*.a   # static archives out, so the linker takes the shared ones
+# stub .pc files for the packages several GTK .pc files Require but no deb
+# here provides (versions only need to satisfy the Requires lines). The
+# webkit/jsc .pc files come from their -dev debs above: don't stub those,
+# their -I cflags are needed to compile against the webview headers.
+PC=~/gtk-local/usr/lib/x86_64-linux-gnu/pkgconfig
+for spec in "egl 1.4" "gl 1.2" "cloudproviders 0.3" "atspi-2 2.56" "libsystemd 250"; do
+  set -- $spec
+  printf 'prefix=/usr\nName: %s\nDescription: stub for the local prefix\nVersion: %s\nLibs:\nCflags:\n' "$1" "$2" > "$PC/$1.pc"
+done
 ```
 
-Then:
+If the built app later misses a runtime library at launch, the loader names
+it: `apt-get download <the package that ships it>`, `dpkg-deb -x` it into
+`~/gtk-local`, re-run the `.so` loop above.
+
+### The exports (every shell)
+
+Drop these in a file (`env.sh`, outside the repo) and `source` it in each
+shell that builds or runs the app:
+
 ```bash
-export PKG_CONFIG_PATH=~/gtk-local/usr/lib/x86_64-linux-gnu/pkgconfig:~/gtk-local/usr/share/pkgconfig
-export PKG_CONFIG_SYSROOT_DIR=~/gtk-local
-export RUSTFLAGS="-L ~/gtk-local/usr/lib/x86_64-linux-gnu -L /usr/lib/x86_64-linux-gnu \
-  -C link-arg=-Wl,-rpath,~/gtk-local/usr/lib/x86_64-linux-gnu"
-export LD_LIBRARY_PATH=~/gtk-local/usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu
+export PKG_CONFIG_PATH=$HOME/gtk-local/usr/lib/x86_64-linux-gnu/pkgconfig:$HOME/gtk-local/usr/share/pkgconfig
+export PKG_CONFIG_SYSROOT_DIR=$HOME/gtk-local
+export RUSTFLAGS="-L $HOME/gtk-local/usr/lib/x86_64-linux-gnu -L /usr/lib/x86_64-linux-gnu \
+  -C link-arg=-Wl,-rpath,$HOME/gtk-local/usr/lib/x86_64-linux-gnu"
+export LD_LIBRARY_PATH=$HOME/gtk-local/usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu
 ```
 
-Two finishing steps the build needs:
-- Stub `.pc` files for `egl`, `gl`, `cloudproviders`, `atspi-2`, and
-  `libsystemd` (version `250`) in the pkgconfig dir — several GTK `.pc`
-  files require them but nothing links them here.
-- `ln -sf libfoo.so.0 libfoo.so` for each library in
-  `~/gtk-local/usr/lib/x86_64-linux-gnu/`, so the linker can find `-lgtk-3`
-  etc.
+Two ways these quietly break, both worth knowing up front:
+
+- `$HOME`, never `~` — a tilde inside double quotes doesn't expand, and the
+  flags end up pointing at a directory literally named `~`.
+- Keep them **byte-identical in every shell** — cargo hashes `RUSTFLAGS`
+  into its fingerprints, so any change recompiles the world.
 
 ### Commands
 
@@ -72,11 +115,17 @@ cargo check              # type-check — fast, needs no .so files
 cargo check --tests      # also type-check the tests
 cargo test --no-run      # compile tests — needs the .so files above
 cargo test               # compile and run everything
-cargo test module_name::     # one module's tests
+cargo test module_name:: # one module's tests
+cargo build              # target/debug/bitchord — run with the exports' LD_LIBRARY_PATH
 ```
 
 `cargo check --tests` is the quick loop for fixing compile errors: it
 skips linking, so it works even without the runtime libraries.
+
+Tests that need the network, a signed-in account, or `YTM_*` env vars are
+`#[ignore]`d — plain `cargo test` is offline and hermetic. Run one with
+`cargo test -- --ignored <name> --nocapture` (several want `--release`);
+each one's doc comment says what it needs.
 
 ### CI
 
@@ -86,6 +135,144 @@ do. Windows and macOS need no system packages, so a change that compiles
 locally on Linux is nearly always fine there too; what differs is
 `#[cfg(windows)]`/`#[cfg(target_os = "macos")]` code, which the compiler
 still type-checks for the local target only.
+
+---
+
+## Running the app headless
+
+The app needs a GL context, not a desktop. Xvfb (the usual `xvfb` package)
+provides one; Mesa's llvmpipe draws it in software, so no GPU either.
+
+```bash
+Xvfb :99 -screen 0 1920x1080x24 &   # if one isn't already up; screen ≥ window
+DISPLAY=:99 YTM_BACKGROUND=1 YTM_DATA_DIR=/tmp/profile YTM_SIZE=1400x900 \
+  YTM_MUTE=1 ./target/debug/bitchord
+```
+
+- `YTM_BACKGROUND` opens the window off-screen, unfocused, off the taskbar,
+  and stops eframe from persisting window state — the run leaves no trace
+  in the profile.
+- `YTM_DATA_DIR` is a separate profile: settings in `<dir>/app.ron`, the
+  log in `<dir>/bitchord.log` (rotated to `bitchord.prev.log`), renderer
+  choice in `<dir>/renderer`, caches and sign-ins beside them. A fresh
+  empty dir is a signed-out first launch — the state screenshots want.
+  Without it, everything lands in `~/.local/share/ytm-rs`.
+- `YTM_SIZE=WxH` sets the window in points (background mode defaults to
+  1920x1057; first-launch default is 1200x780, minimum 760x480). The Xvfb
+  screen must be at least as big as the window.
+- **One copy per user.** The single-instance socket is per-user, not
+  per-profile: if any copy is already running, a new launch hands over and
+  exits silently — check `pgrep -f target/debug/bitchord` and kill strays
+  first. This bites even with different `YTM_DATA_DIR`s.
+- Renderer: OpenGL by default; the choice is cached in `<dir>/renderer`
+  (`opengl`/`wgpu`). Under Xvfb the log's `gl:` line names llvmpipe —
+  that's normal. A failed wgpu start falls back to OpenGL and rewrites the
+  file itself.
+- Log warnings that are normal on a headless box, not breakage: no D-Bus
+  (media controls), no AppIndicator (tray icon), XRandR 0mm, XSETTINGS.
+- CLI flags: `--show` (raise the running copy), `--no-tray`. The
+  `login`/`turnstile` first-arg forms are internal webview child processes.
+- No sound device only logs. `YTM_MUTE=1` starts silent and never persists
+  the volume.
+
+---
+
+## Screenshots
+
+The app shoots **its own framebuffer** (`egui` screenshots) — no OS window
+capture, no compositor; works headless under Xvfb.
+
+- `YTM_SCREENSHOT=out.png` — one shot after `YTM_SCREENSHOT_AT` seconds
+  (default 8; the wait lets shelves/covers load).
+- `YTM_SCREENSHOT_BURST=<n>` (with it) — keeps the n frames from that
+  moment in memory, then writes `<stem>_<i>_<ms>.png`, ms being each
+  frame's time: a filmstrip of an animation and its pacing.
+- `YTM_THEME_TOUR=<step-secs>` (with `YTM_SCREENSHOT`) — steps through
+  every theme preset, saving `<stem>_<n>_<id>.png` for each, then quits;
+  `YTM_TOUR_ONLY=id,id` limits the tour.
+- Inside a `YTM_SCRIPT` (below), `<t>:s:name` saves
+  `$YTM_SCRIPT_DIR/name.png` at that moment.
+
+This exact sequence runs end to end — fresh profile, Settings page, one
+shot, clean exit (with the exports in the shell):
+
+```bash
+Xvfb :99 -screen 0 1500x1000x24 &    # if not already up
+mkdir -p /tmp/shots /tmp/profile
+DISPLAY=:99 YTM_DATA_DIR=/tmp/profile YTM_BACKGROUND=1 YTM_SIZE=1400x900 \
+  YTM_PAGE=settings YTM_SCRIPT_DIR=/tmp/shots YTM_SCRIPT='5:s:settings;5.5:q' \
+  ./target/debug/bitchord     # exits 0; the shot is /tmp/shots/settings.png
+```
+
+---
+
+## Driving the UI (no mouse, no keyboard)
+
+`YTM_SCRIPT="<secs>:<step>;…"` plays a script against the window, times in
+seconds from the first frame. Steps (see `src/ui/dev.rs`):
+
+| step | does |
+| --- | --- |
+| `m:x,y` | move the pointer to x,y (points, from the window's top-left) |
+| `c:x,y` | click at x,y |
+| `r:w,h` | resize the window |
+| `t:text` | type text |
+| `f:n` | touchpad flick of n px down (scroll), sent the way Wayland sends it |
+| `s:name` | screenshot to `$YTM_SCRIPT_DIR/name.png` |
+| `q` | quit |
+
+- `YTM_PROBE=1` logs, each time the pointer stops at an `m:x,y`, whether a
+  press there would hit the title bar and how many widgets sit under it —
+  the way to find coordinates for a script. Take a screenshot, measure,
+  probe, click.
+- Animations need time: shots land after the number-eases finish, so put
+  `s:` steps a second or two after the `c:` that triggers them.
+
+State set up before the first frame (read in `src/ui/mod.rs` / `main.rs`):
+
+- `YTM_PAGE=home|new|explore|library|uploads|liked|history|settings|transfer|jam|album:<id>|mood:<id>|artist:<id>|playlist:<id>|search:<q>` — the page to open at launch.
+- `YTM_SEARCH=<q>` only searches; `YTM_SMOKE=<q>` searches and plays the
+  first song; `YTM_SMOKE=id:<videoId>,…` queues exactly those (no search);
+  `YTM_VIDEO` shows them as video. Playing needs the network.
+- `YTM_NOWPLAYING` opens the now-playing overlay; `YTM_NP_TAB=comments|upnext|art` its tab; `YTM_SCROLL=<y>` pre-scrolls a page.
+- `YTM_APPEARANCE`/`YTM_FONT` override the theme settings;
+  `YTM_NO_SHADER` replaces the animated background with the flat gradient
+  (deterministic shots).
+- `YTM_UPLOAD=<file>` uploads that file as if picked;
+  `YTM_PROXY_INPUT=<address>` opens Settings › Network on Custom with it
+  typed in.
+
+The rest of the `YTM_*` hooks (fail injection `YTM_STREAM_FAIL`,
+`YTM_LYRICS_FAIL`, `YTM_DEVICE_LOST`; pacing `YTM_FPS`; memory `YTM_MEM`;
+jam `YTM_JAM_*`; transfer `YTM_TRANSFER_*`; updates `YTM_UPDATE_*`…):
+`rg 'YTM_' src/` lists every one, documented where it's read. The
+screenshot/script/probe machinery itself is `src/ui/dev.rs`.
+
+---
+
+## Repo map
+
+- `src/ui/mod.rs` — `App`, the update loop, launch state and dev hooks.
+- `src/ui/pages.rs` — the pages, including the Settings sections.
+- `src/ui/` — `nowplaying.rs` (the big overlay), `mini.rs`, `karaoke.rs`
+  (lyrics), `palette.rs` (command palette), `storage.rs` (Settings ›
+  Storage), `dialogs.rs` (confirm cards), `widgets.rs`.
+- `src/backend.rs` — network/backend state machine; `src/ytm.rs` /
+  `src/ytmapi.rs` the YouTube Music API; `src/cache.rs` storage
+  measure/clear; `src/downloads.rs` the download index;
+  `src/audio.rs` rodio output; `src/theme.rs` theming and fonts;
+  `src/preset.rs` theme presets; `src/login.rs` the webview sign-ins.
+- `server/` the jam relay (separate crate, with its own smoke tests);
+  `site/` the website; `docs/readme` the README images;
+  `installer/`, `linux/`, `macos/` packaging; `flake.nix` the Nix build.
+- `vendor/souvlaki` — a patched copy of the media-controls crate, wired in
+  through `[patch]` in `Cargo.toml` (its Linux fixes live there, not on
+  crates.io — see the notes in its `mpris/dbus/controls.rs`).
+
+A new Settings section must be added to `SECTIONS` in
+`src/ui/palette.rs` **and** drawn with `(ui, "Name")` in one of the files
+the `sections_are_in_settings` test `include_str!`s — that test is the
+checklist; it fails naming exactly what's missing.
 
 ---
 
