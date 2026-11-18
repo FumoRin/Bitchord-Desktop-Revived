@@ -153,9 +153,19 @@ impl Filter {
 }
 
 async fn search_as(api: &Api, query: &str, filter: Filter, auth: bool) -> anyhow::Result<Vec<Value>> {
-    let v = api.call("search", json!({ "query": query, "params": filter.params() }), auth).await?;
-    let sections = &v["contents"]["tabbedSearchResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"];
-    Ok(arr(sections).iter().flat_map(|s| arr(&s["musicShelfRenderer"]["contents"]).iter().cloned()).collect())
+    let mut v = api.call("search", json!({ "query": query, "params": filter.params() }), auth).await?;
+    let sections = &mut v["contents"]["tabbedSearchResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"];
+    // Rows are taken out of the response rather than cloned: a search fans out over six
+    // filters at once, and each row's JSON is deep.
+    let mut rows = Vec::new();
+    if let Some(sections) = sections.as_array_mut() {
+        for s in sections {
+            if let Some(contents) = s["musicShelfRenderer"]["contents"].as_array_mut() {
+                rows.append(contents);
+            }
+        }
+    }
+    Ok(rows)
 }
 
 /// `auth`: as the signed-in account, which adds the query to its search history.
