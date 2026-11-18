@@ -259,6 +259,12 @@ impl Shared {
         self.inner.lock().unwrap().blocks.iter().all(Option::is_some)
     }
 
+    /// Too big to keep whole: blocks behind the reader get dropped as it goes, so a
+    /// seek to a spot whose block is gone would wait for a re-download.
+    pub fn windowed(&self) -> bool {
+        self.inner.lock().unwrap().windowed
+    }
+
     /// Wait until the download stops, however it ends.
     pub async fn finished(&self) {
         let _ = self.done.subscribe().wait_for(|d| *d).await;
@@ -327,6 +333,9 @@ impl Shared {
                 }
             }
         }
+        drop(inner);
+        // Woken readers re-lock at once; holding the guard through the wake would hand
+        // them the lock to take all over again — and one of them is the audio callback.
         self.ready.notify_all();
     }
 
@@ -923,23 +932,48 @@ pub struct PcmSource {
     rate: u32,
     channels: u16,
     duration: Option<Duration>,
+    /// PCM pulled from the reader at once: a sample at a time would take the buffer's
+    /// lock per sample, on the device's thread.
+    chunk: Box<[u8; CHUNK]>,
+    /// How much of `chunk` holds unread PCM.
+    len: usize,
+    at: usize,
 }
+
+/// Two spans of the resampler's view at stereo, and past that just a slice of a block.
+const CHUNK: usize = 8192;
 
 impl PcmSource {
     fn new(shared: Arc<Shared>, rate: u32, channels: u16) -> Self {
         let duration_ms = shared.duration_ms;
-        Self { reader: StreamReader::new(shared), rate, channels, duration: (duration_ms > 0).then(|| Duration::from_millis(duration_ms)) }
+        Self {
+            reader: StreamReader::new(shared),
+            rate,
+            channels,
+            duration: (duration_ms > 0).then(|| Duration::from_millis(duration_ms)),
+            chunk: Box::new([0; CHUNK]),
+            len: 0,
+            at: 0,
+        }
     }
 }
 
 impl Iterator for PcmSource {
     type Item = rodio::Sample;
     fn next(&mut self) -> Option<rodio::Sample> {
-        let mut buf = [0u8; 2];
-        if self.reader.read_exact(&mut buf).is_err() {
-            return None;
+        if self.at + 2 > self.len {
+            self.at = 0;
+            // A short read stops at a block boundary: a shorter chunk serves the next
+            // refill sooner. A trailing odd byte can't make a sample, and reading again
+            // past the end returns 0.
+            self.len = self.reader.read(&mut self.chunk[..]).ok()?;
+            if self.len == 0 {
+                return None;
+            }
         }
-        Some(i16::from_le_bytes(buf) as f32 / 32768.0)
+        let s = i16::from_le_bytes([self.chunk[self.at], self.chunk[self.at + 1]]);
+        self.at += 2;
+        Some(s as f32 / 32768.0)
     }
 }
 
@@ -960,6 +994,8 @@ impl rodio::Source for PcmSource {
         let frame = (pos.as_secs_f64() * self.rate as f64) as u64;
         let byte = frame * self.channels as u64 * 2;
         self.reader.seek(SeekFrom::Start(byte)).map_err(|e| rodio::source::SeekError::Other(std::sync::Arc::new(e)))?;
+        self.at = 0;
+        self.len = 0;
         Ok(())
     }
 }
