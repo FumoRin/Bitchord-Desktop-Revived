@@ -29,6 +29,10 @@ pub const PROJECT_URL: &str = "https://github.com/LoserDenji/Bitchord-Desktop-Re
 /// What the project button says; Discord caps button labels at 32 characters.
 pub const PROJECT_BUTTON: &str = "Visit Bitchord Desktop Revived";
 
+/// The project's Discord server: the Join server button in Settings and the update
+/// catalogue both open this.
+pub const DISCORD_INVITE: &str = "https://discord.gg/bn2u89xUeH";
+
 /// BitChord's icon, from its repo: the example song's artwork in Settings' preview.
 pub const ICON: &str = "https://raw.githubusercontent.com/LoserDenji/Bitchord-Desktop-Revived/main/site/icon-192.png";
 

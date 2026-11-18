@@ -1,6 +1,6 @@
 //! Release notes: a small renderer for GitHub release bodies (headings, paragraphs,
-//! bullets, **bold**, `code`, [links](…)), the dialog shown when an update is ready
-//! (or to read a version's notes), and the card shown after updating.
+//! bullets, **bold**, `code`, [links](…) and bare URLs), the dialog shown when an
+//! update is ready (or to read a version's notes), and the card shown after updating.
 
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Color32, Margin, Stroke, Ui, vec2};
@@ -48,12 +48,15 @@ pub fn parse(md: &str) -> Vec<Block> {
     out
 }
 
-/// Inline spans: (text, bold). Links keep their text; code loses its backticks.
-fn spans(s: &str) -> Vec<(String, bool)> {
-    let mut out: Vec<(String, bool)> = Vec::new();
-    let mut push = |t: &str, bold: bool| match out.last_mut() {
-        Some((prev, b)) if *b == bold => prev.push_str(t),
-        _ => out.push((t.to_owned(), bold)),
+/// Inline spans: (text, bold, and the URL when it's a link). Links keep their text;
+/// code loses its backticks. A bare URL (`https://…`) is a link too, with the
+/// punctuation that usually trails one left out of it.
+fn spans(s: &str) -> Vec<(String, bool, Option<String>)> {
+    let mut out: Vec<(String, bool, Option<String>)> = Vec::new();
+    let mut push = |t: &str, bold: bool, url: Option<String>| match (out.last_mut(), &url) {
+        // Only plain runs of one boldness merge; every link is its own span.
+        (Some((prev, b, None)), None) if *b == bold => prev.push_str(t),
+        _ => out.push((t.to_owned(), bold, url)),
     };
     let mut rest = s;
     let mut bold = false;
@@ -63,36 +66,139 @@ fn spans(s: &str) -> Vec<(String, bool)> {
             rest = r;
         } else if let Some(r) = rest.strip_prefix('`') {
             let end = r.find('`').unwrap_or(r.len());
-            push(&r[..end], bold);
+            push(&r[..end], bold, None);
             rest = r.get(end + 1..).unwrap_or("");
         } else if let Some(r) = rest.strip_prefix('[')
             && let Some(close) = r.find("](")
             && let Some(end) = r[close..].find(')')
         {
-            push(&r[..close], bold);
+            push(&r[..close], bold, Some(r[close + 2..close + end].to_owned()));
             rest = &r[close + end + 1..];
         } else {
             let next = rest.char_indices().skip(1).find(|(_, c)| matches!(c, '*' | '`' | '[')).map_or(rest.len(), |(i, _)| i);
-            push(&rest[..next], bold);
-            rest = &rest[next..];
+            let run = &rest[..next];
+            match bare_link(run) {
+                // Text up to the URL, the URL as a link, then the rest goes round again
+                // (its punctuation first, glued back on in `words`).
+                Some((off, url, after)) => {
+                    if off > 0 {
+                        push(&run[..off], bold, None);
+                    }
+                    push(url, bold, Some(url.to_owned()));
+                    rest = after;
+                }
+                None => {
+                    push(run, bold, None);
+                    rest = &rest[next..];
+                }
+            }
         }
     }
     out
 }
 
+/// The first bare URL in `s`, starting a word (after a space, a bracket or the like):
+/// where it starts, the URL without the punctuation that trails it, and the rest from
+/// there. `None` when there's no URL before the line's next markdown.
+fn bare_link(s: &str) -> Option<(usize, &str, &str)> {
+    let mut best: Option<usize> = None;
+    for prefix in ["https://", "http://"] {
+        let mut from = 0;
+        while let Some(found) = s[from..].find(prefix) {
+            let at = from + found;
+            let boundary = s[..at].chars().next_back().is_none_or(|c| c.is_whitespace() || "(*_~".contains(c));
+            if boundary {
+                best = Some(best.map_or(at, |b: usize| b.min(at)));
+                break;
+            }
+            from = at + 1;
+        }
+    }
+    let at = best?;
+    let end = s[at..].find(char::is_whitespace).map_or(s.len(), |e| at + e);
+    let url = s[at..end].trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '}', '>', '\'', '"']);
+    Some((at, url, &s[at + url.len()..]))
+}
+
+/// The line's words, each the pieces it's made of: bold beside plain, a link's words,
+/// a bare URL's trailing period glued back on. Between words there was a space;
+/// between the pieces of one there wasn't.
+fn words(s: &str) -> Vec<Vec<(String, bool, Option<String>)>> {
+    let mut out: Vec<Vec<(String, bool, Option<String>)>> = Vec::new();
+    let mut word: Vec<(String, bool, Option<String>)> = Vec::new();
+    // Whether what comes next starts a word of its own: a space just went by, or
+    // nothing has been written yet.
+    let mut gap = true;
+    let mut buf = String::new();
+    let flush = |buf: &mut String, bold: bool, gap: &mut bool, word: &mut Vec<(String, bool, Option<String>)>, out: &mut Vec<Vec<(String, bool, Option<String>)>>| {
+        if buf.is_empty() {
+            return;
+        }
+        if !*gap && word.is_empty()
+            && let Some(last) = out.last_mut()
+        {
+            // No space since the last word: this piece is part of it — a bare URL's
+            // ".", text a link ran into.
+            last.push((std::mem::take(buf), bold, None));
+        } else {
+            if *gap && !word.is_empty() {
+                out.push(std::mem::take(word));
+            }
+            word.push((std::mem::take(buf), bold, None));
+        }
+        *gap = false;
+    };
+    for (t, bold, url) in spans(s) {
+        if let Some(u) = url {
+            flush(&mut buf, bold, &mut gap, &mut word, &mut out);
+            // A link's own text is words of its own, each opening the same place.
+            for w in t.split_whitespace() {
+                if !word.is_empty() {
+                    out.push(std::mem::take(&mut word));
+                }
+                out.push(vec![(w.to_owned(), bold, Some(u.clone()))]);
+            }
+            gap = false;
+            continue;
+        }
+        for c in t.chars() {
+            if c.is_whitespace() {
+                flush(&mut buf, bold, &mut gap, &mut word, &mut out);
+                if !word.is_empty() {
+                    out.push(std::mem::take(&mut word));
+                }
+                gap = true;
+            } else {
+                buf.push(c);
+            }
+        }
+        flush(&mut buf, bold, &mut gap, &mut word, &mut out);
+    }
+    if !word.is_empty() {
+        out.push(word);
+    }
+    out
+}
+
 fn plain(s: &str) -> String {
-    spans(s).into_iter().map(|(t, _)| t).collect()
+    spans(s).into_iter().map(|(t, _, _)| t).collect()
 }
 
 fn job(text: &str, size: f32, color: Color32, width: f32) -> LayoutJob {
     let mut job = LayoutJob::default();
     job.wrap.max_width = width;
-    for (t, bold) in spans(text) {
+    for (t, bold, _) in spans(text) {
         let font = if bold { theme::semibold(size) } else { theme::regular(size) };
         let color = if bold { theme::text() } else { color };
         job.append(&t, 0.0, TextFormat { font_id: font, color, line_height: Some(size * 1.5), ..Default::default() });
     }
     job
+}
+
+/// Whether a line carries a link (markdown or bare), and so needs the word-by-word
+/// layout that makes each link its own widget.
+fn linked(s: &str) -> bool {
+    spans(s).iter().any(|(_, _, url)| url.is_some())
 }
 
 /// The notes laid out like the release page: section headings, paragraphs, bullets.
@@ -110,19 +216,69 @@ pub fn show(ui: &mut Ui, blocks: &[Block], size: f32) {
                 ui.add_space(4.0);
             }
             Block::Para(t) => {
-                let g = ui.fonts_mut(|f| f.layout_job(job(t, size, body, width)));
-                ui.label(g);
+                if linked(t) {
+                    rich(ui, t, size, body, width, false);
+                } else {
+                    let g = ui.fonts_mut(|f| f.layout_job(job(t, size, body, width)));
+                    ui.label(g);
+                }
                 ui.add_space(6.0);
             }
             Block::Bullet(t) => {
-                let g = ui.fonts_mut(|f| f.layout_job(job(t, size, body, width - 18.0)));
-                let (rect, _) = ui.allocate_exact_size(vec2(width, g.size().y), egui::Sense::hover());
-                let dot = egui::pos2(rect.left() + 6.0, rect.top() + size * 0.75);
-                ui.painter().circle_filled(dot, 2.2, body);
-                ui.painter().galley(rect.min + vec2(18.0, 0.0), g, body);
+                if linked(t) {
+                    rich(ui, t, size, body, width, true);
+                } else {
+                    let g = ui.fonts_mut(|f| f.layout_job(job(t, size, body, width - 18.0)));
+                    let (rect, _) = ui.allocate_exact_size(vec2(width, g.size().y), egui::Sense::hover());
+                    let dot = egui::pos2(rect.left() + 6.0, rect.top() + size * 0.75);
+                    ui.painter().circle_filled(dot, 2.2, body);
+                    ui.painter().galley(rect.min + vec2(18.0, 0.0), g, body);
+                }
                 ui.add_space(4.0);
             }
         }
+    }
+}
+
+/// A paragraph or bullet that carries links, laid out word by word so each link is
+/// its own widget: the same fonts, colors and line height as the galley-built lines,
+/// with a real space's width between the words.
+fn rich(ui: &mut Ui, text: &str, size: f32, color: Color32, width: f32, bullet: bool) {
+    let top = ui.cursor().min;
+    let space = ui.painter().layout_no_wrap(" ".to_owned(), theme::regular(size), color).size().x;
+    ui.horizontal(|ui| {
+        if bullet {
+            ui.add_space(18.0);
+        }
+        ui.vertical(|ui| {
+            ui.set_width(width - if bullet { 18.0 } else { 0.0 });
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(space, 0.0);
+                for word in words(text) {
+                    // One word: its pieces sit tight against each other, whatever mixes
+                    // inside it (a bare URL and its trailing period).
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        for (t, bold, url) in word {
+                            let font = if bold { theme::semibold(size) } else { theme::regular(size) };
+                            let mut j = LayoutJob::default();
+                            j.append(&t, 0.0, TextFormat { font_id: font, color: if bold { theme::text() } else { color }, line_height: Some(size * 1.5), ..Default::default() });
+                            match url {
+                                Some(url) => {
+                                    ui.hyperlink_to(j, url);
+                                }
+                                None => {
+                                    ui.label(j);
+                                }
+                            }
+                        }
+                    });
+                }
+            });
+        });
+    });
+    if bullet {
+        ui.painter().circle_filled(egui::pos2(top.x + 6.0, top.y + size * 0.75), 2.2, color);
     }
 }
 
@@ -252,6 +408,10 @@ pub fn dialog(app: &mut App, ctx: &egui::Context) {
                 } else {
                     close = widgets::pill(ui, "Close", None, true).clicked();
                 }
+                // Where the news lands first, beside whatever else the bar offers.
+                if widgets::pill(ui, "Join the Discord server", Some(icon::USERS), false).clicked() {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(crate::discord::DISCORD_INVITE));
+                }
             });
         });
     });
@@ -343,7 +503,7 @@ mod tests {
         assert!(matches!(&b[0], Block::Heading(t) if t == "Uploads"));
         assert!(matches!(&b[1], Block::Para(t) if t == "Pick **files** or drop them."));
         assert!(matches!(&b[4], Block::Bullet(t) if t == "Icons are `centred` in their buttons."));
-        assert_eq!(spans("Pick **files** now"), vec![("Pick ".into(), false), ("files".into(), true), (" now".into(), false)]);
+        assert_eq!(spans("Pick **files** now"), vec![("Pick ".into(), false, None), ("files".into(), true, None), (" now".into(), false, None)]);
         assert_eq!(plain("See [the notes](https://example.com)."), "See the notes.");
     }
 
@@ -352,5 +512,30 @@ mod tests {
         let (items, more) = summary(&parse(MD));
         assert_eq!(items, vec!["Uploads", "Mixes play again", "Icons are centred in their buttons"]);
         assert_eq!(more, 1);
+    }
+
+    #[test]
+    fn bare_urls_are_links_without_their_punctuation() {
+        assert_eq!(spans("Read https://example.com/a?b=1 now"), vec![("Read ".into(), false, None), ("https://example.com/a?b=1".into(), false, Some("https://example.com/a?b=1".into())), (" now".into(), false, None)]);
+        // The period after a URL stays plain text, glued onto it as one word.
+        assert_eq!(spans("See https://example.com."), vec![("See ".into(), false, None), ("https://example.com".into(), false, Some("https://example.com".into())), (".".into(), false, None)]);
+        assert_eq!(words("See https://example.com."), vec![
+            vec![("See".into(), false, None)],
+            vec![("https://example.com".into(), false, Some("https://example.com".into())), (".".into(), false, None)],
+        ]);
+        // An https inside a word isn't a link.
+        assert!(spans("nothttps://example.com").iter().all(|(_, _, url)| url.is_none()));
+    }
+
+    #[test]
+    fn markdown_links_span_words() {
+        assert_eq!(words("See [the notes](https://example.com) here"), vec![
+            vec![("See".into(), false, None)],
+            vec![("the".into(), false, Some("https://example.com".into()))],
+            vec![("notes".into(), false, Some("https://example.com".into()))],
+            vec![("here".into(), false, None)],
+        ]);
+        assert!(linked("See [the notes](https://example.com) here"));
+        assert!(!linked("Plain **bold** and `code` only"));
     }
 }

@@ -649,6 +649,13 @@ impl App {
         self.downloads = Some(crate::downloads::list());
     }
 
+    /// The Uploads page's local half read again: the list lives in the local index,
+    /// which a picker thread may have changed since the last look.
+    pub(super) fn read_local(&mut self) {
+        self.local = crate::local::tracks();
+        self.local_seen = crate::local::revision();
+    }
+
     /// The Downloads page takes on the songs saved since it was read, at the top, from
     /// the index (no look at the other files). New files come first, so the picked rows
     /// move: the same songs stay picked.

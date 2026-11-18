@@ -757,7 +757,10 @@ pub fn song_menu(ui: &mut Ui, t: &Track, liked: bool, remove: Option<usize>, act
     if menu_action(ui, Some(icon::LIST_MUSIC), "View queue") {
         acts.push(Action::ViewQueue);
     }
-    if menu_action(ui, Some(icon::RADIO), "Start radio") {
+    // A radio needs a YouTube song to seed from; a local file isn't one.
+    if !crate::local::is_local(&t.id)
+        && menu_action(ui, Some(icon::RADIO), "Start radio")
+    {
         acts.push(Action::Radio(t.clone()));
     }
     ui.add_space(3.0);
@@ -768,6 +771,20 @@ pub fn song_menu(ui: &mut Ui, t: &Track, liked: bool, remove: Option<usize>, act
 /// under the cover and a rating doesn't belong. The Dislike button is gone: the
 /// app's loop and queue tools are the right way to steer what plays next.
 pub fn song_actions(ui: &mut Ui, t: &Track, liked: bool, remove: Option<usize>, acts: &mut Vec<Action>, like: bool) {
+    // A local song has no YouTube side: its file is the song. Where the file lives, and
+    // taking it out of the list, are what's to do with it here; the likes, playlists,
+    // links and downloads of the catalog don't apply to it.
+    if crate::local::is_local(&t.id) {
+        if menu_action(ui, Some(icon::FOLDER_OPEN), "Show in folder")
+            && let Some(path) = crate::local::path(&t.id)
+        {
+            crate::downloads::show_file(&path);
+        }
+        if menu_action(ui, Some(icon::TRASH_2), "Remove from Local music") {
+            crate::local::remove(&t.id);
+        }
+        return;
+    }
     if like {
         if menu_action_star(ui, liked, if liked { "Remove like" } else { "Like song" }) {
             acts.push(Action::Like(t.clone(), !liked));
