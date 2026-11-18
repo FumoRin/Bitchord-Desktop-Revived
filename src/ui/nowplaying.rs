@@ -1121,21 +1121,44 @@ fn synced(app: &mut App, ui: &mut Ui, rect: Rect, id: &str, lyrics: &Lyrics, now
     };
     let pos = app.lyric_clock.tick(pos, playing, now, app.audio.status.speed() as f64);
     let t = pos - app.lyric_prefs.offset(id, lyrics.provider, lyrics.sync == Sync::Word);
-    let (roman, trans) = decorations(app.show_roman, app.show_trans, &app.lyric_prefs.target, app.lyrics_extras.as_ref(), id, lyrics);
-    let key = {
+    let (roman, trans) = decorations(app.show_roman, app.show_trans, &app.lyric_prefs.target, app.lyrics_extras.as_deref(), id, lyrics);
+    // The decoration strings only change when the song, its source, the theme or the
+    // romanization/translation settings do; hashing all of them every frame of the
+    // sweep was O(the lyrics' whole text). The identity is pointers and short strings.
+    let identity = {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
+        std::ptr::from_ref(lyrics).hash(&mut h);
         id.hash(&mut h);
         lyrics.provider.key().hash(&mut h);
         app.theme_id.hash(&mut h);
-        for r in &roman {
-            match r {
-                Some(karaoke::Roman::Timed(_, s)) | Some(karaoke::Roman::Text(s)) => s.hash(&mut h),
-                None => 0u8.hash(&mut h),
-            }
-        }
-        trans.hash(&mut h);
+        app.show_roman.hash(&mut h);
+        app.show_trans.hash(&mut h);
+        app.lyric_prefs.target.hash(&mut h);
+        app.lyrics_extras.as_ref().map(std::sync::Arc::as_ptr).hash(&mut h);
         h.finish()
+    };
+    let key = match app.decorations_key {
+        Some((seen, key)) if seen == identity => key,
+        _ => {
+            let key = {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                id.hash(&mut h);
+                lyrics.provider.key().hash(&mut h);
+                app.theme_id.hash(&mut h);
+                for r in &roman {
+                    match r {
+                        Some(karaoke::Roman::Timed(_, s)) | Some(karaoke::Roman::Text(s)) => s.hash(&mut h),
+                        None => 0u8.hash(&mut h),
+                    }
+                }
+                trans.hash(&mut h);
+                h.finish()
+            };
+            app.decorations_key = Some((identity, key));
+            key
+        }
     };
     let scale = app.lyric_prefs.text_scale;
     let glow_boost = if app.lyric_prefs.glow_boost { app.lyric_prefs.glow_strength } else { 0.0 };

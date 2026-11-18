@@ -294,6 +294,9 @@ impl Cfg {
 struct Word {
     text: String,
     font: FontId,
+    /// Laid out once, here at relayout: the paint path reads it every frame while the
+    /// sweep runs, and `layout_no_wrap` per word cost a clone-and-hash of each one.
+    galley: std::sync::Arc<Galley>,
     start: f64,
     dur: f64,
     /// Zero-duration (line-synced) word: fades in instead of sweeping.
@@ -448,7 +451,11 @@ struct Flow {
 /// Lay out tokens the way inline formatting does it in the extension: groups between
 /// spaces don't break (unless long), spaces do.
 fn text_size(fonts: &mut FontsView<'_>, s: &str, font: &FontId) -> Vec2 {
-    fonts.layout_no_wrap(s.to_owned(), font.clone(), Color32::WHITE).size()
+    layout_word(fonts, s, font).size()
+}
+
+fn layout_word(fonts: &mut FontsView<'_>, s: &str, font: &FontId) -> std::sync::Arc<Galley> {
+    fonts.layout_no_wrap(s.to_owned(), font.clone(), Color32::WHITE)
 }
 
 /// `rtl`: the line reads right to left, so each row is laid out from the right.
@@ -497,8 +504,8 @@ fn flow(fonts: &mut FontsView<'_>, toks: Vec<Tok>, font: &FontId, max_w: f32, li
                 let long = text.chars().count() > LONG_GROUP_CHARS;
                 let rtl_group = crate::bidi::has_rtl(&text);
                 let letters = !joining_script(&text) && !rtl_group;
-                let sizes: Vec<Vec2> = toks.iter().map(|t| text_size(fonts, &t.text, font)).collect();
-                let w: f32 = sizes.iter().map(|s| s.x).sum();
+                let laid: Vec<std::sync::Arc<Galley>> = toks.iter().map(|t| layout_word(fonts, &t.text, font)).collect();
+                let w: f32 = laid.iter().map(|g| g.size().x).sum();
                 let sp = if pending_space { space_w } else { 0.0 };
                 pending_space = false;
                 // A group that can't fit even on a row of its own breaks between its parts
@@ -513,7 +520,8 @@ fn flow(fonts: &mut FontsView<'_>, toks: Vec<Tok>, font: &FontId, max_w: f32, li
                 }
                 let gi = groups.len();
                 let first = words.len();
-                for (t, size) in toks.iter().zip(sizes) {
+                for (t, g) in toks.iter().zip(laid) {
+                    let size = g.size();
                     if breakable && x > 0.0 && x + size.x > max_w {
                         row += 1;
                         x = 0.0;
@@ -522,6 +530,7 @@ fn flow(fonts: &mut FontsView<'_>, toks: Vec<Tok>, font: &FontId, max_w: f32, li
                     words.push(Word {
                         text: t.text.clone(),
                         font: font.clone(),
+                        galley: g,
                         start: t.start,
                         dur: t.dur,
                         line_synced: t.dur <= 0.0,
@@ -907,7 +916,7 @@ impl View {
                 cfg
             }
         };
-        let layout_key = hash((f.key, rect.width().round() as i32, cfg.size.to_bits(), cfg.padding.to_bits(), cfg.max_scale().to_bits(), cfg.centered, &cfg.font, cfg.weight as u8));
+        let layout_key = hash((f.key, rect.width().round() as i32, cfg.size.to_bits(), cfg.padding.to_bits(), cfg.max_scale().to_bits(), cfg.centered, &cfg.font, cfg.weight as u8, ui.ctx().pixels_per_point().to_bits()));
         if self.layout.as_ref().is_none_or(|l| l.key != layout_key) {
             self.relayout(ui, &cfg, &f, layout_key, rect);
         }
@@ -1249,7 +1258,7 @@ impl View {
                 if sharp > 0.0 {
                     let opacity = opacity * sharp;
                     let lit = LitState::new(&cfg, st, t, f.now, sung_now || st.selected);
-                    paint_words(&painter, &ctx, &cfg, &b.words, &b.groups, &xf, &lit, dim, opacity, atlas, &mut glow_work, &mut self.glyphs, (f.key, i, 0));
+                    paint_words(&painter, &cfg, &b.words, &b.groups, &xf, &lit, dim, opacity, atlas, &mut glow_work, &mut self.glyphs, (f.key, i, 0));
                     for (k, d) in b.decos.iter().enumerate() {
                         let dxf = xf;
                         let a = opacity;
@@ -1260,7 +1269,7 @@ impl View {
                         }
                         match &d.body {
                             DecoBody::Timed { words, groups } => {
-                                paint_words(&painter, &ctx, &cfg, words, groups, &dxf, &lit, dim, a, atlas, &mut glow_work, &mut self.glyphs, (f.key, i, k as u32 + 1));
+                                paint_words(&painter, &cfg, words, groups, &dxf, &lit, dim, a, atlas, &mut glow_work, &mut self.glyphs, (f.key, i, k as u32 + 1));
                             }
                             DecoBody::Text(text, font) => {
                                 let wrap = d.rect.width() + 1.0;
@@ -1721,8 +1730,8 @@ struct GlyphQuad {
 /// and scaled with the line: a second size would put a second copy of every glyph in
 /// the shared font atlas, which only ever grows. Appended into `out`, which the caller
 /// keeps across words and frames.
-fn word_glyphs(ctx: &egui::Context, w: &Word, lit: &LitState, cfg: &Cfg, wob: Option<(f32, f32, f32)>, atlas: [usize; 2], out: &mut Vec<GlyphQuad>) {
-    let g = ctx.fonts_mut(|fv| fv.layout_no_wrap(w.text.clone(), w.font.clone(), Color32::WHITE));
+fn word_glyphs(w: &Word, lit: &LitState, cfg: &Cfg, wob: Option<(f32, f32, f32)>, atlas: [usize; 2], out: &mut Vec<GlyphQuad>) {
+    let g = &w.galley;
     let n: usize = g.rows.iter().map(|r| r.row.glyphs.len()).sum();
     let waves = if w.letters && lit.live && lit.exit.is_none() { Some(letter_waves(n, w.dur.max(0.0), cfg.wave_duration)) } else { None };
     let e = lit.t - w.start;
@@ -1839,7 +1848,6 @@ fn lit_gradient(q: &Rect, letter: usize, letters: usize, word: Rect, look: &Word
 #[allow(clippy::too_many_arguments)]
 fn paint_words(
     painter: &egui::Painter,
-    ctx: &egui::Context,
     cfg: &Cfg,
     words: &[Word],
     groups: &[Group],
@@ -1873,7 +1881,7 @@ fn paint_words(
             None
         };
         let first = quads.len();
-        word_glyphs(ctx, w, lit, cfg, wob, atlas, quads);
+        word_glyphs(w, lit, cfg, wob, atlas, quads);
         let dim_c = if w.bg { dim * 0.78 } else { dim } * opacity;
         for q in &quads[first..] {
             push_quad(&mut base, xf.rect(q.rect), q.uv, theme::with_alpha(Color32::WHITE, dim_c), &|_| 1.0, &no_cut);
@@ -1973,7 +1981,9 @@ type LineStep = (i32, i32, u64);
 struct Glow {
     /// A copy of the font atlas, refreshed when glyphs we need aren't in it yet.
     atlas: Option<Arc<Coverage>>,
-    textures: HashMap<(u64, usize, u32, u32), (Slot, f64)>,
+    /// Per glowing word: its texture, when it was last drawn, the content rect its image
+    /// covers, and the phase that image was rasterized at (see `finish`).
+    textures: HashMap<(u64, usize, u32, u32), (Slot, f64, Rect, u64)>,
     /// Per line: its blurred image, the radius (in 1/4 px) and scale (in 1/1000) it was
     /// drawn at, where it goes.
     lines: HashMap<(u64, usize), (Slot, LineStep, Rect, f64)>,
@@ -2052,16 +2062,57 @@ impl Glow {
             let uvs: Vec<Rect> = jobs.iter().flat_map(|j| j.quads.iter().map(|q| q.1)).collect();
             let atlas = self.atlas(ctx, atlas_size, &uvs);
             for j in jobs {
-                let Some((img, rect)) = rasterize_glow(&atlas, &j, ppp, &mut self.scratch) else { continue };
-                let old = self.textures.remove(&j.key).map(|(s, _)| s);
-                let slot = self.upload(ctx, old, img, "lyric-glow");
+                // What the image depends on, its moving parts quantized to a quarter point
+                // (the sweep's position and the glow's radius): a word whose glow has
+                // stopped growing — every word the sweep has passed — keeps its image, and
+                // a rerasterize is pixels wide and deep.
+                let phase = {
+                    use std::hash::{Hash, Hasher};
+                    fn rect(r: &Rect, h: &mut std::collections::hash_map::DefaultHasher) {
+                        use std::hash::Hash;
+                        r.min.x.to_bits().hash(h);
+                        r.min.y.to_bits().hash(h);
+                        r.max.x.to_bits().hash(h);
+                        r.max.y.to_bits().hash(h);
+                    }
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    ((j.look.start * 4.0) as i64).hash(&mut h);
+                    ((j.look.end * 4.0) as i64).hash(&mut h);
+                    ((j.radius * 4.0) as i64).hash(&mut h);
+                    ppp.to_bits().hash(&mut h);
+                    j.by_letter.hash(&mut h);
+                    j.rtl.hash(&mut h);
+                    for (r, uv, letter, letters, weight) in &j.quads {
+                        rect(r, &mut h);
+                        rect(uv, &mut h);
+                        letter.hash(&mut h);
+                        letters.hash(&mut h);
+                        weight.to_bits().hash(&mut h);
+                    }
+                    for (r, radius, alpha) in &j.pills {
+                        rect(r, &mut h);
+                        radius.to_bits().hash(&mut h);
+                        alpha.to_bits().hash(&mut h);
+                    }
+                    rect(&j.word, &mut h);
+                    h.finish()
+                };
+                let entry = self.textures.remove(&j.key);
+                let (slot, rect) = match entry {
+                    Some((s, _, rect, seen)) if seen == phase => (s, rect),
+                    old => {
+                        let Some((img, rect)) = rasterize_glow(&atlas, &j, ppp, &mut self.scratch) else { continue };
+                        let old = old.map(|(s, _, _, _)| s);
+                        (self.upload(ctx, old, img, "lyric-glow"), rect)
+                    }
+                };
                 let mut mesh = Mesh::with_texture(slot.tex.id());
                 mesh.add_rect_with_uv(rect, slot.uv(), j.color);
-                self.textures.insert(j.key, (slot, now));
+                self.textures.insert(j.key, (slot, now, rect, phase));
                 painter.set(j.layer, Shape::mesh(mesh));
             }
         }
-        let gone: Vec<Slot> = (self.textures.extract_if(|_, (_, used)| now - *used >= 1.0).map(|(_, (s, _))| s))
+        let gone: Vec<Slot> = (self.textures.extract_if(|_, (_, used, ..)| now - *used >= 1.0).map(|(_, (s, ..))| s))
             .chain(self.lines.extract_if(|_, (.., used)| now - *used >= 4.0).map(|(_, (s, ..))| s))
             .collect();
         for s in gone {
@@ -2127,8 +2178,7 @@ impl Glow {
             }
         };
         for (w, weight) in words {
-            let g = ctx.fonts_mut(|fv| fv.layout_no_wrap(w.text.clone(), w.font.clone(), Color32::WHITE));
-            push_galley(&g, w.pos, *weight, &mut quads);
+            push_galley(&w.galley, w.pos, *weight, &mut quads);
         }
         for (g, at, weight) in texts {
             push_galley(g, *at, *weight, &mut quads);
