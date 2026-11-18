@@ -1121,7 +1121,14 @@ fn synced(app: &mut App, ui: &mut Ui, rect: Rect, id: &str, lyrics: &Lyrics, now
     };
     let pos = app.lyric_clock.tick(pos, playing, now, app.audio.status.speed() as f64);
     let t = pos - app.lyric_prefs.offset(id, lyrics.provider, lyrics.sync == Sync::Word);
-    let (roman, trans) = decorations(app.show_roman, app.show_trans, &app.lyric_prefs.target, app.lyrics_extras.as_deref(), id, lyrics);
+    let (roman, trans) = decorations(
+        app.show_roman,
+        app.show_trans,
+        &app.lyric_prefs.target,
+        app.lyrics_extras.as_deref(),
+        id,
+        lyrics,
+    );
     // The decoration strings only change when the song, its source, the theme or the
     // romanization/translation settings do; hashing all of them every frame of the
     // sweep was O(the lyrics' whole text). The identity is pointers and short strings.
@@ -1135,7 +1142,10 @@ fn synced(app: &mut App, ui: &mut Ui, rect: Rect, id: &str, lyrics: &Lyrics, now
         app.show_roman.hash(&mut h);
         app.show_trans.hash(&mut h);
         app.lyric_prefs.target.hash(&mut h);
-        app.lyrics_extras.as_ref().map(std::sync::Arc::as_ptr).hash(&mut h);
+        app.lyrics_extras
+            .as_ref()
+            .map(std::sync::Arc::as_ptr)
+            .hash(&mut h);
         h.finish()
     };
     let key = match app.decorations_key {

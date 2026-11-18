@@ -18,7 +18,8 @@ impl App {
         // it bounded. A forgotten song asks again — Apple's answers are on disk, and a
         // Spotify miss only means a fresh 10-minute window.
         if self.canvas_missed.len() > 512 {
-            self.canvas_missed.retain(|_, t| t.elapsed() < std::time::Duration::from_secs(600));
+            self.canvas_missed
+                .retain(|_, t| t.elapsed() < std::time::Duration::from_secs(600));
         }
         if self.canvas_covers.len() > 512 {
             self.canvas_covers.clear();
