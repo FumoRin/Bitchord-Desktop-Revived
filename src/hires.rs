@@ -43,13 +43,25 @@ fn use_release_agent() {
 
 const TIER: &str = "LOSSLESS";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+/// `/stream` makes the addon resolve the song with its own upstream, which takes several
+/// seconds on a cold lookup; cutting it at the search's timeout throws away good copies.
+const STREAM_TIMEOUT: Duration = Duration::from_secs(18);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
-/// How many of the search's candidates get a `/stream` call before giving up.
+/// How many of the search's candidates get a `/stream` call before giving up. They're
+/// asked together: one addon answers a cold lookup in the time three sequential ones take.
 const STREAM_TRIES: usize = 3;
+/// How far a copy's length may sit from the song's before it's a different version of it.
+/// Silence and fades stay inside this; an edit, a loop cut or a re-tempo'd one doesn't.
+const VERSION_TOLERANCE_SECS: u32 = 3;
+const VERSION_TOLERANCE_MS: u64 = VERSION_TOLERANCE_SECS as u64 * 1000;
 /// With Atmos on, a lossless copy already in hand waits this long for an Atmos answer
 /// before it plays; the whole race also stays inside the playback path's own budget.
 const ATMOS_GRACE: Duration = Duration::from_secs(5);
-const RACE_BUDGET: Duration = Duration::from_secs(11);
+const RACE_BUDGET: Duration = Duration::from_secs(19);
+/// The Monochrome-first try may not eat the addon's window: a server that speaks both
+/// protocols answers its search in a moment, and one that doesn't must leave the seconds
+/// the addon protocol needs (its search and `/stream` both take seconds on a cold lookup).
+const MONO_FIRST: Duration = Duration::from_secs(5);
 /// The size given a stream whose addon and server don't say how big it is: room enough
 /// for ranged reads while the download finds the real end.
 pub const UNKNOWN_SIZE: u64 = 512 * 1024 * 1024;
@@ -267,7 +279,7 @@ impl Client {
             return Ok(Manifest { name: m.name.clone(), defaults: m.defaults.clone(), quality: m.quality.clone(), auth: m.auth });
         }
         let url = self.endpoint(&["manifest.json"], &[])?;
-        let json = get_json(http, &url).await?;
+        let json = get_json(http, &url, REQUEST_TIMEOUT).await?;
         let id = json.get("id").and_then(Value::as_str).unwrap_or("").trim();
         anyhow::ensure!(!id.is_empty(), "that URL answered, but not with an addon manifest");
         let resources: Vec<&str> = json.get("resources").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
@@ -291,7 +303,7 @@ impl Client {
         }
         params.push(("q".to_owned(), query.to_owned()));
         let url = self.endpoint(&["search"], &params)?;
-        let json = get_json(http, &url).await?;
+        let json = get_json(http, &url, REQUEST_TIMEOUT).await?;
         let tracks = json.get("tracks").and_then(Value::as_array).cloned().unwrap_or_default();
         let found: Vec<Candidate> = tracks.iter().filter_map(candidate).take(400).collect();
         let mut cache = self.searches.lock().await;
@@ -309,7 +321,7 @@ impl Client {
             params.push(("atmos".to_owned(), "auto".to_owned()));
         }
         let url = self.endpoint(&["stream", &candidate.id], &params)?;
-        let json = match get_json(http, &url).await {
+        let json = match get_json(http, &url, STREAM_TIMEOUT).await {
             Ok(j) => j,
             // A miss, not a fault: the row may still carry its own URL.
             Err(e) if e.to_string().contains("not found") => Value::Null,
@@ -320,11 +332,15 @@ impl Client {
         anyhow::ensure!(!stated_url.is_empty(), "the addon returned no stream URL");
         anyhow::ensure!(playable_url(&stated_url), "the addon returned a URL that isn't http(s)");
         anyhow::ensure!(!encrypted(&json), "the addon returned an encrypted stream");
-        let transport = json.get("manifest").and_then(Value::as_str).or(json.get("mediaType").and_then(Value::as_str)).unwrap_or("");
+        let transport_line = json.get("format").and_then(Value::as_str).map(str::trim).unwrap_or("");
+        let transport = json.get("manifest").and_then(Value::as_str).or(json.get("mediaType").and_then(Value::as_str)).map(str::trim).filter(|s| !s.is_empty()).unwrap_or(transport_line);
         let quality = json.get("quality").and_then(Value::as_str).or(json.get("streamQuality").and_then(Value::as_str)).or(json.get("audioQuality").and_then(Value::as_str)).unwrap_or("").trim().to_owned();
         let label = format!("{quality} {} {}", candidate.quality, candidate.format);
         let codec = json.get("codec").and_then(Value::as_str).or(json.get("fileCodec").and_then(Value::as_str)).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).unwrap_or_default();
-        let container = json.get("container").and_then(Value::as_str).or(json.get("containerFormat").and_then(Value::as_str)).unwrap_or("");
+        let container = json.get("container").and_then(Value::as_str).or(json.get("containerFormat").and_then(Value::as_str)).map(str::trim).filter(|s| !s.is_empty()).unwrap_or("");
+        // An addon that names no container puts the file format in `format`, which is the
+        // transport keyword instead when the answer is a manifest (handled above).
+        let container = if container.is_empty() && !is_manifest(transport_line) { transport_line } else { container };
         let mime = json.get("mimeType").and_then(Value::as_str).unwrap_or("");
         if is_manifest(transport) {
             // DASH arrives as an MPD, not a file: the Atmos E-AC-3 rendition (or the
@@ -413,7 +429,7 @@ impl Client {
             Err(e) => return Health::Rejected(format!("{e:#}")),
         };
         let manifest = async {
-            let json = get_json(http, &url).await?;
+            let json = get_json(http, &url, REQUEST_TIMEOUT).await?;
             let id = json.get("id").and_then(Value::as_str).unwrap_or("").trim();
             anyhow::ensure!(!id.is_empty(), "that URL answered, but not with an addon manifest");
             let resources: Vec<&str> = json.get("resources").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
@@ -474,7 +490,7 @@ const AUTH_DESKTOP_MSG: &str = "requires BitChord Android authentication (only t
 async fn probe_search(http: &reqwest::Client, base: &str) -> anyhow::Result<usize> {
     let mut url = base_url_with(base, &["search"])?;
     url.query_pairs_mut().append_pair("q", PROBE_QUERY);
-    let json = get_json(http, url.as_str()).await?;
+    let json = get_json(http, url.as_str(), REQUEST_TIMEOUT).await?;
     Ok(json.get("tracks").and_then(Value::as_array).map(|a| a.len()).unwrap_or(0))
 }
 
@@ -503,10 +519,15 @@ pub async fn find_all(http: &reqwest::Client, sources: &[Arc<Client>], track: &c
     for client in sources.iter().cloned() {
         let (http, track) = (http.clone(), track.clone());
         tasks.spawn(async move {
-            let found = match find_on_monochrome(&http, &client, &track).await {
+            // The Monochrome answer has to come fast: a dual-protocol server answers a
+            // search in a moment, and a hanging or slow one must not eat the window the
+            // addon protocol needs to search and open its stream in (this is what starved
+            // pure-addon servers like the unified ones of their 20-second play budget).
+            let mono = tokio::time::timeout(MONO_FIRST, find_on_monochrome(&http, &client, &track)).await.unwrap_or(None);
+            let found = match mono {
                 Some(s) => Ok(Some(s)),
                 None => match client.picks(&http, &track, atmos).await {
-                    Ok(picks) => open_first(&http, &client, &picks, atmos, prefetch).await,
+                    Ok(picks) => open_first(&http, &client, &picks, atmos, track.duration, prefetch).await,
                     Err(e) => Err(e),
                 },
             };
@@ -564,23 +585,33 @@ pub async fn find_all(http: &reqwest::Client, sources: &[Arc<Client>], track: &c
 }
 
 /// The best playable row of one source: Atmos rows first when the preference is on (a
-/// miss leaves the first lossless copy held), then the plain rows.
-async fn open_first(http: &reqwest::Client, client: &Client, candidates: &[Candidate], atmos: bool, prefetch: bool) -> anyhow::Result<Option<Stream>> {
+/// miss leaves the first lossless copy held), then the plain rows. A stream measured more
+/// than `duration` tolerance off the song is a different cut of it, so the next row is
+/// opened instead.
+async fn open_first(http: &reqwest::Client, client: &Client, candidates: &[Candidate], atmos: bool, duration: Option<u32>, prefetch: bool) -> anyhow::Result<Option<Stream>> {
+    use futures_util::StreamExt;
     let rounds: &[bool] = if atmos { &[true, false] } else { &[false] };
     let mut held: Option<Stream> = None;
     for &round in rounds {
-        let mut tries = 0;
-        for candidate in candidates {
-            if atmos && candidate.atmos != round {
-                continue;
-            }
-            if tries >= STREAM_TRIES {
-                break;
-            }
-            tries += 1;
-            match client.open(http, candidate, atmos && candidate.atmos, prefetch).await {
-                Ok(Some(s)) if s.info.atmos => return Ok(Some(s)),
+        // Asked together rather than one after another: an addon resolves a cold lookup in
+        // roughly the time three sequential ones take, and the first good answer ends it.
+        let mut pending = futures_util::stream::FuturesUnordered::new();
+        for candidate in candidates.iter().filter(|c| !atmos || c.atmos == round).take(STREAM_TRIES) {
+            pending.push(async move { (candidate, client.open(http, candidate, atmos && candidate.atmos, prefetch).await) });
+        }
+        if pending.is_empty() {
+            continue;
+        }
+        while let Some((candidate, found)) = pending.next().await {
+            match found {
                 Ok(Some(s)) if usable(&s) => {
+                    if let Some(off) = off_version(s.duration_ms, duration) {
+                        log::info!("hi-res: candidate {} of {} is {off} s from the song's length, skipped", candidate.id, client.host());
+                        continue;
+                    }
+                    if s.info.atmos {
+                        return Ok(Some(s));
+                    }
                     held.get_or_insert(s);
                     if !atmos {
                         return Ok(held);
@@ -592,6 +623,17 @@ async fn open_first(http: &reqwest::Client, client: &Client, candidates: &[Candi
         }
     }
     Ok(held)
+}
+
+/// How far a stream's measured length sits outside the song's, in whole seconds, or
+/// `None` when it matches. Only a measured length can say: an addon row promises the song
+/// and sometimes serves an edit or a remix that kept its title.
+fn off_version(measured_ms: u64, duration: Option<u32>) -> Option<u64> {
+    let (Some(wanted), true) = (duration, measured_ms > 0) else {
+        return None;
+    };
+    let diff = (wanted as u64 * 1000).abs_diff(measured_ms);
+    (diff > VERSION_TOLERANCE_MS).then(|| (diff + 500) / 1000)
 }
 
 /// The chain is lossless or Atmos; a lossy copy from an addon isn't better than YouTube.
@@ -1071,11 +1113,11 @@ const VERSION_WORDS: &[&str] = &[
 
 // ── HTTP ─────────────────────────────────────────────────────────────────
 
-async fn get_json(http: &reqwest::Client, url: &str) -> anyhow::Result<Value> {
+async fn get_json(http: &reqwest::Client, url: &str, timeout: Duration) -> anyhow::Result<Value> {
     // Twice at most: a refusal is asked again under the release line's agent, which the
     // addon does answer, and a second refusal is the addon's real answer to us.
     for attempt in 0..2 {
-        let response = http.get(url).timeout(REQUEST_TIMEOUT).header("Accept", "application/json").header("User-Agent", agent()).send().await.map_err(addon_err)?;
+        let response = http.get(url).timeout(timeout).header("Accept", "application/json").header("User-Agent", agent()).send().await.map_err(addon_err)?;
         let status = response.status();
         if status == reqwest::StatusCode::NOT_FOUND {
             anyhow::bail!("not found");

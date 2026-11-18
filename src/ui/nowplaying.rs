@@ -298,6 +298,33 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
             }
         }
     }
+
+    // Corner toggles, both bottom-right: up next in the corner, lyrics beside it. Each
+    // lights up while its panel is the one showing; clicking the lit one returns to the
+    // artwork alone — the same trip the ⋯ menu's rows and the L/Q keys make.
+    let accent = app.accent_color();
+    let ink = |h: f32| theme::lerp_color(theme::text_dim(), theme::text(), h);
+    let corner = |ui: &mut Ui, center: pos2, key: &str, name: &str| -> egui::Response {
+        let r = Rect::from_center_size(center, Vec2::splat(34.0));
+        let resp = ui.interact(r, egui::Id::unique(("np-corner", key)), Sense::click());
+        named(resp, name).on_hover_text(name).on_hover_cursor(egui::CursorIcon::PointingHand)
+    };
+    let r = corner(ui, pos2(area.right() - 64.0, area.bottom() - 20.0), "lyrics", "Lyrics");
+    let h = theme::anim_bool(ui.ctx(), r.id.with("h"), r.hovered(), 0.15);
+    let on = app.np_tab == NpTab::Lyrics && !no_lyrics;
+    ui.painter().circle_filled(r.rect.center(), 17.0, theme::glass(0.09 + 0.07 * h));
+    glyphs::draw(ui, r.rect.center(), 18.0, if on { glyphs::LYRICS } else { glyphs::LYRICS_OFF }, if on { accent } else { ink(h) });
+    if r.clicked() {
+        app.np_tab = if on { NpTab::Art } else { NpTab::Lyrics };
+    }
+    let r = corner(ui, pos2(area.right() - 20.0, area.bottom() - 20.0), "queue", "Up next");
+    let h = theme::anim_bool(ui.ctx(), r.id.with("h"), r.hovered(), 0.15);
+    let on = app.np_tab == NpTab::UpNext;
+    ui.painter().circle_filled(r.rect.center(), 17.0, theme::glass(0.09 + 0.07 * h));
+    glyphs::draw(ui, r.rect.center(), 18.0, glyphs::QUEUE, if on { accent } else { ink(h) });
+    if r.clicked() {
+        app.np_tab = if on { NpTab::Art } else { NpTab::UpNext };
+    }
 }
 
 /// What's heard while the sleeve shows `track`: a handoff's outgoing song stands in for
