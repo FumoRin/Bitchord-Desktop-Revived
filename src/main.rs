@@ -12,6 +12,7 @@ mod art;
 mod audio;
 mod backend;
 mod bidi;
+mod cache;
 mod deeplink;
 mod discord;
 mod discord_link;

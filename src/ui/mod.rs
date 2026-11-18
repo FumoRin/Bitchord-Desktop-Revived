@@ -30,6 +30,7 @@ mod responses;
 mod row_drag;
 mod shell;
 mod sorts;
+mod storage;
 mod titlebar;
 pub use mini::set_hwnd as set_mini_hwnd;
 pub use titlebar::{custom as custom_titlebar, init as init_titlebar, inset as titlebar_inset, set_hwnd as set_titlebar_hwnd};
@@ -199,6 +200,10 @@ enum Dialog {
     NewPlaylist { title: String, tracks: Vec<Track> },
     EditPlaylist { id: String, title: String, description: String, privacy: Option<String> },
     ConfirmDelete { id: String, title: String },
+    /// Clearing the cache (Settings › Storage), asked about first.
+    ConfirmClearCache,
+    /// Removing every download (Settings › Storage), asked about first.
+    ConfirmRemoveDownloads,
     /// A large download (`count` songs to go) asked about before it starts.
     ConfirmDownload { target: Option<Target>, title: String, tracks: Vec<Track>, count: usize },
     /// `info` until it loads; `busy` while a change is on its way; `confirm_off` asks
@@ -741,6 +746,8 @@ pub struct App {
 
     // updates
     updater: Option<crate::update::Updater>,
+    /// What Settings › Storage measures and clears.
+    storage: crate::cache::Storage,
     /// Updates from the nightly channel rather than stable.
     update_nightly: bool,
     /// When the last automatic update check ran (app time, s).
@@ -1076,6 +1083,7 @@ impl App {
             output_device: get("output_device").filter(|d| !d.is_empty()).map(|id| (id, get("output_device_name").unwrap_or_default())),
             output_devices: Vec::new(),
             updater: None,
+            storage: Default::default(),
             close_to_tray: !no_tray && get("close_to_tray").is_none_or(|v| v == "1"),
             launch_at_login: crate::autostart::enabled(),
             wgpu_renderer,
@@ -1684,6 +1692,18 @@ impl App {
         self.toast = Some((msg.into(), -1.0));
     }
 
+    /// Settings › Storage's Clear cache, once asked. An update that's downloading or
+    /// waiting to install keeps its files.
+    fn clear_cache(&mut self, ctx: &egui::Context) {
+        use crate::update::State;
+        let keep_updates = self.updater.as_ref().is_some_and(|u| matches!(u.state(), State::Downloading { .. } | State::Ready { .. }));
+        self.storage.clear(ctx, self.backend.data_dir(), &crate::downloads::folder(), keep_updates);
+    }
+
+    /// Settings › Storage's Remove all downloads, once asked.
+    fn remove_downloads(&mut self, ctx: &egui::Context) {
+        self.storage.remove_downloads(ctx, self.backend.data_dir(), &crate::downloads::folder());
+    }
 
 }
 
