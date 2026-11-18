@@ -397,7 +397,7 @@ impl App {
             }
             Resp::LyricsExtras { video_id, source, target, extras } => {
                 if self.shown().is_some_and(|t| t.id == video_id) {
-                    self.lyrics_extras = Some((video_id, source, target, extras));
+                    self.lyrics_extras = Some(std::sync::Arc::new((video_id, source, target, extras)));
                 }
             }
             Resp::Art { key, art } => {
