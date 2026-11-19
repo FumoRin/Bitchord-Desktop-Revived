@@ -505,6 +505,13 @@ pub struct App {
     gacha_pool: Vec<Track>,
     /// The hero's discoveries: what each grew from and what it found.
     discover: Vec<(Track, Track)>,
+    /// "All time hits", the charts page's most played, as cards.
+    all_time_hits: Vec<Card>,
+    /// "From the community": playlists off the artists you play, not YouTube's own.
+    community: Vec<Card>,
+    /// "Live shows" and "Music videos for you", off the same artists' pages.
+    live_shows: Vec<Card>,
+    videos_for_you: Vec<Card>,
     explore: Option<Explore>,
     /// The Moods & genres category last opened.
     mood: Option<crate::ytm::MoodPage>,
@@ -1126,6 +1133,10 @@ impl App {
             gacha: None,
             gacha_pool: Vec::new(),
             discover: Vec::new(),
+            all_time_hits: Vec::new(),
+            community: Vec::new(),
+            live_shows: Vec::new(),
+            videos_for_you: Vec::new(),
             zoom: 1.0,
             explore: None,
             mood: None,
