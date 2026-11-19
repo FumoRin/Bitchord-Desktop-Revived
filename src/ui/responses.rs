@@ -233,7 +233,7 @@ impl App {
             Resp::Home(page) => self.on_home(page),
             Resp::HomeMore(page) => {
                 if let Some(h) = &mut self.home {
-                    h.shelves.extend(page.shelves);
+                    h.shelves.extend(drop_banned_shelves(page.shelves, &self.listening.banned));
                     h.continuation = page.continuation;
                     h.loading_more = None;
                 }
@@ -542,13 +542,14 @@ impl App {
             Resp::QuickPicksMore { seed, tracks } => {
                 if let Some(h) = &mut self.home {
                     h.picks_loading = false;
+                    let banned = &self.listening.banned;
                     if let Some(shelf) = h.shelves.iter_mut().find(|s| s.title == "Quick picks")
                         && let ShelfKind::Songs { tracks: picks, .. } = &mut shelf.kind
                         && picks.iter().any(|t| t.id == seed)
                     {
                         h.picks_expanded = true;
                         let mut seen: HashSet<String> = picks.iter().map(|t| t.id.clone()).collect();
-                        picks.extend(tracks.into_iter().filter(|t| seen.insert(t.id.clone())).take(24));
+                        picks.extend(tracks.into_iter().filter(|t| !banned.contains(&t.id) && seen.insert(t.id.clone())).take(24));
                     }
                 }
             }
@@ -808,6 +809,9 @@ impl App {
 
     /// The home feed, replacing the one shown.
     fn on_home(&mut self, page: HomePage) {
+        // The listener's bans reach the feed's own shelves (Mochy filters its home
+        // feed the same way); what lands here is what shows and what the cache keeps.
+        let page = HomePage { shelves: drop_banned_shelves(page.shelves, &self.listening.banned), ..page };
         // Until the account menu answers (Req::Account).
         if self.account_avatar.is_none() {
             self.account_avatar = page.shelves.iter().find(|s| s.title == "Listen again").and_then(|s| s.strap_thumb.clone());
@@ -1085,6 +1089,26 @@ fn song_card(t: &Track) -> Card {
     Card { title: t.title.clone(), subtitle: t.artist_line(), thumbs: t.thumbs.clone(), target: Target::Song(t.clone()), round: false, links: t.artists.clone() }
 }
 
+/// YouTube's own shelves drop the songs the listener banned — the ban is a promise
+/// everywhere a recommendation appears, not only where one grows from the listening
+/// (Mochy filters its feed the same way). A shelf left with nothing leaves the page.
+pub(super) fn drop_banned_shelves(shelves: Vec<crate::model::Shelf>, banned: &[String]) -> Vec<crate::model::Shelf> {
+    shelves
+        .into_iter()
+        .filter_map(|mut s| {
+            match &mut s.kind {
+                ShelfKind::Cards(cards) => cards.retain(|c| !matches!(&c.target, Target::Song(t) if banned.contains(&t.id))),
+                ShelfKind::Songs { tracks, .. } => tracks.retain(|t| !banned.contains(&t.id)),
+            }
+            let empty = match &s.kind {
+                ShelfKind::Cards(cards) => cards.is_empty(),
+                ShelfKind::Songs { tracks, .. } => tracks.is_empty(),
+            };
+            (!empty).then_some(s)
+        })
+        .collect()
+}
+
 /// When a song failed because of the account (Premium-only, or needs signing in),
 /// the message to show instead of skipping: the rest of an album like that fails the
 /// same way.
@@ -1157,5 +1181,34 @@ mod download_summary_tests {
             download_summary(&run(1, 0, &["A", "B", "C", "D"], false), ""),
             "Downloaded: 1 song; 4 couldn't be downloaded (A, B, C, …)"
         );
+    }
+}
+
+#[cfg(test)]
+mod drop_banned_shelves_tests {
+    use super::drop_banned_shelves;
+    use crate::model::{Card, Shelf, ShelfKind, Target, Track};
+
+    fn song(id: &str) -> Track {
+        Track { id: id.into(), title: id.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn banned_songs_leave_the_feed_and_emptied_shelves_leave_the_page() {
+        let shelf = |title: &str, kind: ShelfKind| Shelf { title: title.into(), strapline: None, strap_thumb: None, kind };
+        let card = |id: &str| Card { title: id.into(), subtitle: String::new(), thumbs: vec![], target: Target::Song(song(id)), round: false, links: vec![] };
+        let shelves = vec![
+            shelf("Listen again", ShelfKind::Songs { tracks: vec![song("keep"), song("gone")], rows: 2 }),
+            shelf("For you", ShelfKind::Cards(vec![card("stay"), card("gone")])),
+            shelf("Only the one", ShelfKind::Songs { tracks: vec![song("gone")], rows: 1 }),
+            shelf("Albums", ShelfKind::Cards(vec![Card { title: "After Hours".into(), subtitle: "Album".into(), thumbs: vec![], target: Target::Album("ALB".into()), round: false, links: vec![] }])),
+        ];
+        let out = drop_banned_shelves(shelves, &["gone".to_owned()]);
+        // the emptied shelf left the page; the others kept what wasn't banned
+        assert_eq!(out.iter().map(|s| s.title.as_str()).collect::<Vec<_>>(), ["Listen again", "For you", "Albums"]);
+        assert!(matches!(&out[0].kind, ShelfKind::Songs { tracks, .. } if tracks.iter().all(|t| t.id == "keep")));
+        assert!(matches!(&out[1].kind, ShelfKind::Cards(c) if c.iter().all(|c| !matches!(&c.target, Target::Song(t) if t.id == "gone"))));
+        // an album card isn't a song target: the ban doesn't touch it
+        assert!(matches!(&out[2].kind, ShelfKind::Cards(c) if c.len() == 1));
     }
 }
