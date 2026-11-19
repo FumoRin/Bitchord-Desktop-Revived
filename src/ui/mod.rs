@@ -2474,6 +2474,20 @@ impl eframe::App for App {
         if let (Some(bg), Some(gl)) = (&self.bg, gl) {
             bg.destroy(gl);
         }
+        // Presence doesn't come down with the app on its own — Discord keeps showing
+        // it for a while after the app behind it goes — so the card goes here, before
+        // anything that relaunches or installs.
+        if let Some(d) = self.discord.take() {
+            d.quit();
+        }
+        if let Some(link) = self.discord_link.take() {
+            // The linked card lives on the account's gateway session; the session
+            // goes here too, which takes the card with it.
+            if let Some(token) = self.discord_link_token.clone() {
+                link.set_presence(token, None);
+            }
+            link.shutdown();
+        }
         // A downloaded update installs only when the user restarted for it; nothing is
         // installed behind their back as the app closes.
         let update_ready = self.updater.as_ref().is_some_and(|u| matches!(u.state(), crate::update::State::Ready { .. }));
