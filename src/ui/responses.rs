@@ -362,6 +362,11 @@ impl App {
                 self.history = Some(h);
                 self.loading = false;
             }
+            Resp::SeedTaste { history, liked } => {
+                // Only ever once (see `seed_from`); what plays here takes over from here.
+                self.listening.seed_from(history, liked);
+                self.listening.store(self.backend.data_dir());
+            }
             Resp::Uploads(t) => {
                 self.uploads = Some(t);
                 if self.page == Page::Library(LibTab::Uploads) {
@@ -863,6 +868,10 @@ impl App {
             self.request_library();
             self.request_liked(false);
             self.backend.request(Req::Account);
+            // The taste starts from the account's own history and likes, once.
+            if !self.listening.seeded {
+                self.backend.request(Req::SeedTaste);
+            }
         }
         self.toast(if v { "Signed in" } else { "Signed out" });
     }
