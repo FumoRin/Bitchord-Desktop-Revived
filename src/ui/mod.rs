@@ -1267,9 +1267,13 @@ impl App {
         app.request_liked(false);
         // The transitions multiplier, before the first frame styles its animation time.
         theme::set_motion(!app.reduce_motion);
-        // Dev hook: YTM_VISUAL=barebones|high tries a preset without saving it.
+        // A saved bundle re-asserts itself at launch, so a setting it came to own since
+        // (the lyrics' intensive glow) is in force, not merely remembered. Dev hook:
+        // YTM_VISUAL=barebones|high tries a preset without saving it as the listener's.
         if let Some(v) = dev_var("YTM_VISUAL") {
             app.visual = theme::VisualPreset::from_key(v);
+            app.apply_visual(None);
+        } else if app.visual != theme::VisualPreset::Custom {
             app.apply_visual(None);
         }
         app.queue.hide_explicit = hide_explicit;
@@ -1734,8 +1738,9 @@ impl App {
     }
 
     /// Settings › Appearance › Visual preset: set every setting the bundle owns — the
-    /// rest (Mode, Font, Zoom…) are the listener's own. `ctx` re-styles the animation
-    /// time; `None` at launch, where the first frame styles it anyway.
+    /// rest (Mode, Font, Zoom…) are the listener's own. The lyrics' intensive glow is
+    /// one of them (it lives in Appearance now, not Lyrics). `ctx` re-styles the
+    /// animation time; `None` at launch, where the first frame styles it anyway.
     pub(super) fn apply_visual(&mut self, ctx: Option<&egui::Context>) {
         use crate::preset::BgMode;
         use crate::theme::VisualPreset;
@@ -1752,6 +1757,7 @@ impl App {
                 self.reduce_motion = true;
                 self.cover_fx = false;
                 self.lyric_fx = false;
+                self.lyric_prefs.glow_boost = false;
                 self.np_bg = Some(BgMode::AccentGradient);
                 self.lyrics_full_rate = false;
             }
@@ -1763,6 +1769,7 @@ impl App {
                 self.reduce_motion = false;
                 self.cover_fx = true;
                 self.lyric_fx = true;
+                self.lyric_prefs.glow_boost = true;
                 self.np_bg = None;
                 self.lyrics_full_rate = true;
             }
