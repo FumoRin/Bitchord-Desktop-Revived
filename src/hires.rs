@@ -112,30 +112,6 @@ impl Info {
         }
     }
 
-    /// The one-line audio-quality string Discord shows: the badge, then each format
-    /// detail that is known but the sample rate, joined with " · ".
-    /// "Hi-Res Lossless · FLAC · 1641 kbps · 24-bit · Stereo".
-    pub fn rpc_line(&self) -> String {
-        let mut parts: Vec<String> = vec![self.badge().to_owned()];
-        let codec = self.codec.trim();
-        if !codec.is_empty() {
-            parts.push(codec.to_ascii_uppercase());
-        }
-        if let Some(k) = self.bitrate_kbps.filter(|k| *k > 0) {
-            parts.push(format!("{k} kbps"));
-        }
-        if let Some(bits) = self.bit_depth {
-            parts.push(format!("{bits}-bit"));
-        }
-        if let Some(n) = self.channels.filter(|c| *c > 0) {
-            parts.push(match n {
-                1 => "Mono".to_owned(),
-                2 => "Stereo".to_owned(),
-                _ => format!("{n} ch"),
-            });
-        }
-        parts.join(" · ")
-    }
 }
 
 /// What a source's Test says, ported from BitChord's `SourceHealth`
