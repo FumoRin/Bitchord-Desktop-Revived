@@ -193,6 +193,8 @@ pub enum Action {
     UpgradeQuality,
     /// A song chosen on the search page as the Spotify transfer's match.
     TransferPick(Track),
+    /// Keep this song out of what Home grows from what you play (see `listening`).
+    NotRecommended(Track),
 }
 
 enum Dialog {
@@ -500,6 +502,13 @@ pub struct App {
     /// Times the current song was reopened after its download failed.
     recoveries: u32,
     autoplay: bool,
+    /// What was played, skipped, banned and liked, kept between launches — the
+    /// signal Home's local rows and recommendation rows grow from.
+    listening: crate::listening::Listening,
+    /// The song being watched for its event, and how much of it has actually played
+    /// (pauses and buffering don't count), for [`App::watch_listening`].
+    watched: Option<Watched>,
+    watched_frame: f64,
     /// The level volume normalization brings songs to.
     normalize: crate::audio::Normalize,
     log_volume: bool,
@@ -1078,6 +1087,9 @@ impl App {
             skip_streak: 0,
             recoveries: 0,
             autoplay: get("autoplay").is_none_or(|v| v == "1"),
+            listening: crate::listening::Listening::load(&data_dir),
+            watched: None,
+            watched_frame: 0.0,
             normalize: get("normalize").map_or_else(Default::default, |v| crate::audio::Normalize::from_key(&v)),
             log_volume: get("log_volume").is_none_or(|v| v == "1"),
             high_quality: get("high_quality").is_none_or(|v| v == "1"),
@@ -2467,6 +2479,14 @@ struct Session {
     /// The song version that was playing for the current music video: the position is its.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     playing_as: Option<Track>,
+}
+
+/// The song playing now, for the event it's owed when it stops being current.
+struct Watched {
+    track: Track,
+    /// Unix seconds once it actually began playing, which is the event's timestamp.
+    started: Option<u64>,
+    played: f32,
 }
 
 /// The song version playing in place of the music video `listed`, in play `generation`.

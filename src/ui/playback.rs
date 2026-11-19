@@ -11,7 +11,7 @@ use crate::lyrics::Lyrics;
 use crate::model::Track;
 
 use super::queue::QueueFill;
-use super::{App, MixFrom, PlayingAs, Repeat, Session, lyric_prefs};
+use super::{App, MixFrom, PlayingAs, Repeat, Session, Watched, lyric_prefs};
 
 /// Where in the blend the two songs trade places: the outgoing one holds its level for
 /// the first 30% (see `audio::mix_handoff`) and the curves are mirrors, so the next song
@@ -225,6 +225,34 @@ impl App {
 
     pub(super) fn playing(&self) -> bool {
         self.audio.status.playing.load(Ordering::Relaxed)
+    }
+
+    /// Watch what each song actually gets of listening, for the events and skips
+    /// Home grows from (see `listening`). The watched song is the listed one, so the
+    /// Song/Video switch mid-song doesn't split it into two plays; the seconds count
+    /// only while the player runs, and settle the moment the song stops being current.
+    pub(super) fn watch_listening(&mut self, now: f64) {
+        let dt = (now - self.watched_frame).max(0.0) as f32;
+        self.watched_frame = now;
+        let current = self.current().cloned();
+        let same = self.watched.as_ref().is_some_and(|w| current.as_ref().is_some_and(|c| c.id == w.track.id));
+        if same {
+            if self.playing() {
+                let w = self.watched.as_mut().unwrap();
+                // the event's timestamp is when the song began, not when it was queued
+                w.started.get_or_insert_with(crate::listening::unix_now);
+                w.played += dt;
+            }
+            return;
+        }
+        if let Some(w) = self.watched.take() {
+            let started = w.started.unwrap_or_else(crate::listening::unix_now);
+            self.listening.note_left(w.track, started, w.played);
+            self.listening.store(self.backend.data_dir());
+        }
+        if let Some(c) = current {
+            self.watched = Some(Watched { track: c, started: None, played: 0.0 });
+        }
     }
 
     /// Fetch the current song's art for the background and accent. A local song's

@@ -84,12 +84,21 @@ impl App {
     /// reload asked for just before can still come back without them.)
     pub(super) fn set_liked(&mut self, tracks: &[Track], like: bool) {
         log::debug!("like={like}: {} songs, e.g. {:?}", tracks.len(), tracks.iter().take(3).map(|t| &t.id).collect::<Vec<_>>());
+        let store = !tracks.is_empty();
         for t in tracks {
             if like {
                 self.liked.insert(t.id.clone());
+                if !crate::local::is_local(&t.id) {
+                    // a like says more than a play; the taste keeps the newest fifty
+                    self.listening.liked(t.clone());
+                }
             } else {
                 self.liked.remove(&t.id);
+                self.listening.unliked(&t.id);
             }
+        }
+        if store {
+            self.listening.store(self.backend.data_dir());
         }
         self.lists.set_liked(tracks, like);
     }

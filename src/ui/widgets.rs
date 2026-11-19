@@ -763,6 +763,12 @@ pub fn song_menu(ui: &mut Ui, t: &Track, liked: bool, remove: Option<usize>, act
     {
         acts.push(Action::Radio(t.clone()));
     }
+    // Neither a like nor a dislike: keep it out of what Home grows from what you play.
+    if !crate::local::is_local(&t.id)
+        && menu_action(ui, Some(icon::LIST_MINUS), "Not recommended")
+    {
+        acts.push(Action::NotRecommended(t.clone()));
+    }
     ui.add_space(3.0);
 }
 
