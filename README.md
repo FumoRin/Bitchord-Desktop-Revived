@@ -3,11 +3,12 @@
   <p><strong>A fast, native YouTube Music desktop app — rebuilt in Rust.</strong></p>
   <p>Built with egui and rodio. No Electron, no embedded browser player, and light on memory while playing.</p>
 
-  <p>
+<p>
     <a href="https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases/latest"><img src="https://img.shields.io/github/v/release/LoserDenji/Bitchord-Desktop-Revived?style=flat-square&color=a855f7&labelColor=0d1117" alt="Latest release"></a>
     <a href="https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases"><img src="https://img.shields.io/github/downloads/LoserDenji/Bitchord-Desktop-Revived/total?style=flat-square&color=a855f7&labelColor=0d1117" alt="Downloads"></a>
     <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-333?style=flat-square&labelColor=0d1117" alt="Platforms">
     <a href="LICENSE"><img src="https://img.shields.io/github/license/LoserDenji/Bitchord-Desktop-Revived?style=flat-square&color=333&labelColor=0d1117" alt="License: GPL-3.0"></a>
+    <a href="https://discord.gg/bn2u89xUeH"><img src="https://img.shields.io/badge/Discord-Join%20Server-5865F2?style=flat-square&labelColor=0d1117&logo=discord&logoColor=white" alt="Discord"></a>
   </p>
   join my very kool server : https://discord.gg/bn2u89xUeH
 
@@ -21,7 +22,7 @@
 
 > BitChord is an independent, unofficial client. It is not affiliated with, endorsed by, or connected to YouTube, Google, or Apple.
 
-## Screenshots (thx [unwrten]([github.com/](https://github.com/unwrten)))
+## Screenshots (thx [unwrten](https://github.com/unwrten))
 
 <table>
   <tr>
@@ -158,6 +159,7 @@ BitChord Desktop Revived is licensed under [GPL-3.0](LICENSE).
 - [BitChord](https://github.com/kushagrasinghx/BitChord) for the the orignal android app
 - [ytm-rs](https://github.com/grapedjuice/ytm-rs) for the base of the app which was later modified by jackychan4891
 - [jackychan4891](https://github.com/jackychan4891/BitChord-PC-Continued) for the modification in ytm-rs app for parity with BitChord
+- [Sonora](https://github.com/sonorahq/sonora) and [Mochy-Music](https://github.com/realidkroo/Mochy-Music) for optimization and feature inspirations
 - [egui](https://github.com/emilk/egui) for the interface.
 - [rodio](https://github.com/RustAudio/rodio) and Symphonia for audio playback and decoding.
 - Lyrics, metadata, playback, and integrations depend on the upstream libraries and third-party services used by this project.
