@@ -1465,12 +1465,16 @@ impl App {
             app.sidebar_cache = Some(c.playlists).filter(|p| !p.is_empty());
         }
         // Last launch's Home, so it shows at once; the request above replaces it.
+        // The bans apply to it too — a cache written before a ban isn't a loophole.
         if let Some(c) = std::fs::read(app.backend.data_dir().join(HOME_CACHE))
             .ok()
             .and_then(|b| serde_json::from_slice::<HomeCache>(&b).ok())
             .filter(|c| c.logged_in == app.logged_in && !c.shelves.is_empty())
         {
-            app.home = Some(HomeState { chips: c.chips, shelves: c.shelves, continuation: None, loading_more: None, picks_loading: false, picks_expanded: false });
+            let shelves = responses::drop_banned_shelves(c.shelves, &app.listening.banned);
+            if !shelves.is_empty() {
+                app.home = Some(HomeState { chips: c.chips, shelves, continuation: None, loading_more: None, picks_loading: false, picks_expanded: false });
+            }
         }
         // Dev hook: YTM_QUEUE opens the queue drawer.
         if std::env::var_os("YTM_QUEUE").is_some() {
