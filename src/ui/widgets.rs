@@ -451,6 +451,21 @@ pub fn paint_cover_fill(ui: &Ui, rect: Rect, thumbs: &[Thumb], tint: Color32) {
     paint_remote(ui, &url, rect, 0.0, Rect::from_center_size(uv.center(), size), tint);
 }
 
+/// [`paint_cover_fill`] with rounded corners, dissolving between covers like the
+/// player's sleeve: the hero band's wash of art changes songs without a blink.
+pub fn paint_backdrop(ui: &Ui, site: egui::Id, rect: Rect, radius: f32, thumbs: &[Thumb], tint: Color32) {
+    let ppp = ui.ctx().pixels_per_point();
+    let px = fetch_px((rect.width().max(rect.height()) * ppp) as u32).clamp(200, 1200);
+    let Some(t) = pick_thumb(thumbs, px) else { return };
+    let uv = t.square_uv();
+    let aspect = rect.width() / rect.height().max(1.0);
+    let size = if aspect >= 1.0 { vec2(uv.width(), uv.height() / aspect) } else { vec2(uv.width() * aspect, uv.height()) };
+    let uv = Rect::from_center_size(uv.center(), size);
+    let url = steady_url(ui.ctx(), &t.url, px);
+    let ready = matches!(egui::Image::new(&url).load_for_size(ui.ctx(), rect.size()), Ok(egui::load::TexturePoll::Ready { .. }));
+    dissolve(ui, site, &url, uv, ready, &mut |u, uv, a| paint_remote(ui, u, rect, radius, uv, tint.gamma_multiply(a)));
+}
+
 /// Start loading a cover at `px` without drawing it, so it's ready when it appears.
 pub fn preload_cover(ctx: &egui::Context, thumbs: &[Thumb], px: u32) {
     let px = fetch_px(px);
