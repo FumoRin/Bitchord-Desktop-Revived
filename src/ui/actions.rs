@@ -84,6 +84,11 @@ impl App {
                     self.backend.request(Req::Radio { song_of: self.song_of(&t), seed: t.id });
                 }
             }
+            Action::NotRecommended(t) => {
+                self.listening.ban(&t.id);
+                self.listening.store(self.backend.data_dir());
+                self.toast(format!("\"{}\" won't be recommended", t.title));
+            }
             Action::Open(Target::Album(id)) => self.go(Page::Album(id)),
             Action::Open(Target::Playlist(id)) => self.go(Page::Playlist(id)),
             Action::Open(Target::Artist(id)) => self.go(Page::Artist(id)),

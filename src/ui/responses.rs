@@ -14,6 +14,9 @@ use super::{Action, App, Dialog, HomeState, LibTab, MixFrom, Page, PlayingAs, de
 
 impl App {
     pub(super) fn pump(&mut self, ctx: &egui::Context, now: f64) {
+        // Whatever the song on now has got of actual listening, before anything else
+        // moves the player on this frame.
+        self.watch_listening(now);
         // The per-song canvas bookkeeping grows a little with every track played; keep
         // it bounded. A forgotten song asks again — Apple's answers are on disk, and a
         // Spotify miss only means a fresh 10-minute window.

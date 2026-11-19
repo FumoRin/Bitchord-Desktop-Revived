@@ -24,6 +24,7 @@ mod jam;
 mod innertube;
 mod jsc;
 mod lastfm;
+mod listening;
 mod local;
 mod logging;
 mod login;
