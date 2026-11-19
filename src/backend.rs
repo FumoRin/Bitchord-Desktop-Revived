@@ -24,6 +24,9 @@ pub enum Req {
     Home(Option<String>),
     HomeMore(String),
     MoreQuickPicks(String),
+    /// The account's history and its fifty newest likes, to start the local taste
+    /// from on a first run (see `crate::listening`).
+    SeedTaste,
     Explore(Vec<String>),
     /// A Moods & genres category, by its browse params.
     Mood(String),
@@ -134,6 +137,7 @@ impl Req {
         match self {
             Req::Home(_) | Req::HomeMore(_) => "Loading home",
             Req::MoreQuickPicks(_) => "Loading more picks",
+            Req::SeedTaste => "Loading your taste",
             Req::Explore(_) => "Loading new",
             Req::Mood(_) => "Loading the category",
             Req::Search(_) | Req::SearchIn { .. } => "Search",
@@ -183,7 +187,7 @@ impl Req {
 
     /// Background requests fail quietly (logged, no toast).
     fn quiet(&self) -> bool {
-        matches!(self, Req::Suggest { .. } | Req::Account | Req::Channels | Req::ServerQueue | Req::Art { .. } | Req::Canvas { .. } | Req::SpotifyCanvas { .. } | Req::ArtistSignature { .. } | Req::Prefetch { .. } | Req::HomeMore(_) | Req::MusicVideo(_) | Req::Lyrics(_) | Req::Segments { .. } | Req::LyricsExtras { .. } | Req::Comments { .. } | Req::CommentsPage { .. } | Req::CommentAction { .. })
+        matches!(self, Req::Suggest { .. } | Req::Account | Req::Channels | Req::ServerQueue | Req::Art { .. } | Req::Canvas { .. } | Req::SpotifyCanvas { .. } | Req::ArtistSignature { .. } | Req::Prefetch { .. } | Req::HomeMore(_) | Req::SeedTaste | Req::MusicVideo(_) | Req::Lyrics(_) | Req::Segments { .. } | Req::LyricsExtras { .. } | Req::Comments { .. } | Req::CommentsPage { .. } | Req::CommentAction { .. })
     }
 }
 
@@ -361,6 +365,8 @@ pub enum Resp {
     ArtistShelf { artist: String, title: String, cards: Vec<Card> },
     Library(Library),
     History(Vec<Track>),
+    /// The account's history and newest likes, to seed the local taste from.
+    SeedTaste { history: Vec<Track>, liked: Vec<Track> },
     Uploads(Vec<Track>),
     Account { name: Option<String>, photo: Option<String> },
     Channels(Channels),
@@ -435,6 +441,7 @@ impl Resp {
                 | Resp::Suggest { .. }
                 | Resp::Library(_)
                 | Resp::History(_)
+                | Resp::SeedTaste { .. }
                 | Resp::Uploads(_)
                 | Resp::Account { .. }
                 | Resp::Channels(_)
@@ -1136,6 +1143,12 @@ impl Backend {
                 Req::ArtistShelf { browse_id, params, artist, title } => Resp::ArtistShelf { artist, title, cards: ytm::discography(api, &browse_id, &params).await? },
                 Req::Library => self.library().await?,
                 Req::History => Resp::History(ytm::history(api).await?),
+                Req::SeedTaste => {
+                    // A miss on the likes seeds the history alone; a miss on the history
+                    // fails the request, so the next launch tries again.
+                    let (history, liked) = tokio::join!(ytm::history(api), ytm::playlist(api, "LM", true, Some(50)));
+                    Resp::SeedTaste { history: history?, liked: liked.map(|c| c.tracks).unwrap_or_default() }
+                }
                 Req::Uploads => Resp::Uploads(ytm::uploads(api).await?),
                 Req::Account => {
                     let (name, photo) = ytm::account(api).await?;

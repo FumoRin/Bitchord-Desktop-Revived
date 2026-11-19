@@ -1375,6 +1375,11 @@ impl App {
             app.queue_open = true;
         }
         jam::dev_hooks(&mut app);
+        // First launch with an account: the taste starts from the account's history
+        // and likes (see `Resp::SeedTaste`); what plays here takes over from there.
+        if app.logged_in && !app.listening.seeded {
+            app.backend.request(Req::SeedTaste);
+        }
         app.audio.set_normalize(app.normalize);
         app.set_crossfade();
         app.set_eq();
