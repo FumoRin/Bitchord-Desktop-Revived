@@ -29,7 +29,7 @@ pub(super) fn settings(app: &mut App, ui: &mut Ui) {
         });
         reveal(ui, "discord-settings-top", shown, |ui| {
             divider(ui);
-            setting_row(ui, "Show when paused", Some("Keep the card up while the song is paused. Discord has no paused state, so the time goes rather than keep running."), |ui| {
+            setting_row(ui, "Show when paused", Some("Keep the card up while the song is paused, saying Paused on the second line. Discord has no paused state, so the time goes rather than keep running."), |ui| {
                 toggle(ui, &mut prefs.when_paused, "Show when paused");
             });
             divider(ui);
