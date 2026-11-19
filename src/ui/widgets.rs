@@ -732,9 +732,11 @@ fn scrim(ui: &Ui, rect: Rect, radius: f32, strength: f32) {
     for (p, a) in &top {
         mesh.colored_vertex(*p, theme::with_alpha(Color32::BLACK, *a));
     }
+    // the ribbon's other edge: one vertex under each top vertex, all clear
     let m = top.len();
-    mesh.colored_vertex(pos2(rect.left(), y_end), Color32::TRANSPARENT);
-    mesh.colored_vertex(pos2(rect.right(), y_end), Color32::TRANSPARENT);
+    for (p, _) in &top {
+        mesh.colored_vertex(pos2(p.x, y_end), Color32::TRANSPARENT);
+    }
     for i in 0..m - 1 {
         mesh.add_triangle(i as u32, (i + 1) as u32, (m + i) as u32);
         mesh.add_triangle((i + 1) as u32, (m + i) as u32, (m + i + 1) as u32);
