@@ -268,6 +268,42 @@ pub struct HomeState {
     pub picks_expanded: bool,
 }
 
+/// Home's recommendation rows, grown from the listening history (the
+/// HomeRecommender port): what landed per kind, and the arranged order the page
+/// draws. A fetch that answers with nothing keeps what's already on screen.
+#[derive(Default)]
+pub struct Reco {
+    because: Vec<crate::recommend::Row>,
+    more_like: Vec<crate::recommend::Row>,
+    your_genres: Vec<crate::recommend::Row>,
+    new_genres: Vec<crate::recommend::Row>,
+    /// The rows as Home draws them: a song row, an artist row and a genre row in
+    /// turn, new genres last (see `recommend::arrange`).
+    pub rows: Vec<crate::recommend::Row>,
+    /// "New from your artists", slotted in after the first round of rows.
+    pub new_from: Vec<Card>,
+}
+
+impl Reco {
+    /// Rows landed (one request's worth): into their kinds, then the whole lot
+    /// arranged again.
+    fn land(&mut self, rows: Vec<crate::recommend::Row>) {
+        for r in rows {
+            match r.kind {
+                crate::recommend::Kind::BecauseYouLike => self.because.push(r),
+                crate::recommend::Kind::MoreLike => self.more_like.push(r),
+                crate::recommend::Kind::YourGenre => self.your_genres.push(r),
+                crate::recommend::Kind::NewGenre => self.new_genres.push(r),
+            }
+        }
+        self.arrange();
+    }
+
+    fn arrange(&mut self) {
+        self.rows = crate::recommend::arrange(self.because.clone(), self.more_like.clone(), self.your_genres.clone(), self.new_genres.clone());
+    }
+}
+
 pub struct Channels {
     pub resp_rx: Receiver<Resp>,
     pub audio_rx: Receiver<AudioEvent>,
@@ -431,6 +467,10 @@ pub struct App {
     home_loading: bool,
     /// The Home last asked for is a mood's, not the plain feed (kept for the next launch).
     home_mood: bool,
+    /// Home's recommendation rows, grown from the listening history.
+    reco: Reco,
+    /// When they were last asked for (app time, s), to pace the re-asks.
+    reco_asked: Option<f64>,
     explore: Option<Explore>,
     /// The Moods & genres category last opened.
     mood: Option<crate::ytm::MoodPage>,
@@ -1044,6 +1084,8 @@ impl App {
             home: None,
             home_loading: true,
             home_mood: false,
+            reco: Default::default(),
+            reco_asked: None,
             zoom: 1.0,
             explore: None,
             mood: None,
