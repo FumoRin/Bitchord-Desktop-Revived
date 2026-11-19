@@ -60,8 +60,6 @@ pub struct Listening {
     skips_since_refresh: u32,
 }
 
-/// Plays older than this don't count for the taste at all.
-const WINDOW_DAYS: u64 = 90;
 /// A skip older than this is forgotten.
 const SKIP_DAYS: u64 = 14;
 const MAX_EVENTS: usize = 4000;
@@ -153,19 +151,10 @@ impl Listening {
         counts.into_iter().filter(|(_, n)| *n >= 3).map(|(a, _)| a).collect()
     }
 
-    /// Songs played in the taste window, by id.
-    pub fn heard(&self) -> std::collections::HashSet<String> {
-        let since = unix_now() - WINDOW_DAYS * 86_400;
-        self.events.iter().filter(|e| e.at >= since).map(|e| e.track.id.clone()).collect()
-    }
-
     /// The most played songs in the last `days`, by seconds listened; `offset`
     /// skips the very top, so "Keep listening" doesn't repeat Most played's head.
     pub fn most_played(&self, days: u64, offset: usize, limit: usize) -> Vec<Track> {
-        self.played_since(unix_now() - days * 86_400, offset, limit)
-    }
-
-    fn played_since(&self, since: u64, offset: usize, limit: usize) -> Vec<Track> {
+        let since = unix_now() - days * 86_400;
         // Seconds listened is the weight: the way Mochy's play-count query sums playTime.
         let mut sums: Vec<(&Track, u64)> = Default::default();
         let mut by_id: std::collections::HashMap<&str, usize> = Default::default();
@@ -195,6 +184,25 @@ impl Listening {
         let mut out: Vec<_> = sums.into_values().collect();
         out.sort_by(|a, b| b.1.cmp(&a.1));
         out.into_iter().take(limit).collect()
+    }
+
+    /// The albums of what played in the last `days`, by seconds listened, a cover
+    /// off one of their songs; `offset` skips the very top, as the songs' do.
+    pub fn most_played_albums(&self, days: u64, offset: usize, limit: usize) -> Vec<(crate::model::Link, Vec<crate::model::Thumb>)> {
+        let since = unix_now() - days * 86_400;
+        let mut sums: Vec<(crate::model::Link, u64, Vec<crate::model::Thumb>)> = Default::default();
+        let mut by_id: std::collections::HashMap<&str, usize> = Default::default();
+        for e in self.events.iter().filter(|e| e.at >= since) {
+            let Some(album) = e.track.album.as_ref().filter(|a| a.id.is_some()) else { continue };
+            let i = *by_id.entry(album.id.as_deref().unwrap_or_default()).or_insert(sums.len());
+            if i == sums.len() {
+                sums.push((album.clone(), e.played as u64, e.track.thumbs.clone()));
+            } else {
+                sums[i].1 += e.played as u64;
+            }
+        }
+        sums.sort_by(|a, b| b.1.cmp(&a.1));
+        sums.into_iter().skip(offset).take(limit).map(|(a, _, t)| (a, t)).collect()
     }
 
     /// Old favourites drifted from: what you played a lot of before the last month

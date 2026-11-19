@@ -7,10 +7,10 @@ use souvlaki::MediaControlEvent;
 
 use crate::audio::{AudioCmd, AudioEvent};
 use crate::backend::{Req, Resp};
-use crate::model::{ShelfKind, Track};
+use crate::model::{Card, ShelfKind, Target, Track};
 use crate::ytm::HomePage;
 
-use super::{Action, App, Dialog, HomeState, LibTab, MixFrom, Page, PlayingAs, dev_var, shuffle};
+use super::{Action, App, Dialog, HomeRows, HomeState, LibTab, MixFrom, Page, PlayingAs, dev_var, shuffle};
 
 impl App {
     pub(super) fn pump(&mut self, ctx: &egui::Context, now: f64) {
@@ -369,6 +369,7 @@ impl App {
                 // Only ever once (see `seed_from`); what plays here takes over from here.
                 self.listening.seed_from(history, liked);
                 self.listening.store(self.backend.data_dir());
+                self.rebuild_home_rows();
             }
             Resp::RecoRows(rows) => self.reco.land(rows),
             Resp::NewFromArtists(cards) => {
@@ -644,7 +645,8 @@ impl App {
     /// HomeRecommender port): once, again after two skips or four plays — never
     /// within a minute of the last ask — and every half hour. Nothing played and
     /// nothing liked leaves nothing to grow from; subscribed artists stand in for
-    /// a first signed-in run.
+    /// a first signed-in run. The local rows come off the same listening, rebuilt
+    /// with each ask.
     fn ask_reco(&mut self, now: f64) {
         if self.reco_asked.is_some_and(|t| now - t < 60.0) {
             return;
@@ -674,6 +676,7 @@ impl App {
         }
         self.reco_asked = Some(now);
         self.listening.mark_refreshed();
+        self.rebuild_home_rows();
         let lite = taste.lite(self.hide_explicit);
         self.backend.request(Req::BecauseYouLike {
             seeds: taste.song_seeds.iter().take(4).cloned().collect(),
@@ -694,6 +697,41 @@ impl App {
             taste: lite.clone(),
         });
         self.backend.request(Req::NewFromArtists(taste.top_artists.iter().take(8).filter_map(|(a, _)| a.id.clone()).collect()));
+    }
+
+    /// Home's local rows, rebuilt from the listening history: recently played,
+    /// most played, the favourites drifted from, and what to pick back up — the
+    /// local half of Mochy's home, with its offsets that keep each row off the
+    /// others' heels (Keep listening past Most played's head, its albums past
+    /// the songs').
+    pub(super) fn rebuild_home_rows(&mut self) {
+        let recently_played: Vec<crate::model::Card> = self.listening.recently_played(15).iter().map(song_card).collect();
+        let most_played = self.listening.most_played(30, 0, 20);
+        let mut forgotten = self.listening.forgotten_favorites();
+        crate::recommend::Rng::new().shuffle(&mut forgotten);
+        forgotten.truncate(20);
+        let mut rng = crate::recommend::Rng::new();
+        let mut keep_songs = self.listening.most_played(14, 5, 15);
+        rng.shuffle(&mut keep_songs);
+        keep_songs.truncate(10);
+        let mut keep: Vec<crate::model::Card> = keep_songs.iter().map(song_card).collect();
+        let mut albums: Vec<crate::model::Card> = self
+            .listening
+            .most_played_albums(14, 2, 5)
+            .into_iter()
+            .map(|(album, thumbs)| crate::model::Card {
+                title: album.name.clone(),
+                subtitle: "Album".into(),
+                thumbs,
+                target: crate::model::Target::Album(album.id.clone().unwrap_or_default()),
+                round: false,
+                links: Vec::new(),
+            })
+            .collect();
+        rng.shuffle(&mut albums);
+        keep.extend(albums);
+        rng.shuffle(&mut keep);
+        self.home_rows = HomeRows { recently_played, most_played, forgotten, keep };
     }
 
     /// The home feed, replacing the one shown.
@@ -966,6 +1004,11 @@ impl App {
 
 /// Unplayable songs skipped in a row before playback stops.
 const MAX_SKIPS: u32 = 3;
+
+/// A played song as a card, for Home's "Recently played" and "Keep listening" rows.
+fn song_card(t: &Track) -> Card {
+    Card { title: t.title.clone(), subtitle: t.artist_line(), thumbs: t.thumbs.clone(), target: Target::Song(t.clone()), round: false, links: t.artists.clone() }
+}
 
 /// When a song failed because of the account (Premium-only, or needs signing in),
 /// the message to show instead of skipping: the rest of an album like that fails the

@@ -304,6 +304,28 @@ impl Reco {
     }
 }
 
+/// Home's local rows, straight off the listening history — Mochy's local half,
+/// with its songs and albums (this fork keeps no playlists of its own to show
+/// there, and artists' cards would come without covers).
+#[derive(Default)]
+pub struct HomeRows {
+    /// The last songs played, as cards.
+    pub recently_played: Vec<Card>,
+    /// The most played of the last month, ranked.
+    pub most_played: Vec<Track>,
+    /// Old favourites drifted from.
+    pub forgotten: Vec<Track>,
+    /// What to pick back up: songs past the top of the fortnight and their albums.
+    pub keep: Vec<Card>,
+}
+
+impl HomeRows {
+    /// Whether anything of the local rows has anything to show.
+    fn is_empty(&self) -> bool {
+        self.recently_played.is_empty() && self.most_played.is_empty() && self.forgotten.is_empty() && self.keep.is_empty()
+    }
+}
+
 pub struct Channels {
     pub resp_rx: Receiver<Resp>,
     pub audio_rx: Receiver<AudioEvent>,
@@ -471,6 +493,8 @@ pub struct App {
     reco: Reco,
     /// When they were last asked for (app time, s), to pace the re-asks.
     reco_asked: Option<f64>,
+    /// Home's local rows, off the same listening (rebuilt with the asks).
+    home_rows: HomeRows,
     explore: Option<Explore>,
     /// The Moods & genres category last opened.
     mood: Option<crate::ytm::MoodPage>,
@@ -1086,6 +1110,7 @@ impl App {
             home_mood: false,
             reco: Default::default(),
             reco_asked: None,
+            home_rows: Default::default(),
             zoom: 1.0,
             explore: None,
             mood: None,
@@ -1422,6 +1447,7 @@ impl App {
         if app.logged_in && !app.listening.seeded {
             app.backend.request(Req::SeedTaste);
         }
+        app.rebuild_home_rows();
         app.audio.set_normalize(app.normalize);
         app.set_crossfade();
         app.set_eq();
