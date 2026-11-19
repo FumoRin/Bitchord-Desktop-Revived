@@ -73,6 +73,8 @@ pub struct AudioStatus {
     /// When `position_ms` was sampled (ms since EPOCH), for smooth extrapolation.
     sampled_at: AtomicU64,
     pub duration_ms: AtomicU64,
+    /// Updates after a seek lands, including jumps too small to distinguish from clock drift.
+    pub seek_revision: AtomicU64,
     pub playing: AtomicBool,
     /// Generation the UI most recently asked for; the engine ignores older decoders.
     pub wanted_gen: AtomicU64,
@@ -1196,6 +1198,7 @@ fn run(
                 }
                 // Paused, nothing else tells the UI (and the system media controls) where it is now.
                 status.set_position(at.as_millis() as u64);
+                status.seek_revision.fetch_add(1, Ordering::Release);
                 wake();
             }
             Ok(AudioCmd::Upgrade { generation, decoder, shared: s, at, seekable: s_seekable }) => {
@@ -1344,6 +1347,7 @@ fn run(
                 if in_place && player.try_seek(pos).is_ok() {
                     log::debug!("audio: seek to {pos:?} in place");
                     status.set_position(pos.as_millis() as u64);
+                    status.seek_revision.fetch_add(1, Ordering::Release);
                     wake();
                     continue;
                 }

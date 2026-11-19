@@ -421,6 +421,11 @@ pub struct App {
     discord_enabled: bool,
     /// Last card sent to Discord, to send only real changes.
     discord_sent: Option<crate::discord::Card>,
+    discord_updates: crate::discord::Updates,
+    discord_finished: Option<u64>,
+    discord_edit: Option<(crate::discord::Prefs, std::time::Instant)>,
+    discord_applied: Option<crate::discord::Prefs>,
+    discord_artwork: crate::discord_artwork::Artwork,
     /// How the card reads: one wording for both paths, the plain IPC card and the
     /// linked account's gateway one.
     discord_prefs: crate::discord::Prefs,
@@ -1003,6 +1008,13 @@ impl App {
         // font" if they cleared it) takes over once they pick one.
         theme::set_font_choice(&dev_var("YTM_FONT").map(str::to_owned).or_else(|| get("font")).unwrap_or_else(|| "JetBrains Mono Nerd".to_owned()));
         let discord_enabled = get("discord_enabled").is_none_or(|v| v == "1");
+        let discord_prefs = get("discord")
+            .and_then(|s| crate::discord::Prefs::from_saved(&s))
+            .unwrap_or_else(|| crate::discord::Prefs::migrated(&get("discord_options").unwrap_or_default()));
+        let (discord_dir, pictures) = (backend.data_dir().to_owned(), discord_prefs.images.clone());
+        backend.spawn(async move {
+            let _ = tokio::task::spawn_blocking(move || crate::discord_artwork::prune_custom(&discord_dir, &pictures)).await;
+        });
         let app_icon = crate::appicon::load(backend.data_dir());
         let wgpu_renderer = crate::renderer::load(backend.data_dir()) == crate::renderer::Renderer::Wgpu;
         // Updates reinstall the shortcuts with the classic icon: always put ours back,
@@ -1092,13 +1104,14 @@ impl App {
             discord_link_token: crate::vault::get("discord token", &data_dir).and_then(|b| String::from_utf8(b).ok()),
             discord_link_user: get("discord_user").and_then(|s| serde_json::from_str(&s).ok()),
             discord_link_busy: false,
-            // The card's wording; a settings file saved by the old Discord carries the
-            // linked card's options over the first time (see `Prefs::migrated`).
-            discord_prefs: get("discord")
-                .and_then(|s| serde_json::from_str::<crate::discord::Prefs>(&s).ok())
-                .unwrap_or_else(|| crate::discord::Prefs::migrated(&get("discord_options").unwrap_or_default())),
+            discord_prefs,
             discord_enabled,
             discord_sent: None,
+            discord_updates: Default::default(),
+            discord_finished: None,
+            discord_edit: None,
+            discord_applied: None,
+            discord_artwork: Default::default(),
             lastfm_user: crate::lastfm::user(),
             lastfm_busy: Default::default(),
             lastfm_result: Default::default(),
@@ -2044,6 +2057,12 @@ impl eframe::App for App {
         self.tray_window(ctx, frame);
         self.window_hidden = self.hidden_to_tray || ctx.input(|i| i.viewport().minimized == Some(true));
         self.sync_tempo();
+        if let Some((slot, result)) = self.discord_artwork.take_import() {
+            match result {
+                Ok(file) => self.discord_prefs.images[slot].file = Some(file),
+                Err(err) => self.toast(format!("Could not import Discord artwork: {err:#}")),
+            }
+        }
         self.sync_discord(ctx);
         self.sync_song_notification(ctx);
         self.sync_lastfm();

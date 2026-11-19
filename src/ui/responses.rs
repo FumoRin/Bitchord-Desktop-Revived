@@ -58,12 +58,15 @@ impl App {
         }
         while let Ok(ev) = self.ch.audio_rx.try_recv() {
             match ev {
-                AudioEvent::Finished { generation } if generation == self.generation && self.jam.follows() => {}
                 AudioEvent::Finished { generation } if generation == self.generation => {
-                    if self.repeats_one() {
-                        self.play_current();
-                    } else {
-                        self.next();
+                    // The queue keeps the last song selected even when its stream has ended.
+                    self.discord_finished = Some(generation);
+                    if !self.jam.follows() {
+                        if self.repeats_one() {
+                            self.play_current();
+                        } else {
+                            self.next();
+                        }
                     }
                 }
                 AudioEvent::Finished { .. } => {}
