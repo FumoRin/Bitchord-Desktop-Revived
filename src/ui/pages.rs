@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 use egui::{Align2, Color32, Rect, RichText, Sense, Ui, Vec2, pos2, vec2};
 
 use super::row_drag;
-use super::widgets::{self, RowOpts, card, chip, h_scroll, named, paint_cover, pill, shelf_header, shelf_header_ext, track_row};
+use super::widgets::{self, RowOpts, card, chip, h_scroll, named, paint_cover, pill, shelf_header, shelf_header_ext, track_row, video_card};
 use super::{Action, App, HomeRows, LibTab, Page, ProviderVerdicts, Selection};
 use crate::backend::{PlaylistSort, compact};
 use crate::model::{Card, ShelfKind, Target, Track};
@@ -134,6 +134,7 @@ impl Rows {
     pub(super) fn opts(&self, liked: &HashSet<String>, t: &Track, number: Option<usize>, show_album: bool) -> RowOpts {
         RowOpts {
             number,
+            rank: false,
             show_album,
             current: self.current.as_deref() == Some(t.id.as_str()),
             playing: self.playing,
@@ -214,14 +215,63 @@ fn card_row(ui: &mut Ui, id: &str, title: &str, cards: &[Card], acts: &mut Vec<A
     if cards.is_empty() {
         return;
     }
-    let (l, r) = shelf_header(ui, title, None, None, true);
-    let nudge = r as i32 - l as i32;
-    let tile = feed_tile(ui, true);
-    h_scroll(ui, id, nudge, cards.len(), tile, 20.0, |ui| {
-        ui.spacing_mut().item_spacing.x = 20.0;
-        for c in cards {
-            card(ui, c, tile, false, acts);
-        }
+    reveal(ui, id, |ui| {
+        let (l, r) = shelf_header(ui, title, None, None, true);
+        let nudge = r as i32 - l as i32;
+        let tile = feed_tile(ui, true);
+        h_scroll(ui, id, nudge, cards.len(), tile, 20.0, |ui| {
+            ui.spacing_mut().item_spacing.x = 20.0;
+            for c in cards {
+                card(ui, c, tile, false, acts);
+            }
+        });
+    });
+}
+
+/// A shelf of Mochy's concert cards: video frames a little wider than tall, the
+/// title and who it's by over a scrim at the top. Empty shelves leave no gap.
+fn video_row(ui: &mut Ui, id: &str, title: &str, cards: &[Card], acts: &mut Vec<Action>) {
+    if cards.is_empty() {
+        return;
+    }
+    reveal(ui, id, |ui| {
+        let (l, r) = shelf_header(ui, title, None, None, true);
+        let nudge = r as i32 - l as i32;
+        // four across a wide window, the frames keeping the phone card's proportions
+        let tile = (((ui.available_width() - 60.0) / 4.0).clamp(240.0, 330.0)).min(ui.available_width() - 40.0);
+        h_scroll(ui, id, nudge, cards.len(), tile, 20.0, |ui| {
+            ui.spacing_mut().item_spacing.x = 20.0;
+            for c in cards {
+                video_card(ui, c, tile, acts);
+            }
+        });
+    });
+}
+
+/// A shelf's first appearance on screen: it fades in over half a second, the way
+/// Mochy's TV rows reveal as the list carries them in — rows rise out of the page
+/// instead of sitting there. Once it's played, it stays.
+fn reveal(ui: &mut Ui, id: &str, body: impl FnOnce(&mut Ui)) {
+    let vid = egui::Id::unique(("shelf-reveal", id));
+    let now = ui.ctx().input(|i| i.time);
+    // anything at or above the view's bottom edge has been reached; below the
+    // fold, a shelf keeps still until the scroll brings it in
+    let top = ui.cursor().top();
+    let on_screen = top <= ui.clip_rect().bottom();
+    let mut start = ui.ctx().data(|d| d.get_temp::<f64>(vid)).unwrap_or(f64::INFINITY);
+    if start.is_infinite() && on_screen {
+        start = now;
+    }
+    let t = if start.is_finite() { (((now - start) / 0.45) as f32).clamp(0.0, 1.0) } else { 0.0 };
+    if t < 1.0 {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+    }
+    // re-set every frame: temp data dies two frames after its last write
+    ui.ctx().data_mut(|d| d.insert_temp(vid, start));
+    let te = theme::ease_out(t);
+    ui.scope(|ui| {
+        ui.set_opacity(0.05 + 0.95 * te);
+        body(ui);
     });
 }
 
@@ -481,7 +531,8 @@ fn selection_bar(app: &mut App, ctx: &egui::Context, page: &Page, area: Rect) {
 // ------------------------------------------------------------------ home
 
 fn home(app: &mut App, ui: &mut Ui, now: f64) {
-    page_title(ui, "Home");
+    // No title of its own: the hero opens the page, the way Mochy's phone and TV
+    // homes both do — the stage is the greeting.
     // A refresh keeps showing the current feed; the skeleton is only for an empty one.
     if app.home.as_ref().is_none_or(|h| app.home_loading && h.shelves.is_empty()) {
         placeholder(app, ui, now, 3, CARD);
@@ -520,10 +571,11 @@ fn home(app: &mut App, ui: &mut Ui, now: f64) {
         card_row(ui, "reco-new", "New from your artists", &new_from, &mut app.actions);
     }
     // From the community — playlists off the artists you play that aren't YouTube's
-    // own — and the live shows and music videos of theirs
-    card_row(ui, "local-community", "From the community", &app.community, &mut app.actions);
-    card_row(ui, "local-live", "Live shows", &app.live_shows, &mut app.actions);
-    card_row(ui, "local-videos", "Music videos for you", &app.videos_for_you, &mut app.actions);
+    // own — and the live shows and music videos of theirs, as Mochy's concert cards:
+    // wide frames with the words laid over the top
+    video_row(ui, "local-community", "From the community", &app.community, &mut app.actions);
+    video_row(ui, "local-live", "Live shows", &app.live_shows, &mut app.actions);
+    video_row(ui, "local-videos", "Music videos for you", &app.videos_for_you, &mut app.actions);
     let Some(h) = &app.home else { return };
     let mut more_picks = None;
     for (i, s) in h.shelves.iter().enumerate() {
@@ -539,17 +591,19 @@ fn home(app: &mut App, ui: &mut Ui, now: f64) {
                     continue;
                 }
                 let (strap, thumb) = if s.title == "Listen again" { (None, None) } else { (s.strapline.as_deref(), s.strap_thumb.as_deref()) };
-                let (l, r) = shelf_header(ui, &s.title, strap, thumb, true);
-                let nudge = r as i32 - l as i32;
-                let tile = feed_tile(ui, true);
-                let acts = &mut app.actions;
-                let liked = &app.liked;
-                h_scroll(ui, &id, nudge, cards.len(), tile, 20.0, |ui| {
-                    ui.spacing_mut().item_spacing.x = 20.0;
-                    for c in cards {
-                        let is_liked = matches!(&c.target, Target::Song(t) if liked.contains(&t.id));
-                        card(ui, c, tile, is_liked, acts);
-                    }
+                reveal(ui, &id, |ui| {
+                    let (l, r) = shelf_header(ui, &s.title, strap, thumb, true);
+                    let nudge = r as i32 - l as i32;
+                    let tile = feed_tile(ui, true);
+                    let acts = &mut app.actions;
+                    let liked = &app.liked;
+                    h_scroll(ui, &id, nudge, cards.len(), tile, 20.0, |ui| {
+                        ui.spacing_mut().item_spacing.x = 20.0;
+                        for c in cards {
+                            let is_liked = matches!(&c.target, Target::Song(t) if liked.contains(&t.id));
+                            card(ui, c, tile, is_liked, acts);
+                        }
+                    });
                 });
             }
             ShelfKind::Songs { tracks, rows: n } => {
@@ -595,31 +649,34 @@ fn draw_local_row(hr: &HomeRows, which: usize, ui: &mut Ui, rows_ctx: &Rows, lik
 
 /// "Most played", each song with its rank in front of it — Mochy's HomeTrackGrid.
 fn ranked_grid(ui: &mut Ui, rows_ctx: &Rows, liked: &HashSet<String>, acts: &mut Vec<Action>, id: &str, title: &str, tracks: &[Track]) {
-    let (l, r) = shelf_header(ui, title, None, None, true);
-    let nudge = r as i32 - l as i32;
-    let col_w = feed_tile(ui, false);
-    let tracks: Vec<&Track> = tracks.iter().filter(|t| rows_ctx.shows(t)).collect();
-    let mut picked = None;
-    h_scroll(ui, id, nudge, tracks.len().div_ceil(3), col_w, 20.0, |ui| {
-        ui.spacing_mut().item_spacing.x = 20.0;
-        for (c, col) in tracks.chunks(3).enumerate() {
-            ui.allocate_ui(vec2(col_w, 3.0 * 60.0), |ui| {
-                ui.set_width(col_w);
-                ui.vertical(|ui| {
-                    for (i, t) in col.iter().enumerate() {
-                        // the rank, not a track number: 1 to 20 in front of each song
-                        let o = rows_ctx.opts(liked, t, Some(c * 3 + i + 1), false);
-                        if track_row(ui, t, &o, acts).clicked() {
-                            picked = Some(c * 3 + i);
+    reveal(ui, id, |ui| {
+        let (l, r) = shelf_header(ui, title, None, None, true);
+        let nudge = r as i32 - l as i32;
+        let col_w = feed_tile(ui, false);
+        let tracks: Vec<&Track> = tracks.iter().filter(|t| rows_ctx.shows(t)).collect();
+        let mut picked = None;
+        h_scroll(ui, id, nudge, tracks.len().div_ceil(3), col_w, 20.0, |ui| {
+            ui.spacing_mut().item_spacing.x = 20.0;
+            for (c, col) in tracks.chunks(3).enumerate() {
+                ui.allocate_ui(vec2(col_w, 3.0 * 60.0), |ui| {
+                    ui.set_width(col_w);
+                    ui.vertical(|ui| {
+                        for (i, t) in col.iter().enumerate() {
+                            // the rank, not a track number: 1 to 20 in front of each song
+                            let o = rows_ctx.opts(liked, t, Some(c * 3 + i + 1), false);
+                            let o = RowOpts { rank: true, ..o };
+                            if track_row(ui, t, &o, acts).clicked() {
+                                picked = Some(c * 3 + i);
+                            }
                         }
-                    }
+                    });
                 });
-            });
+            }
+        });
+        if let Some(i) = picked {
+            acts.push(Action::Radio(Track::clone(tracks[i])));
         }
     });
-    if let Some(i) = picked {
-        acts.push(Action::Radio(Track::clone(tracks[i])));
-    }
 }
 
 /// One of Home's recommendation rows (the HomeRecommender port): a song grid with
@@ -632,40 +689,42 @@ fn reco_grid(ui: &mut Ui, rows_ctx: &Rows, liked: &HashSet<String>, acts: &mut V
         crate::recommend::Kind::YourGenre => "Because you listen to",
         crate::recommend::Kind::NewGenre => "Try something new",
     };
-    let (l, right, show_all) = shelf_header_ext(ui, &r.title, Some(strap), r.thumb.as_deref(), true, r.endpoint.is_some());
-    if show_all {
-        match r.endpoint.as_ref() {
-            Some(crate::recommend::Endpoint::Artist(id)) => acts.push(Action::Go(Page::Artist(id.clone()))),
-            Some(crate::recommend::Endpoint::Mood(params)) => acts.push(Action::Go(Page::Mood(params.clone()))),
-            None => {}
+    reveal(ui, id, |ui| {
+        let (l, right, show_all) = shelf_header_ext(ui, &r.title, Some(strap), r.thumb.as_deref(), true, r.endpoint.is_some());
+        if show_all {
+            match r.endpoint.as_ref() {
+                Some(crate::recommend::Endpoint::Artist(id)) => acts.push(Action::Go(Page::Artist(id.clone()))),
+                Some(crate::recommend::Endpoint::Mood(params)) => acts.push(Action::Go(Page::Mood(params.clone()))),
+                None => {}
+            }
         }
-    }
-    let tracks: Vec<&Track> = r.tracks.iter().filter(|t| rows_ctx.shows(t)).collect();
-    if tracks.is_empty() {
-        return;
-    }
-    let nudge = right as i32 - l as i32;
-    let col_w = feed_tile(ui, false);
-    let mut picked = None;
-    h_scroll(ui, id, nudge, tracks.len().div_ceil(3), col_w, 20.0, |ui| {
-        ui.spacing_mut().item_spacing.x = 20.0;
-        for (c, col) in tracks.chunks(3).enumerate() {
-            ui.allocate_ui(vec2(col_w, 3.0 * 60.0), |ui| {
-                ui.set_width(col_w);
-                ui.vertical(|ui| {
-                    for (i, t) in col.iter().enumerate() {
-                        let o = rows_ctx.opts(liked, t, None, false);
-                        if track_row(ui, t, &o, acts).clicked() {
-                            picked = Some(c * 3 + i);
+        let tracks: Vec<&Track> = r.tracks.iter().filter(|t| rows_ctx.shows(t)).collect();
+        if tracks.is_empty() {
+            return;
+        }
+        let nudge = right as i32 - l as i32;
+        let col_w = feed_tile(ui, false);
+        let mut picked = None;
+        h_scroll(ui, id, nudge, tracks.len().div_ceil(3), col_w, 20.0, |ui| {
+            ui.spacing_mut().item_spacing.x = 20.0;
+            for (c, col) in tracks.chunks(3).enumerate() {
+                ui.allocate_ui(vec2(col_w, 3.0 * 60.0), |ui| {
+                    ui.set_width(col_w);
+                    ui.vertical(|ui| {
+                        for (i, t) in col.iter().enumerate() {
+                            let o = rows_ctx.opts(liked, t, None, false);
+                            if track_row(ui, t, &o, acts).clicked() {
+                                picked = Some(c * 3 + i);
+                            }
                         }
-                    }
+                    });
                 });
-            });
+            }
+        });
+        if let Some(i) = picked {
+            acts.push(Action::Radio(Track::clone(tracks[i])));
         }
     });
-    if let Some(i) = picked {
-        acts.push(Action::Radio(Track::clone(tracks[i])));
-    }
 }
 
 // ------------------------------------------------------------------ new

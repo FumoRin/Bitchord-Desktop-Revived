@@ -294,6 +294,7 @@ mod tests {
                         grip(ui, drag, id, i, &songs[i]);
                         let o = RowOpts {
                             number: None,
+                            rank: false,
                             show_album: false,
                             current: false,
                             playing: false,
