@@ -160,7 +160,8 @@ pub(super) fn draw(app: &mut App, ui: &mut Ui, now: f64) {
     // the scrim the label and title sit on
     vgradient(ui.painter(), Rect::from_min_size(rect.left_bottom(), vec2(rect.width(), rect.height() * 0.5)));
 
-    // label line, title, and the play pill, bottom-left
+    // label line, title, and the play pill, bottom-left: the label sits its own
+    // line's height above the title, the pill under it, dots centred at the edge
     let left = rect.left() + 28.0;
     let base = rect.bottom() - 44.0;
     let playing = app.current().is_some() && matches!(kind, Some(CardKind::Continue(_)));
@@ -175,21 +176,21 @@ pub(super) fn draw(app: &mut App, ui: &mut Ui, now: f64) {
     let mut label_x = left;
     if let Some(CardKind::Discover { seed, .. }) = kind {
         if let Some(url) = crate::model::pick(&seed.thumbs, 120) {
-            let r = Rect::from_center_size(pos2(left + 10.0, base - 26.0), vec2(20.0, 20.0));
+            let r = Rect::from_center_size(pos2(left + 10.0, base - 56.0), vec2(20.0, 20.0));
             widgets::paint_remote(ui, url, r, 10.0, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         }
         label_x = left + 26.0;
     }
     if !label.is_empty() {
-        ui.painter().text(pos2(label_x, base - 16.0), egui::Align2::LEFT_BOTTOM, label, theme::semibold(14.0), theme::with_alpha(theme::text(), 0.7));
+        ui.painter().text(pos2(label_x, base - 46.0), egui::Align2::LEFT_BOTTOM, label, theme::semibold(14.0), theme::with_alpha(theme::text(), 0.7));
     }
     if !title.is_empty() {
-        ui.painter().text(pos2(left, base + 2.0), egui::Align2::LEFT_BOTTOM, &title, theme::bold(26.0), theme::text());
+        ui.painter().text(pos2(left, base - 10.0), egui::Align2::LEFT_BOTTOM, &title, theme::bold(26.0), theme::text());
     }
 
     // the pill: Play for a song (Pause on the one playing), Roll on the gacha card
     let acts = &mut app.actions;
-    let pill_y = base + 12.0;
+    let pill_y = base + 2.0;
     let mut rolled = false;
     match kind {
         None if spinning => {
@@ -254,10 +255,11 @@ pub(super) fn draw(app: &mut App, ui: &mut Ui, now: f64) {
             app.hero_at = now;
             ui.ctx().animate_value_with_time(slide_id(ui), rect.width(), 0.0);
         }
-        let dot_y = rect.bottom() - 10.0;
+        let dot_y = rect.bottom() - 12.0;
+        let dot_x0 = rect.center().x - (pages as f32 - 1.0) * 8.0;
         for p in 0..pages {
             let on = p == page;
-            ui.painter().circle_filled(pos2(rect.left() + 28.0 + p as f32 * 16.0, dot_y), if on { 4.0 } else { 2.5 }, theme::with_alpha(theme::text(), if on { 0.9 } else { 0.45 }));
+            ui.painter().circle_filled(pos2(dot_x0 + p as f32 * 16.0, dot_y), if on { 4.0 } else { 2.5 }, theme::with_alpha(theme::text(), if on { 0.9 } else { 0.45 }));
         }
     }
 }
