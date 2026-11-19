@@ -99,6 +99,9 @@ pub struct TasteLite {
     pub heard: Vec<String>,
     pub avoid_songs: Vec<String>,
     pub avoid_artists: Vec<String>,
+    /// What autoplay served lately: fresh recommendations skip them a while, so a
+    /// queue and a Home row don't hand back what the last one just did.
+    pub recent_reco: Vec<String>,
     pub hide_explicit: bool,
 }
 
@@ -110,10 +113,33 @@ pub struct Taste {
     pub avoid_songs: Vec<String>,
     /// Artist names, lowercase: anything of theirs is kept out of rows.
     pub avoid_artists: HashSet<String>,
+    /// What autoplay served lately, kept out of every picking for a while.
+    pub recent_reco: HashSet<String>,
     /// The songs to grow rows from, weighted-sampled from the top of the score.
     pub song_seeds: Vec<Track>,
     /// The artists played most this month, with the seconds listened.
     pub top_artists: Vec<(Link, u64)>,
+}
+
+impl TasteLite {
+    /// The parts a radio ask carries, straight off the listening — no seeds, no top
+    /// artists: a radio asks far oftener than the rows rebuild, and the picking
+    /// needs neither. The heard set matches `Taste::build`'s: played in the last
+    /// three months, plus the likes.
+    pub fn of(l: &Listening, hide_explicit: bool) -> Self {
+        let since = unix_now().saturating_sub(90 * 86_400);
+        let mut heard: Vec<String> = l.events.iter().filter(|e| e.at >= since).map(|e| e.track.id.clone()).collect();
+        heard.extend(l.liked.iter().map(|t| t.id.clone()));
+        heard.sort();
+        heard.dedup();
+        Self {
+            heard,
+            avoid_songs: l.avoid_songs(),
+            avoid_artists: l.avoid_artists(),
+            recent_reco: l.recent_reco.iter().cloned().collect(),
+            hide_explicit,
+        }
+    }
 }
 
 impl Taste {
@@ -124,6 +150,7 @@ impl Taste {
             heard: l.heard.iter().cloned().collect(),
             avoid_songs: l.avoid_songs.clone(),
             avoid_artists: l.avoid_artists.iter().cloned().collect(),
+            recent_reco: l.recent_reco.iter().cloned().collect(),
             song_seeds: Vec::new(),
             top_artists: Vec::new(),
         }
@@ -131,7 +158,7 @@ impl Taste {
 
     /// The parts to send along with the asks (see `Taste::build` on the UI side).
     pub fn lite(&self, hide_explicit: bool) -> TasteLite {
-        TasteLite { heard: self.heard.iter().cloned().collect(), avoid_songs: self.avoid_songs.clone(), avoid_artists: self.avoid_artists.iter().cloned().collect(), hide_explicit }
+        TasteLite { heard: self.heard.iter().cloned().collect(), avoid_songs: self.avoid_songs.clone(), avoid_artists: self.avoid_artists.iter().cloned().collect(), recent_reco: self.recent_reco.iter().cloned().collect(), hide_explicit }
     }
 
     /// A play today counts 1, two weeks ago about a third, three months ago next
@@ -188,7 +215,7 @@ impl Taste {
                 .collect();
         }
 
-        Self { heard: scores.keys().cloned().collect(), avoid_songs, avoid_artists, song_seeds, top_artists }
+        Self { heard: scores.keys().cloned().collect(), avoid_songs, avoid_artists, recent_reco: l.recent_reco.iter().cloned().collect(), song_seeds, top_artists }
     }
 }
 
@@ -242,7 +269,8 @@ pub fn discover_seeds(l: &Listening, rng: &mut Rng) -> Vec<Track> {
 
 /// The picking every row shares: mostly songs you haven't heard, plus a few you
 /// have so the row still feels like you; nothing you skipped, no videos, no
-/// banned songs, and only `per_artist` from any one artist (Mochy's `pick`).
+/// banned songs, nothing autoplay served lately, and only `per_artist` from any
+/// one artist (Mochy's `pick`).
 pub fn pick(tracks: Vec<Track>, taste: &Taste, hide_explicit: bool, limit: usize, per_artist: usize, rng: &mut Rng) -> Vec<Track> {
     let mut seen = HashSet::new();
     let usable: Vec<Track> = tracks
@@ -250,6 +278,7 @@ pub fn pick(tracks: Vec<Track>, taste: &Taste, hide_explicit: bool, limit: usize
         .filter(|t| !(hide_explicit && t.explicit))
         .filter(|t| !t.has_video())
         .filter(|t| !taste.avoid_songs.contains(&t.id))
+        .filter(|t| !taste.recent_reco.contains(&t.id))
         .filter(|t| !t.artists.iter().any(|a| taste.avoid_artists.contains(&a.name.to_lowercase())))
         .filter(|t| seen.insert(t.id.clone()))
         .collect();
@@ -269,6 +298,41 @@ pub fn pick(tracks: Vec<Track>, taste: &Taste, hide_explicit: bool, limit: usize
         *n <= per_artist
     });
     chosen
+}
+
+/// How deep the queue's own radio tops up at once: one fetch's worth, the same
+/// count the radio asks for, so an autoplay never grows shallower than it was.
+const RADIO_DEPTH: usize = 50;
+
+/// A radio the listener asked for themselves (Mochy's radio-queue filter): what
+/// YouTube lined up around their song with the taste's rulings taken out — the
+/// curation order kept, it's theirs to read. The song itself plays regardless of
+/// any of this; only what YouTube adds around it goes.
+pub fn user_radio(tracks: Vec<Track>, taste: &TasteLite) -> Vec<Track> {
+    let hide_explicit = taste.hide_explicit;
+    let taste = Taste::from_parts(taste);
+    let mut seen = HashSet::new();
+    tracks
+        .into_iter()
+        .filter(|t| !(hide_explicit && t.explicit))
+        .filter(|t| !t.has_video())
+        .filter(|t| !taste.avoid_songs.contains(&t.id))
+        .filter(|t| !t.artists.iter().any(|a| taste.avoid_artists.contains(&a.name.to_lowercase())))
+        .filter(|t| seen.insert(t.id.clone()))
+        .collect()
+}
+
+/// The queue's own radio: what `user_radio` leaves, picked the way every
+/// recommendation row is — mostly songs unheard, a few familiar, spread over
+/// artists, nothing lately served — so autoplay grows from the same taste as
+/// Home's rows instead of YouTube's one-size mix. `per_artist` is where a spread
+/// doesn't belong: an artist's own catalog plays as it lies.
+pub fn queue_radio(tracks: Vec<Track>, taste: &TasteLite, per_artist: usize, rng: &mut Rng) -> Vec<Track> {
+    let hide_explicit = taste.hide_explicit;
+    let usable = user_radio(tracks, taste);
+    // the limit rides the pool's size, or the familiar few would swamp a short one
+    let limit = RADIO_DEPTH.min(usable.len());
+    pick(usable, &Taste::from_parts(taste), hide_explicit, limit, per_artist, rng)
 }
 
 /// The rows in the order Home shows them: a song row, an artist row and a genre
@@ -460,6 +524,58 @@ mod tests {
         let mut seen = HashSet::new();
         assert!(picked.iter().all(|t| seen.insert(t.id.clone())));
         assert!(picked.iter().all(|t| !taste.avoid_songs.contains(&t.id)));
+    }
+
+    #[test]
+    fn a_radio_the_listener_asked_for_keeps_the_lineup_but_not_the_ruled_out() {
+        let mut l = Listening::default();
+        l.note_left(song("heard", "Zed", Some(200)), at(2.0), 90.0);
+        l.note_left(song("old", "X", Some(200)), at(100.0), 90.0); // past the window: not heard
+        l.ban("banned");
+        l.note_reco(&[song("served", "Zed", None)]);
+        let lite = TasteLite::of(&l, true);
+        assert!(lite.heard.contains(&"heard".to_owned()));
+        assert!(!lite.heard.contains(&"old".to_owned()));
+        assert!(lite.avoid_songs.contains(&"banned".to_owned()));
+        assert_eq!(lite.recent_reco, vec!["served".to_owned()]);
+        let mut rude = song("rude", "X", Some(200));
+        rude.explicit = true;
+        let lineup = vec![
+            song("a", "AA", Some(200)),
+            song("banned", "X", Some(200)),
+            song("a", "AA", Some(200)), // the same song twice
+            rude,                       // hidden when the taste asks it to be
+            song("served", "Zed", None), // lately served — no ruling against a hand-asked radio
+        ];
+        // order kept: only the taste's rulings go, the curation stays to read
+        let kept = user_radio(lineup, &lite);
+        assert_eq!(kept.iter().map(|t| t.id.clone()).collect::<Vec<_>>(), vec!["a".to_owned(), "served".to_owned()]);
+    }
+
+    #[test]
+    fn the_queues_own_radio_is_picked_not_kept() {
+        let mut l = Listening::default();
+        // four familiar songs, one per artist, so a spread can't eat them
+        for i in 0..4 {
+            l.note_left(song(&format!("k{i}"), &format!("K{i}"), Some(200)), at(2.0), 90.0);
+        }
+        l.note_reco(&[song("lately", "Zed", None)]);
+        let lite = TasteLite::of(&l, false);
+        let mut pool: Vec<Track> = vec![song("lately", "Zed", None)];
+        // the familiar ones have to be in the pool for the picking to keep a few
+        for i in 0..4 {
+            pool.push(song(&format!("k{i}"), &format!("K{i}"), Some(200)));
+        }
+        for i in 0..20 {
+            pool.push(song(&format!("new{i}"), if i < 4 { "AA" } else { "Zed" }, Some(200)));
+        }
+        let mut rng = Rng::seeded(42);
+        let picked = queue_radio(pool, &lite, 2, &mut rng);
+        assert!(picked.iter().all(|t| t.id != "lately"), "nothing lately served");
+        assert!(picked.iter().any(|t| t.id.starts_with('k')), "a familiar one made the cut");
+        let aa = picked.iter().filter(|t| t.artists.first().map(|a| a.name.as_str()) == Some("AA")).count();
+        assert!(aa <= 2, "{aa} from one artist");
+        assert!(picked.len() >= 4 && picked.len() <= 25, "{} picked", picked.len());
     }
 
     #[test]
