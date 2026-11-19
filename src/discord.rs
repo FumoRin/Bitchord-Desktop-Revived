@@ -143,7 +143,7 @@ pub struct Prefs {
 impl Default for Prefs {
     fn default() -> Self {
         Self {
-            when_paused: false,
+            when_paused: true,
             hide_details: false,
             app_name: String::new(),
             status: Status::Line1,
@@ -271,6 +271,14 @@ impl Card {
             p.line(prefs.lines[1], prefs.links[1]),
             art.as_ref().and_then(|_| p.line(prefs.lines[2], false)),
         ];
+        // Paused says so: the second line becomes Paused (Discord has no paused
+        // state of its own; this is the closest the card comes to one), and the
+        // time goes rather than keep counting.
+        let lines = if p.paused {
+            [lines[0].clone(), Some(Line { text: "Paused".to_owned(), url: None }), lines[2].clone()]
+        } else {
+            lines
+        };
         // A status line with nothing on it falls back to the app's name, as Discord does.
         let status = match prefs.status {
             Status::Line1 if lines[0].is_none() => Status::Name,
@@ -588,6 +596,17 @@ mod tests {
         let c = Card::new(&Presence { paused: true, ..song() }, &Prefs::default());
         assert_eq!(c.times, None);
         assert!(Card::new(&song(), &Prefs::default()).times.is_some());
+    }
+
+    #[test]
+    fn pause_says_so_on_the_second_line() {
+        let c = Card::new(&Presence { paused: true, ..song() }, &Prefs::default());
+        assert_eq!(c.lines[1].as_ref().map(|l| l.text.as_str()), Some("Paused"));
+        assert_eq!(c.lines[1].clone().and_then(|l| l.url), None);
+        assert_eq!(c.member_text(), "Believer - Paused");
+        // The song and the quality mark stay where they were.
+        assert_eq!(c.lines[0].as_ref().map(|l| l.text.as_str()), Some("Believer"));
+        assert!(c.lines[2].is_some());
     }
 
     #[test]
