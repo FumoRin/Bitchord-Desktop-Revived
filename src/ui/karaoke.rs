@@ -1216,17 +1216,19 @@ impl View {
                 };
                 if blur > 0.05 {
                     // `filter: blur()` on the whole line: its text, romanization and translation.
-                    let r = (blur * 4.0).round() / 4.0;
-                    // What the image shows besides the radius and scale `blurred_line` checks: the
-                    // line's wrap and text size, and the alpha baked into it, in steps.
-                    let line_key = (hash((f.key, ((dim * 64.0).round() / 64.0).to_bits(), ppp.to_bits())), i);
+                    let r = (blur * 2.0).round() / 2.0;
+                    // What the image shows besides the radius and scale `blurred_line` checks:
+                    // the line's wrap and text size. The fade is applied when the image is
+                    // drawn, never baked into it — Sonora's way — so a line dimming or
+                    // sharpening keeps its picture instead of being blurred again per step.
+                    let line_key = (hash((f.key, ppp.to_bits())), i);
                     // What goes in the image is only gathered when it has to be made.
                     let made = self.glow.cached_line(&ctx, line_key, r, scale).or_else(|| {
                         let deco_words: Vec<(&Word, f32)> = b
                             .decos
                             .iter()
                             .flat_map(|d| match &d.body {
-                                DecoBody::Timed { words, .. } => words.iter().map(|w| (w, dim)).collect::<Vec<_>>(),
+                                DecoBody::Timed { words, .. } => words.iter().map(|w| (w, 1.0)).collect::<Vec<_>>(),
                                 DecoBody::Text(..) => vec![],
                             })
                             .collect();
@@ -1237,21 +1239,21 @@ impl View {
                                 DecoBody::Text(text, font) => {
                                     let g = ctx.fonts_mut(|fv| fv.layout(text.clone(), font.clone(), Color32::WHITE, d.rect.width() + 1.0));
                                     let pad = if d.pill { vec2(cfg.rem() * 0.75 + 1.0, cfg.rem() * 0.25 + 1.0) } else { Vec2::ZERO };
-                                    Some((g, d.rect.min + pad, text_alpha))
+                                    Some((g, d.rect.min + pad, 0.6))
                                 }
                                 DecoBody::Timed { .. } => None,
                             })
                             .collect();
-                        let words: Vec<(&Word, f32)> = b.words.iter().map(|w| (w, if w.bg { dim * 0.78 } else { dim })).chain(deco_words).collect();
+                        let words: Vec<(&Word, f32)> = b.words.iter().map(|w| (w, if w.bg { 0.78 } else { 1.0 })).chain(deco_words).collect();
                         // The romanization pill is part of the line, so it's blurred with it.
-                        let pills: Vec<(Rect, f32, f32)> = b.decos.iter().filter(|d| d.pill).map(|d| (d.rect, cfg.rem(), fade)).collect();
+                        let pills: Vec<(Rect, f32, f32)> = b.decos.iter().filter(|d| d.pill).map(|d| (d.rect, cfg.rem(), 1.0)).collect();
                         self.glow.blurred_line(&ctx, line_key, r, &words, &texts, &pills, scale, atlas, ppp)
                     });
                     if let Some((tex, rr, uv)) = made {
                         // Rendered at the line's scale; snapped so it lands 1:1 on screen pixels.
                         let to = xf.rect(rr);
                         let snapped = (to.min.to_vec2() * ppp).round() / ppp;
-                        painter.image(tex, to.translate(snapped - to.min.to_vec2()), uv, theme::with_alpha(Color32::WHITE, opacity * (1.0 - sharp)));
+                        painter.image(tex, to.translate(snapped - to.min.to_vec2()), uv, theme::with_alpha(Color32::WHITE, dim * opacity * (1.0 - sharp)));
                     }
                     animating |= st.exit.is_some();
                 }
@@ -2130,9 +2132,12 @@ impl Glow {
         Some((s.tex.id(), *rect, s.uv()))
     }
 
-    /// A whole line blurred (`filter: blur()`): its words, each at its own alpha, its text
-    /// decorations and pills, in content coordinates, rendered at the line's `scale` so the
-    /// image isn't resampled on screen. Cached per line at its latest radius and scale.
+    /// A whole line blurred (`filter: blur()`): its words, its text decorations and
+    /// pills, in content coordinates, rendered at the line's `scale` so the image isn't
+    /// resampled on screen. Cached per line at its latest radius and scale. The weights
+    /// are relative (a background word at 0.78, a text at 0.6): the line's own fade is
+    /// the caller's, applied to the vertex colour when the picture is drawn, so a dim
+    /// or sharpen transition never re-blurs the line.
     #[allow(clippy::too_many_arguments)]
     fn blurred_line(
         &mut self,
