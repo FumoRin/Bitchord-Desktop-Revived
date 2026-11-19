@@ -447,9 +447,12 @@ impl Updater {
         // (and the installer will ask for admin rights); otherwise it's per-user.
         let program_files = std::env::var_os("ProgramFiles").map(PathBuf::from);
         let scope = if program_files.is_some_and(|p| exe.starts_with(p)) { "/ALLUSERS" } else { "/CURRENTUSER" };
-        // Give this process a moment to save and exit before the installer replaces it.
+        // Give this process time to save and fully exit before the installer replaces
+        // it: under /VERYSILENT the installer's Restart Manager closes whatever is
+        // still holding files, and one caught mid-save leaves app.ron half-written
+        // (which reads at the next launch as settings wiped). Five beats of slack.
         let mut script = format!(
-            "ping -n 3 127.0.0.1 >NUL & \"{}\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART {scope}",
+            "ping -n 6 127.0.0.1 >NUL & \"{}\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART {scope}",
             installer.display()
         );
         if relaunch {

@@ -136,6 +136,7 @@ fn main() -> eframe::Result {
         deeplink::push(code);
     }
     logging::init(&data_dir());
+    guard_settings(&data_dir());
     if show_requested {
         if claim.busy() {
             // The holder was there but didn't answer; `take_over` has the channel now.
@@ -334,4 +335,27 @@ fn data_dir() -> std::path::PathBuf {
         return dir.join("data");
     }
     directories::ProjectDirs::from("", "", "ytm-rs").expect("no home directory").data_dir().to_path_buf()
+}
+
+/// eframe reads an unparsable `app.ron` as no settings at all, and its next save
+/// overwrites what's left — a kill mid-write (the updater's installer asking the app
+/// to close, a power cut) shows up at the next launch as every setting wiped. So the
+/// file is kept one good copy deep: a copy that parses is backed up, a copy that
+/// doesn't is set aside and the backup takes its place, before eframe ever opens it.
+/// The half-written copy stays as `app.ron.bad` for anyone who wants it back.
+fn guard_settings(dir: &std::path::Path) {
+    use std::io::BufReader;
+    let path = dir.join("app.ron");
+    let Ok(file) = std::fs::File::open(&path) else { return };
+    let reads = ron::de::from_reader::<_, std::collections::HashMap<String, String>>(BufReader::new(file)).is_ok();
+    if reads {
+        let _ = std::fs::copy(&path, dir.join("app.ron.bak"));
+        return;
+    }
+    log::warn!("settings: {} is unreadable; setting it aside", path.display());
+    let _ = std::fs::rename(&path, dir.join("app.ron.bad"));
+    let bak = dir.join("app.ron.bak");
+    if std::fs::copy(&bak, &path).is_ok() {
+        log::info!("settings: restored the last good copy");
+    }
 }
