@@ -7,7 +7,7 @@ use egui::{Align2, Color32, Rect, RichText, Sense, Ui, Vec2, pos2, vec2};
 
 use super::row_drag;
 use super::widgets::{self, RowOpts, card, chip, h_scroll, named, paint_cover, pill, shelf_header, shelf_header_ext, track_row};
-use super::{Action, App, LibTab, Page, ProviderVerdicts, Selection};
+use super::{Action, App, HomeRows, LibTab, Page, ProviderVerdicts, Selection};
 use crate::backend::{PlaylistSort, compact};
 use crate::model::{Card, ShelfKind, Target, Track};
 use crate::theme::{self, icon};
@@ -488,25 +488,36 @@ fn home(app: &mut App, ui: &mut Ui, now: f64) {
         return;
     }
     let rows = Rows::new(app, now);
-    let Some(h) = &app.home else { return };
-    // The rows grown from what you play here (the HomeRecommender port), and the
-    // releases from the artists you play most, which follow the first round of them.
+    // The local rows and the recommendation rows, grown from what you play here,
+    // dealt one against the other the way Mochy's home deals its categories between
+    // its own rows — two of its own first, the releases after the first round of
+    // recommendation rows.
     let reco: Vec<crate::recommend::Row> = app.reco.rows.clone();
     let new_from = app.reco.new_from.clone();
-    if h.shelves.is_empty() && reco.is_empty() && new_from.is_empty() {
+    if app.home.as_ref().is_none_or(|h| h.shelves.is_empty()) && reco.is_empty() && new_from.is_empty() && app.home_rows.is_empty() {
         ui.add_space(40.0);
         ui.label(RichText::new("Nothing here yet").color(theme::text_dim()));
     }
+    // Which local row is next: recently played and most played open the page, keep
+    // listening and the forgotten favourites follow against the recommendation rows.
+    let mut local = 0usize;
     for (i, r) in reco.iter().enumerate() {
+        while local < if i == 0 { 2 } else { 1 } {
+            local = draw_local_row(&app.home_rows, local, ui, &rows, &app.liked, &mut app.actions);
+        }
         if i == 3 && !new_from.is_empty() {
             card_row(ui, "reco-new", "New from your artists", &new_from, &mut app.actions);
         }
         let id = format!("reco-{i}-{}", r.title);
         reco_grid(ui, &rows, &app.liked, &mut app.actions, &id, r);
     }
+    while local < 4 {
+        local = draw_local_row(&app.home_rows, local, ui, &rows, &app.liked, &mut app.actions);
+    }
     if reco.len() < 3 && !new_from.is_empty() {
         card_row(ui, "reco-new", "New from your artists", &new_from, &mut app.actions);
     }
+    let Some(h) = &app.home else { return };
     let mut more_picks = None;
     for (i, s) in h.shelves.iter().enumerate() {
         let id = format!("home-{i}-{}", s.title);
@@ -547,6 +558,56 @@ fn home(app: &mut App, ui: &mut Ui, now: f64) {
     }
     if loading_more {
         widgets::skeleton(ui, now, 1, CARD);
+    }
+}
+
+/// One of Home's local rows (the listening-history half): `which` — recently
+/// played (0), most played (1), keep listening (2), the forgotten favourites (3).
+/// Empty rows leave no gap: the count moves on either way. Returns the next row.
+fn draw_local_row(hr: &HomeRows, which: usize, ui: &mut Ui, rows_ctx: &Rows, liked: &HashSet<String>, acts: &mut Vec<Action>) -> usize {
+    match which {
+        0 => card_row(ui, "local-recent", "Recently played", &hr.recently_played, acts),
+        1 => {
+            if !hr.most_played.is_empty() {
+                ranked_grid(ui, rows_ctx, liked, acts, "local-most", "Most played", &hr.most_played);
+            }
+        }
+        2 => card_row(ui, "local-keep", "Keep listening", &hr.keep, acts),
+        _ => {
+            if !hr.forgotten.is_empty() {
+                song_grid(ui, rows_ctx, liked, acts, "local-forgotten", "Don't forget these songs", None, &hr.forgotten, 3);
+            }
+        }
+    }
+    which + 1
+}
+
+/// "Most played", each song with its rank in front of it — Mochy's HomeTrackGrid.
+fn ranked_grid(ui: &mut Ui, rows_ctx: &Rows, liked: &HashSet<String>, acts: &mut Vec<Action>, id: &str, title: &str, tracks: &[Track]) {
+    let (l, r) = shelf_header(ui, title, None, None, true);
+    let nudge = r as i32 - l as i32;
+    let col_w = feed_tile(ui, false);
+    let tracks: Vec<&Track> = tracks.iter().filter(|t| rows_ctx.shows(t)).collect();
+    let mut picked = None;
+    h_scroll(ui, id, nudge, tracks.len().div_ceil(3), col_w, 20.0, |ui| {
+        ui.spacing_mut().item_spacing.x = 20.0;
+        for (c, col) in tracks.chunks(3).enumerate() {
+            ui.allocate_ui(vec2(col_w, 3.0 * 60.0), |ui| {
+                ui.set_width(col_w);
+                ui.vertical(|ui| {
+                    for (i, t) in col.iter().enumerate() {
+                        // the rank, not a track number: 1 to 20 in front of each song
+                        let o = rows_ctx.opts(liked, t, Some(c * 3 + i + 1), false);
+                        if track_row(ui, t, &o, acts).clicked() {
+                            picked = Some(c * 3 + i);
+                        }
+                    }
+                });
+            });
+        }
+    });
+    if let Some(i) = picked {
+        acts.push(Action::Radio(Track::clone(tracks[i])));
     }
 }
 
