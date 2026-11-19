@@ -3037,7 +3037,7 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
         // The row and its bundle: picking one sets every setting it owns, and changing
         // any of those by hand (here or in Lyrics, for the refresh rate) returns to
         // Custom, so the label never claims a bundle that isn't in force.
-        setting_row(ui, "Visual preset", Some("A bundle of the visual settings below. Barebones turns every animation, blur and glow off for older computers — Now playing becomes a flat backdrop with a still cover; nothing about playback changes. High visual turns them all on. Changing any of these settings afterwards returns to Custom."), |ui| {
+        setting_row(ui, "Visual preset", Some("A bundle of the visual settings below. Barebones turns every animation, blur and glow off for older computers — Now playing becomes a flat backdrop with a still cover, and the lyrics take the Light renderer; nothing about playback changes. High visual turns them all on. Changing any of these settings afterwards returns to Custom."), |ui| {
             let mut pick = None;
             let btn = dropdown_button(ui, app.visual.label(), 160.0, "Visual preset");
             egui::Popup::menu(&btn).show(|ui| {
@@ -3155,6 +3155,27 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
                 }
             });
         }
+        divider(ui);
+        setting_row(ui, "Lyrics renderer", Some("How the synced lyrics are drawn. Full is every per-letter animation; Light, ported from Sonora, draws whole words with a plain clipped sweep and one eased scroll — much the same look for a fraction of the work each frame. It gives up the letter waves, the words' sideways pop and the line's swell; Barebones uses it."), |ui| {
+            let mut pick = None;
+            let btn = dropdown_button(ui, if app.lyric_light { "Light" } else { "Full" }, 160.0, "Lyrics renderer");
+            egui::Popup::menu(&btn).show(|ui| {
+                ui.set_width(160.0);
+                ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                ui.add_space(4.0);
+                for (label, light) in [("Full", false), ("Light", true)] {
+                    if option_row(ui, label, light == app.lyric_light).clicked() {
+                        pick = Some(light);
+                        ui.close();
+                    }
+                }
+                ui.add_space(4.0);
+            });
+            if let Some(light) = pick {
+                app.lyric_light = light;
+                app.visual = theme::VisualPreset::Custom;
+            }
+        });
         divider(ui);
         setting_row(ui, "Accent-coloured controls", Some("The play button and volume slider in the accent colour, like the progress line."), |ui| {
             toggle(ui, &mut app.accent_controls, "Accent-coloured controls");

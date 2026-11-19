@@ -710,6 +710,9 @@ pub struct App {
     cover_fx: bool,
     /// Settings › Appearance: the theme's blur and glow on the lyrics in Now playing.
     lyric_fx: bool,
+    /// Settings › Appearance: the light lyrics renderer (Sonora's) — whole words, a
+    /// clipped sweep, one eased scroll, no per-letter work. Barebones sets it.
+    lyric_light: bool,
     /// The active preset's lyrics with the effects off (see `lyric_fx`): kept here so
     /// its address is stable — the karaoke view caches its layout by it.
     plain_style: Option<(String, crate::preset::LyricStyle)>,
@@ -1227,6 +1230,7 @@ impl App {
             reduce_motion: get("reduce_motion").is_some_and(|v| v == "1"),
             cover_fx: get("cover_fx").is_none_or(|v| v == "1"),
             lyric_fx: get("lyric_fx").is_none_or(|v| v == "1"),
+            lyric_light: get("lyric_light").is_some_and(|v| v == "1"),
             plain_style: None,
             row_drag: None,
             keybinds: keybinds::State::load(&get),
@@ -1758,6 +1762,7 @@ impl App {
                 self.cover_fx = false;
                 self.lyric_fx = false;
                 self.lyric_prefs.glow_boost = false;
+                self.lyric_light = true;
                 self.np_bg = Some(BgMode::AccentGradient);
                 self.lyrics_full_rate = false;
             }
@@ -1770,6 +1775,7 @@ impl App {
                 self.cover_fx = true;
                 self.lyric_fx = true;
                 self.lyric_prefs.glow_boost = true;
+                self.lyric_light = false;
                 self.np_bg = None;
                 self.lyrics_full_rate = true;
             }
@@ -2331,6 +2337,7 @@ impl eframe::App for App {
         storage.set_string("reduce_motion", b(self.reduce_motion));
         storage.set_string("cover_fx", b(self.cover_fx));
         storage.set_string("lyric_fx", b(self.lyric_fx));
+        storage.set_string("lyric_light", b(self.lyric_light));
         self.keybinds.bindings.save(storage);
         // Background test runs leave the user's real "last song" alone unless asked.
         let test_run = std::env::var_os("YTM_BACKGROUND").is_some() && std::env::var_os("YTM_SAVE_SESSION").is_none();
