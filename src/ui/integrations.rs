@@ -73,25 +73,30 @@ impl App {
             artist: t.artist_line(),
             cover: None,
         };
+        // A local song's cover is a file already; there's nothing to download for it.
+        let local = crate::local::cover_file(&t.id);
         let (art, id, generation) = (backend::art_url(&t), t.id, self.generation);
         n.expect(generation);
         let dir = self.backend.data_dir().join("notification-cover");
         let http = self.backend.http();
         self.backend.spawn(async move {
-            let cover = match art {
-                Some(url) => async {
-                    let bytes = http.get(&url).timeout(Duration::from_secs(5)).send().await?.error_for_status()?.bytes().await?;
-                    // A new name per song: Windows keeps showing an older picture by its path.
-                    let _ = std::fs::remove_dir_all(&dir);
-                    std::fs::create_dir_all(&dir)?;
-                    let path = dir.join(format!("{id}.jpg"));
-                    std::fs::write(&path, &bytes)?;
-                    anyhow::Ok(path)
-                }
-                .await
-                .inspect_err(|e| log::debug!("notification cover: {e:#}"))
-                .ok(),
-                None => None,
+            let cover = match local {
+                Some(file) => Some(file),
+                None => match art {
+                    Some(url) => async {
+                        let bytes = http.get(&url).timeout(Duration::from_secs(5)).send().await?.error_for_status()?.bytes().await?;
+                        // A new name per song: Windows keeps showing an older picture by its path.
+                        let _ = std::fs::remove_dir_all(&dir);
+                        std::fs::create_dir_all(&dir)?;
+                        let path = dir.join(format!("{id}.jpg"));
+                        std::fs::write(&path, &bytes)?;
+                        anyhow::Ok(path)
+                    }
+                    .await
+                    .inspect_err(|e| log::debug!("notification cover: {e:#}"))
+                    .ok(),
+                    None => None,
+                },
             };
             n.show(generation, crate::notify::Song { cover, ..song });
         });

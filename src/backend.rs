@@ -1194,10 +1194,16 @@ impl Backend {
                     Resp::LyricsExtras { video_id, source, target, extras }
                 }
                 Req::Art { key, url } => {
-                    // The backdrop is a 64 px blur; fetch near that, not the 544 px art.
-                    let url = model::sized(&url, 2 * crate::art::SIZE);
-                    let bytes = self.http().get(&url).send().await?.error_for_status()?.bytes().await?;
-                    let art = tokio::task::spawn_blocking(move || crate::art::process(&bytes)).await??;
+                    // A local song's cover is a file, not a fetch (see `local.rs`).
+                    let art = if let Some(path) = url.strip_prefix(crate::local::COVER).and_then(|name| crate::local::cover_in(&self.data_dir.join("local-covers"), name)) {
+                        let bytes = tokio::task::spawn_blocking(move || std::fs::read(path)).await??;
+                        tokio::task::spawn_blocking(move || crate::art::process(&bytes)).await??
+                    } else {
+                        // The backdrop is a 64 px blur; fetch near that, not the 544 px art.
+                        let url = model::sized(&url, 2 * crate::art::SIZE);
+                        let bytes = self.http().get(&url).send().await?.error_for_status()?.bytes().await?;
+                        tokio::task::spawn_blocking(move || crate::art::process(&bytes)).await??
+                    };
                     Resp::Art { key, art }
                 }
                 Req::Canvas { track } => {
@@ -3035,8 +3041,16 @@ pub fn compact(n: u64) -> String {
     format!("{}{unit}", s.strip_suffix(".0").unwrap_or(&s))
 }
 
-// Larger art URL for the background / now-playing view.
+// Larger art URL for the background / now-playing view. Only what can be fetched:
+// Discord and the OS's own fetchers take a URL, and a local song's cover isn't one.
 pub fn art_url(t: &Track) -> Option<String> {
+    let u = model::pick(&t.thumbs, 120)?;
+    (u.starts_with("https://") || u.starts_with("http://")).then(|| sized(u, 544))
+}
+
+/// The art for the background and the accent, wherever it comes from: a fetch, or a
+/// local song's cover file (see `local.rs`).
+pub fn art_uri(t: &Track) -> Option<String> {
     model::pick(&t.thumbs, 120).map(|u| sized(u, 544))
 }
 

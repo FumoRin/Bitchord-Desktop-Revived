@@ -227,13 +227,14 @@ impl App {
         self.audio.status.playing.load(Ordering::Relaxed)
     }
 
-    /// Fetch the current song's art for the background and accent.
+    /// Fetch the current song's art for the background and accent. A local song's
+    /// cover is a file the backend reads, not a fetch (see `art_uri`).
     pub(super) fn request_art(&mut self) {
         let Some(track) = self.current() else { return };
         if self.art_key.as_deref() == Some(track.id.as_str()) {
             return;
         }
-        if let Some(url) = backend::art_url(track) {
+        if let Some(url) = backend::art_uri(track) {
             let key = track.id.clone();
             self.backend.request(Req::Art { key, url });
         }
@@ -442,9 +443,12 @@ impl App {
         let Some(m) = &mut self.media else { return };
         // Windows fetches a cover URL on its own, through its own proxy setting only.
         let by_url = matches!(crate::proxy::active(), crate::proxy::Setting::System);
+        // A local song's cover is a file already: the OS reads it from where it is.
+        let local = crate::local::cover_file(&track.id).map(|p| format!("file://{}", p.display()));
         let art = backend::art_url(&track);
-        m.set_track(&shown.title, &shown.artist_line(), shown.album.as_ref().map(|a| a.name.as_str()), art.as_deref().filter(|_| by_url), shown.duration);
-        if !by_url && let Some(url) = art {
+        let cover = local.as_deref().or_else(|| art.as_deref().filter(|_| by_url));
+        m.set_track(&shown.title, &shown.artist_line(), shown.album.as_ref().map(|a| a.name.as_str()), cover, shown.duration);
+        if !by_url && local.is_none() && let Some(url) = art {
             self.fetch_media_cover(track.id.clone(), url);
         }
     }

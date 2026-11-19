@@ -12,11 +12,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 use sha1::Digest;
 
+use crate::model::Thumb;
 use crate::model::Track;
 use crate::stream::{Format, Shared};
 
 /// The id every local song plays under, with the file's digest after it.
 pub const PREFIX: &str = "local:";
+
+/// The URI scheme a local song's cover loads by (the image loaders in `images.rs` read
+/// it): the rest is a file name in the data dir's `local-covers`, written when the
+/// cover was found.
+pub const COVER: &str = "local-cover:";
 
 /// What rodio opens with a hint (see `Format::File`): the extensions local music takes.
 /// WMA is missing on purpose — YouTube Music takes it for upload, nothing here decodes it.
@@ -27,6 +33,10 @@ struct Entry {
     path: PathBuf,
     /// The song as its tags told it, for lists and the player.
     track: Track,
+    /// A look for a cover found none, so later launches don't look again. Removing the
+    /// song and adding it back is the way to look once more.
+    #[serde(default)]
+    no_cover: bool,
 }
 
 struct State {
@@ -34,10 +44,12 @@ struct State {
     index: Vec<Entry>,
     /// Where the index is saved (the data dir's local.json).
     file: PathBuf,
+    /// Where the covers found are kept (the data dir's local-covers).
+    covers: PathBuf,
 }
 
 static STATE: LazyLock<RwLock<State>> =
-    LazyLock::new(|| RwLock::new(State { index: Vec::new(), file: PathBuf::new() }));
+    LazyLock::new(|| RwLock::new(State { index: Vec::new(), file: PathBuf::new(), covers: PathBuf::new() }));
 
 /// Bumped whenever the index changes, so the page can pick up files added on the
 /// picker's thread without reading them every frame.
@@ -55,6 +67,44 @@ pub fn init(data_dir: &Path) {
     let mut st = STATE.write().unwrap();
     st.index = index;
     st.file = file;
+    st.covers = data_dir.join("local-covers");
+    // Songs added before the app read covers (an older version) get theirs now: one
+    // header read each, off the UI thread, the page picking them up as they land.
+    if st.index.iter().any(|e| e.track.thumbs.is_empty() && !e.no_cover) {
+        std::thread::Builder::new().name("local-covers".into()).spawn(backfill).ok();
+    }
+}
+
+/// The covers for songs already in the index whose look hadn't happened or found
+/// nothing yet. One entry at a time, so a big add isn't kept waiting on the lock.
+fn backfill() {
+    let todo: Vec<(String, PathBuf)> = {
+        let st = STATE.read().unwrap();
+        st.index.iter().filter(|e| e.track.thumbs.is_empty() && !e.no_cover).map(|e| (e.track.id.clone(), e.path.clone())).collect()
+    };
+    let mut found = false;
+    for (id, path) in todo {
+        let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).unwrap_or_default();
+        let cover = read_tags(&path, &ext).2.and_then(|p| {
+            let covers = STATE.read().unwrap().covers.clone();
+            save_cover(&covers, &p.bytes).map(|name| Thumb { url: format!("{COVER}{name}"), width: p.width, height: p.height })
+        });
+        let mut st = STATE.write().unwrap();
+        // Added again while this one was being read: its own cover stands.
+        if let Some(e) = st.index.iter_mut().find(|e| e.track.id == id && e.track.thumbs.is_empty()) {
+            match cover {
+                Some(thumb) => {
+                    e.track.thumbs.push(thumb);
+                    found = true;
+                }
+                None => e.no_cover = true,
+            }
+        }
+    }
+    if found {
+        REVISED.fetch_add(1, Ordering::Relaxed);
+    }
+    write_index();
 }
 
 /// Save the index whole or not at all: a crash mid-write doesn't lose it. Called after
@@ -114,10 +164,17 @@ pub fn add(paths: Vec<PathBuf>) -> usize {
             if st.index.iter().any(|e| e.path == path) {
                 continue;
             }
-            let (mut track, duration) = read_tags(&path, &ext);
+            let (mut track, duration, cover) = read_tags(&path, &ext);
             track.id = format!("{PREFIX}{:x}", sha1::Sha1::digest(path.to_string_lossy().as_bytes()));
             track.duration = duration;
-            st.index.push(Entry { path, track });
+            let no_cover = match cover.and_then(|p| save_cover(&st.covers, &p.bytes).map(|name| (name, p))) {
+                Some((name, p)) => {
+                    track.thumbs.push(Thumb { url: format!("{COVER}{name}"), width: p.width, height: p.height });
+                    false
+                }
+                None => true,
+            };
+            st.index.push(Entry { path, track, no_cover });
             added += 1;
         }
     }
@@ -142,11 +199,20 @@ pub fn remove(id: &str) {
     }
 }
 
+/// A cover picture found for a song: its bytes, and the size its header tells.
+struct Picture {
+    bytes: Vec<u8>,
+    width: u32,
+    height: u32,
+}
+
 /// One file's song: its tags where they say something, the file's name where they
-/// don't, and its length in seconds (unknown when the header doesn't tell).
-fn read_tags(path: &Path, ext: &str) -> (Track, Option<u32>) {
+/// don't, its length in seconds (unknown when the header doesn't tell), and its cover
+/// picture — the one in its tags, else the folder's own.
+fn read_tags(path: &Path, ext: &str) -> (Track, Option<u32>, Option<Picture>) {
     let mut track = Track { id: String::new(), title: String::new(), artists: Vec::new(), album: None, duration: None, thumbs: Vec::new(), track_nr: None, plays: None, music_video: false, video: false, explicit: false };
     let mut duration = None;
+    let mut embedded = None;
     // The tags and the length both sit in the container's header: one open reads both.
     match std::fs::File::open(path) {
         Ok(file) => {
@@ -167,6 +233,13 @@ fn read_tags(path: &Path, ext: &str) -> (Track, Option<u32>) {
                     // The container's own tags, or the ones the probe read ahead of it.
                     let tags = probed.format.metadata().current().map(|m| m.tags().to_vec());
                     let tags = tags.or_else(|| probed.metadata.get().and_then(|m| m.current().map(|r| r.tags().to_vec())));
+                    // The pictures in the tags come from the same read: a cover first,
+                    // and anything attached in its place when there isn't one.
+                    let visuals = probed.format.metadata().current().map(|m| m.visuals().to_vec());
+                    let visuals = visuals.or_else(|| probed.metadata.get().and_then(|m| m.current().map(|r| r.visuals().to_vec())));
+                    embedded = visuals.as_deref().and_then(|v| {
+                        v.iter().find(|i| i.usage == Some(symphonia::core::meta::StandardVisualKey::FrontCover)).or_else(|| v.first()).and_then(|i| picture(&i.data))
+                    });
                     if let Some(tags) = tags {
                         let tag = |key: symphonia::core::meta::StandardTagKey| {
                             tags.iter().find_map(|t| match (t.std_key == Some(key), &t.value) {
@@ -201,7 +274,68 @@ fn read_tags(path: &Path, ext: &str) -> (Track, Option<u32>) {
     if track.title.is_empty() {
         track.title = path.file_name().and_then(|s| s.to_str()).unwrap_or("Local file").to_owned();
     }
-    (track, duration)
+    // Nothing in the tags: the folder's own picture stands in, the way music is
+    // usually filed — one cover beside the songs it belongs to.
+    let picture = embedded.or_else(|| sibling_picture(path));
+    (track, duration, picture)
+}
+
+/// The names a folder's cover goes by, best known first.
+const FOLDER_COVERS: [&str; 6] = ["cover.jpg", "cover.jpeg", "cover.png", "folder.jpg", "folder.png", "front.jpg"];
+
+fn sibling_picture(song: &Path) -> Option<Picture> {
+    let dir = song.parent()?;
+    FOLDER_COVERS.iter().find_map(|name| std::fs::read(dir.join(name)).ok().and_then(|b| picture(&b)))
+}
+
+/// Which of the image formats this app carries the bytes are ("jpg", "png", "webp"),
+/// or `None` for anything else.
+fn image_kind(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("jpg")
+    } else if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        Some("png")
+    } else if bytes.len() > 12 && bytes[..4] == *b"RIFF" && bytes[8..12] == *b"WEBP" {
+        Some("webp")
+    } else {
+        None
+    }
+}
+
+/// A picture this app can show, with the size its header tells. Anything the image
+/// decoders don't carry isn't a cover it can use.
+fn picture(bytes: &[u8]) -> Option<Picture> {
+    image_kind(bytes)?;
+    let (width, height) = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_dimensions().ok()?;
+    Some(Picture { bytes: bytes.to_vec(), width, height })
+}
+
+/// Write the picture under a digest of its bytes, so one image shared by an album's
+/// files is stored once. The name is what a [`COVER`] URI carries.
+fn save_cover(covers: &Path, bytes: &[u8]) -> Option<String> {
+    let name = format!("{:x}.{}", sha1::Sha1::digest(bytes), image_kind(bytes)?);
+    let file = covers.join(&name);
+    if !file.is_file() && std::fs::create_dir_all(covers).and_then(|_| std::fs::write(&file, bytes)).is_err() {
+        log::warn!("couldn't save a local cover to {}", file.display());
+        return None;
+    }
+    Some(name)
+}
+
+/// The file a cover name names, inside `covers`. Names come from [`save_cover`] (a
+/// digest); one that isn't a plain file name is refused, so a hand-edited index can't
+/// point anywhere outside that directory.
+pub fn cover_in(covers: &Path, name: &str) -> Option<PathBuf> {
+    let plain = (1..=64).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+    plain.then(|| covers.join(name))
+}
+
+/// A local song's cover file, for the places that read a file rather than load a
+/// texture: the media controls and the OS notification.
+pub fn cover_file(id: &str) -> Option<PathBuf> {
+    let st = STATE.read().unwrap();
+    let name = st.index.iter().find(|e| e.track.id == id)?.track.thumbs.iter().find_map(|t| t.url.strip_prefix(COVER))?;
+    cover_in(&st.covers, name)
 }
 
 /// The extension as rodio's hint wants it (a file name's worth of format names).
@@ -231,5 +365,78 @@ mod tests {
         }
         assert_eq!(hint("m4b"), "m4a");
         assert_eq!(hint("oga"), "ogg");
+    }
+
+    #[test]
+    fn cover_names_stay_inside_the_covers_dir() {
+        let covers = Path::new("/data/local-covers");
+        assert_eq!(cover_in(covers, "e5321c.jpg"), Some(covers.join("e5321c.jpg")));
+        assert_eq!(cover_in(covers, ""), None);
+        assert_eq!(cover_in(covers, "../local.json"), None);
+        assert_eq!(cover_in(covers, "sub/dir.jpg"), None);
+        assert_eq!(cover_in(covers, &"x".repeat(65)), None);
+    }
+
+    #[test]
+    fn pictures_are_sniffed_and_sized_by_their_header() {
+        let mut png = Vec::new();
+        image::RgbImage::from_pixel(3, 2, image::Rgb([12, 34, 56])).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        let p = picture(&png).expect("a PNG decodes");
+        assert_eq!((p.width, p.height), (3, 2));
+        assert_eq!(image_kind(&png), Some("png"));
+        assert!(picture(b"neither jpg nor png nor webp").is_none());
+    }
+
+    /// A tiny MP3: one MPEG-1 Layer III frame of nothing, with an ID3v2.3 tag in front
+    /// carrying a front-cover picture when there is one. Enough for the header read
+    /// that `add` does; nothing plays it.
+    fn mp3(cover: Option<&[u8]>) -> Vec<u8> {
+        let mut tag = b"ID3".to_vec();
+        tag.extend_from_slice(&[3, 0, 0]);
+        let mut frames = Vec::new();
+        if let Some(png) = cover {
+            let mut apic = vec![0x00];
+            apic.extend_from_slice(b"image/png\0");
+            apic.push(0x03);
+            apic.push(0x00);
+            apic.extend_from_slice(png);
+            frames.extend_from_slice(b"APIC");
+            frames.extend_from_slice(&(apic.len() as u32).to_be_bytes());
+            frames.extend_from_slice(&[0, 0]);
+            frames.extend_from_slice(&apic);
+        }
+        let len = frames.len();
+        // The tag's size is syncsafe: seven bits a byte, most significant first.
+        tag.extend_from_slice(&[(len >> 21) as u8 & 0x7f, (len >> 14) as u8 & 0x7f, (len >> 7) as u8 & 0x7f, len as u8 & 0x7f]);
+        tag.extend_from_slice(&frames);
+        // 128 kbps at 44100 Hz makes a 417-byte frame.
+        tag.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x00]);
+        tag.extend(std::iter::repeat_n(0, 413));
+        tag
+    }
+
+    #[test]
+    fn an_added_song_carries_its_cover() {
+        let mut png = Vec::new();
+        image::RgbImage::from_pixel(5, 4, image::Rgb([200, 40, 90])).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        let dir = std::env::temp_dir().join("bitchord-local-covers");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("song.mp3"), mp3(Some(&png))).unwrap();
+        // The folder's own picture, for the song whose tags carry none.
+        let mut jpg = Vec::new();
+        image::RgbImage::from_pixel(6, 6, image::Rgb([90, 200, 40])).write_to(&mut std::io::Cursor::new(&mut jpg), image::ImageFormat::Jpeg).unwrap();
+        std::fs::write(dir.join("cover.jpg"), &jpg).unwrap();
+        std::fs::write(dir.join("plain.mp3"), mp3(None)).unwrap();
+        init(&dir);
+        assert_eq!(add(vec![dir.join("song.mp3"), dir.join("plain.mp3")]), 2);
+        let added = tracks();
+        let embedded = added.iter().find(|t| t.title == "song").expect("the titled one");
+        assert_eq!(embedded.thumbs.len(), 1);
+        assert_eq!((embedded.thumbs[0].width, embedded.thumbs[0].height), (5, 4));
+        assert_eq!(std::fs::read(cover_file(&embedded.id).unwrap()).unwrap(), png, "the picture from the tags");
+        let sibling = added.iter().find(|t| t.title == "plain").expect("the untitled one");
+        assert_eq!(std::fs::read(cover_file(&sibling.id).unwrap()).unwrap(), jpg, "the folder's own picture");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
