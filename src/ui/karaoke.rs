@@ -783,6 +783,12 @@ impl Trans {
         }
     }
 
+    /// Land on `to` this frame, without a transition — the reader's wheel, which the
+    /// sheet follows exactly.
+    fn snap(&mut self, to: f32, now: f64) {
+        *self = Trans { from: to, to, start: now, dur: 0.0, delay: 0.0, init: true };
+    }
+
     fn moving(&self, now: f64) -> bool {
         self.init && (self.from - self.to).abs() > 1e-4 && now < self.start + self.delay + self.dur
     }
@@ -820,6 +826,9 @@ pub struct View {
     glow: Glow,
     /// Scratch for the words' glyph quads, so a frame doesn't allocate a Vec per word.
     glyphs: Vec<GlyphQuad>,
+    /// The light renderer's scroll: one eased offset, where the full renderer staggers
+    /// every line's move (Sonora's single spring to its per-line ones).
+    light_scroll: Trans,
     /// The look as last resolved, and what it was resolved from: it's only built again
     /// when one of those changes, not on every frame.
     cfg: Option<(CfgKey, String, std::sync::Arc<Cfg>)>,
@@ -859,6 +868,9 @@ pub struct Frame<'a> {
     pub scale: f32,
     /// The listener's intensive glow strength, 0 when the toggle is off.
     pub glow_boost: f32,
+    /// The light renderer (Settings › Appearance): Sonora's lyrics — whole words, a
+    /// clipped sweep and one eased scroll, nothing per glyph.
+    pub light: bool,
 }
 
 pub struct Out {
@@ -1040,8 +1052,12 @@ impl View {
             if !self.scroll_set {
                 self.scroll_top = top;
                 self.scroll_set = true;
+                self.light_scroll.snap(top, f.now);
             } else if (top - self.scroll_top).abs() > 2.0 {
                 self.scrolls.push(ScrollAnim { start: f.now, delta: top - self.scroll_top, active: last });
+                // The light renderer's one spring: the duration the active line's own
+                // move takes there (it staggers nothing).
+                self.light_scroll.set(top, f.now, scroll_duration(0, top - self.scroll_top), 0.0);
                 self.scroll_top = top;
             }
             self.last_scroll = active.clone();
@@ -1054,6 +1070,8 @@ impl View {
             self.scroll_top = (self.scroll_top - wheel).clamp(0.0, max_scroll);
             self.user_until = f.now + USER_SCROLL_RESUME;
             self.scrolls.clear();
+            // The reader's hand is on the sheet: the light renderer follows it exactly.
+            self.light_scroll.snap(self.scroll_top, f.now);
         }
         let user = f.now < self.user_until;
 
@@ -1063,6 +1081,15 @@ impl View {
         for s in &mut self.shifts {
             s.retain(|a| f.now - a.start < DECO_ENTRY);
             animating |= !s.is_empty();
+        }
+        let active_line = active.last().copied();
+
+        // The light renderer (Settings › Appearance › Lyrics renderer): Sonora's way,
+        // for older computers — whole words, a clipped sweep, one eased scroll.
+        if f.light {
+            let (seek, moving) = light_paint(ui, &f, &cfg, layout, &mut self.states, &mut self.glow, &self.light_scroll, t, active_line, credits_focused, user);
+            animating |= moving || self.light_scroll.moving(f.now) || f.playing;
+            return Out { seek, animating, user_scrolling: user };
         }
 
         // ---- paint
@@ -1074,7 +1101,6 @@ impl View {
         let atlas = ctx.fonts(|fv| fv.font_image_size());
         let ppp = ctx.pixels_per_point();
         let mut seek = None;
-        let active_line = active.last().copied();
         let first_active = active.first().copied().filter(|_| active_real);
         let mut glow_work: Vec<GlowJob> = Vec::new();
         let pointer = ui.input(|i| i.pointer.hover_pos()).filter(|p| rect.contains(*p));
@@ -1383,6 +1409,217 @@ impl View {
         }
         self.layout = Some(Layout { key, width, blocks, pad_top, content_h: pad_top + content + pad_bottom, richsync });
     }
+}
+
+// -------------------------------------------------------------- light renderer
+
+/// The light renderer's sweep over one word: the full renderer's per-glyph gradient as
+/// at most three clipped draws of the same galley — solid up to the edge, then the ramp
+/// in two steps. Sonora clips a plain overlay the same way; a clip is O(1) where
+/// meshing every glyph was the frame's work.
+fn light_sweep(painter: &egui::Painter, w: &Word, at: Pos2, look: &WordLook, color: Color32, view: Rect) {
+    let (left, right) = (at.x, at.x + w.w);
+    // Where the gradient's 1 and its 0 sit across the word (lit_gradient's word mode).
+    let (full, zero) = if w.rtl {
+        (right - w.w * look.start, right - w.w * look.end - 1.0)
+    } else {
+        (left + w.w * look.start, left + w.w * look.end + 1.0)
+    };
+    // Nothing lit yet, or the ramp hasn't reached the word.
+    if w.rtl && zero >= right || !w.rtl && zero <= left {
+        return;
+    }
+    let slice = |x0: f32, x1: f32, k: f32| {
+        let (x0, x1) = (x0.max(left).min(right), x1.max(left).min(right));
+        if x1 <= x0 {
+            return;
+        }
+        let clip = Rect::from_min_max(pos2(x0, view.top()), pos2(x1, view.bottom()));
+        painter.with_clip_rect(clip).galley_with_override_text_color(at, w.galley.clone(), theme::with_alpha(color, k));
+    };
+    let mid = (full + zero) * 0.5;
+    if w.rtl {
+        // Lit from the right: the ramp climbs towards `full`, solid beyond it.
+        slice(zero, mid, 0.25);
+        slice(mid, full, 0.75);
+        slice(full, right, 1.0);
+    } else {
+        slice(left, full, 1.0);
+        slice(full, mid, 0.75);
+        slice(mid, zero, 0.25);
+    }
+}
+
+/// The light renderer (Settings › Appearance › Lyrics renderer): Sonora's lyrics over
+/// this app's layout — whole words drawn as they were laid out, the sweep a clip over
+/// the line being sung, the scroll one eased offset, and a line's blur a stepped,
+/// cached picture. Nothing is done per glyph: no letter waves, no wobble, no line
+/// swell, no word glows — a frame costs a fraction of the full renderer's, for much
+/// the same look. A theme's own line rules (its CSS) are the full renderer's to honour.
+#[allow(clippy::too_many_arguments)]
+fn light_paint(
+    ui: &mut egui::Ui,
+    f: &Frame,
+    cfg: &Cfg,
+    layout: &Layout,
+    states: &[LineState],
+    glow: &mut Glow,
+    scroll: &Trans,
+    t: f64,
+    active_line: Option<usize>,
+    credits_focused: bool,
+    user: bool,
+) -> (Option<f64>, bool) {
+    let ctx = ui.ctx().clone();
+    let rect = f.rect;
+    let painter = ui.painter_at(rect);
+    let first_shape = ctx.graphics(|g| g.get(painter.layer_id()).map_or(ShapeIdx(0), |l| l.next_idx()));
+    let origin_y = rect.top() - scroll.value(f.now) + layout.pad_top;
+    let x0 = rect.left() + cfg.pad.0;
+    let line_w = rect.width() - cfg.pad.0 - cfg.pad.1;
+    let ppp = ctx.pixels_per_point();
+    let atlas = ctx.fonts(|fv| fv.font_image_size());
+    let reveal = theme::anim_bool(&ctx, "lyr-reveal", user, 0.3);
+    let mut seek = None;
+    let mut animating = false;
+
+    for (i, b) in layout.blocks.iter().enumerate() {
+        let top = origin_y + b.top;
+        if top > rect.bottom() + 40.0 || top + b.height < rect.top() - 40.0 {
+            continue;
+        }
+        let block_rect = Rect::from_min_size(pos2(x0, top), vec2(line_w, b.height));
+        let content = pos2(x0 + cfg.size * 0.25, top);
+
+        if let Some((text, font)) = &b.credits {
+            let a = if credits_focused { 0.85 } else { 0.2 };
+            let a = theme::anim(&ctx, ("lyr-credits", f.key), a, 0.35);
+            let g = ctx.fonts_mut(|fv| fv.layout(text.clone(), font.clone(), Color32::WHITE, line_w - cfg.size * 0.5));
+            painter.galley_with_override_text_color(content + vec2(0.0, cfg.padding), g, theme::with_alpha(Color32::WHITE, a));
+            continue;
+        }
+        let li = b.line.unwrap();
+        let st = states[i];
+        let sung_now = st.selected && t >= b.start;
+        animating |= st.exit.is_some();
+
+        // The preset's own dimming, by distance from the line being sung.
+        let rel = active_line.map_or(1, |a| i as isize - a as isize);
+        let past = rel < 0;
+        let dist = rel.unsigned_abs() as f32;
+        let upcoming = (cfg.upcoming_alpha - dist.min(6.0) * cfg.falloff).max(cfg.min_alpha.min(cfg.upcoming_alpha));
+        let dim = if sung_now || rel == 0 {
+            cfg.inactive_alpha
+        } else if past {
+            lerp(cfg.past_alpha.unwrap_or(upcoming), upcoming, reveal)
+        } else {
+            upcoming
+        };
+        let dim = theme::anim(&ctx, ("lyr-dim", f.key, i), dim, 0.3);
+
+        if b.instrumental {
+            // No per-line transform here: the identity maps content coordinates
+            // straight onto the screen.
+            let xf = Xf { origin: pos2(0.0, 0.0), scale: 1.0, content };
+            paint_instrumental(&painter, cfg, b, &xf, t, line_w - cfg.size * 0.5);
+        } else {
+            // Sonora's haze: the blur is stepped, never animated — a line holds its
+            // picture and snaps to the next radius, so each blurs once per distance
+            // it's shown at, not once per frame of a fade.
+            let blur_on = match cfg.blur_scope {
+                BlurScope::All => true,
+                BlurScope::Past => past,
+                BlurScope::Upcoming => !past || reveal > 0.0,
+            };
+            let target = if cfg.blur > 0.0 && blur_on && !sung_now && rel != 0 { (cfg.blur * (1.0 + 0.35 * (dist - 1.0).clamp(0.0, 3.0))).min(9.0) } else { 0.0 };
+            let r = (target * 2.0).round() / 2.0;
+            if r >= 0.75 {
+                let line_key = (hash((f.key, ppp.to_bits())), i);
+                let made = glow.cached_line(&ctx, line_key, r, 1.0).or_else(|| {
+                    let deco_words: Vec<(&Word, f32)> = b.decos.iter().flat_map(|d| match &d.body {
+                        DecoBody::Timed { words, .. } => words.iter().map(|w| (w, 1.0)).collect::<Vec<_>>(),
+                        DecoBody::Text(..) => vec![],
+                    }).collect();
+                    let texts: Vec<(std::sync::Arc<Galley>, Pos2, f32)> = b.decos.iter().filter_map(|d| match &d.body {
+                        DecoBody::Text(text, font) => {
+                            let g = ctx.fonts_mut(|fv| fv.layout(text.clone(), font.clone(), Color32::WHITE, d.rect.width() + 1.0));
+                            let pad = if d.pill { vec2(cfg.rem() * 0.75 + 1.0, cfg.rem() * 0.25 + 1.0) } else { Vec2::ZERO };
+                            Some((g, d.rect.min + pad, 0.6))
+                        }
+                        DecoBody::Timed { .. } => None,
+                    }).collect();
+                    let words: Vec<(&Word, f32)> = b.words.iter().map(|w| (w, if w.bg { 0.78 } else { 1.0 })).chain(deco_words).collect();
+                    let pills: Vec<(Rect, f32, f32)> = b.decos.iter().filter(|d| d.pill).map(|d| (d.rect, cfg.rem(), 1.0)).collect();
+                    glow.blurred_line(&ctx, line_key, r, &words, &texts, &pills, 1.0, atlas, ppp)
+                });
+                if let Some((tex, rr, uv)) = made {
+                    // Snapped so it lands 1:1 on screen pixels.
+                    let to = rr.translate(content.to_vec2());
+                    let snapped = (to.min.to_vec2() * ppp).round() / ppp;
+                    painter.image(tex, to.translate(snapped - to.min.to_vec2()), uv, theme::with_alpha(Color32::WHITE, dim));
+                }
+            } else {
+                let text_lit = if let Some(e) = st.exit {
+                    1.0 - EASE.at(((f.now - e) / FADE_OUT) as f32)
+                } else if sung_now {
+                    EASE.at(((t - b.start) / FADE_IN) as f32)
+                } else {
+                    0.0
+                };
+                let text_alpha = 0.6 * lerp(dim, 1.0, text_lit);
+                // The pill belongs to its line: it fades out with the line's text.
+                let fade = lerp(dim, 1.0, text_lit);
+                let lit = LitState::new(cfg, st, t, f.now, sung_now || st.selected);
+                let word = |w: &Word| {
+                    let at = content + w.pos.to_vec2();
+                    let a = dim * if w.bg { 0.78 } else { 1.0 };
+                    if a > 0.004 {
+                        painter.galley_with_override_text_color(at, w.galley.clone(), theme::with_alpha(Color32::WHITE, a));
+                    }
+                    let look = word_look(w, &lit, cfg);
+                    if look.opacity > 0.0 && look.end > 0.0 {
+                        light_sweep(&painter, w, at, &look, theme::with_alpha(cfg.active, look.opacity), rect);
+                    }
+                };
+                for w in &b.words {
+                    word(w);
+                }
+                for d in &b.decos {
+                    if d.pill {
+                        let pr = Rect::from_min_size(content + d.rect.min.to_vec2(), d.rect.size());
+                        let radius = cfg.rem().min(255.0) as u8;
+                        painter.rect(pr, radius, theme::with_alpha(Color32::WHITE, 0.05 * fade), egui::Stroke::new(1.0, theme::with_alpha(Color32::WHITE, 0.1 * fade)), egui::StrokeKind::Inside);
+                    }
+                    match &d.body {
+                        DecoBody::Timed { words, .. } => {
+                            for w in words {
+                                word(w);
+                            }
+                        }
+                        DecoBody::Text(text, font) => {
+                            let g = ctx.fonts_mut(|fv| fv.layout(text.clone(), font.clone(), Color32::WHITE, d.rect.width() + 1.0));
+                            let pad = if d.pill { vec2(cfg.rem() * 0.75 + 1.0, cfg.rem() * 0.25 + 1.0) } else { Vec2::ZERO };
+                            painter.galley_with_override_text_color(content + (d.rect.min + pad).to_vec2(), g, theme::with_alpha(Color32::WHITE, text_alpha));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Click a line to seek to it (the extension seeks to the line's time).
+        let hit = block_rect.intersect(rect);
+        if hit.is_positive() {
+            let resp = ui.interact(hit, ui.scope_id().with(("lyr-line", f.key, i)), egui::Sense::click());
+            if resp.clicked() && f.lyrics.sync != Sync::None {
+                seek = Some(f.lyrics.lines[li].start as f64 / 1000.0);
+            }
+            if resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+        }
+    }
+    fade_edges(&ctx, painter.layer_id(), first_shape, rect, cfg.size);
+    (seek, animating)
 }
 
 fn same_lines(l: &Layout, blocks: &[Block]) -> bool {
@@ -2605,7 +2842,10 @@ mod tests {
         let ctx = egui::Context::default();
         crate::theme::install_fonts(&ctx, "Inter");
         for _ in 0..2 {
-            let _ = ctx.run_ui(Default::default(), |_| {});
+            // The font atlas lands as a texture delta; headless, there is no renderer
+            // to apply it, so clear it instead of dropping it unapplied.
+            let mut out = ctx.run_ui(Default::default(), |_| {});
+            out.textures_delta.clear();
         }
         ctx
     }
@@ -2795,5 +3035,77 @@ mod tests {
         let (exit, len, _) = gap_times(10.0, 1.0);
         assert!((exit - 10.62).abs() < 1e-9);
         assert!((len - 0.35).abs() < 1e-9);
+    }
+
+    /// The light renderer (Sonora's) plays a whole song: every frame of the sweep, the
+    /// scrolls between lines, and the lines' blur pictures. It must keep moving while
+    /// it plays, never light a word glow, and a line's blurred picture must be made
+    /// once per radius it's shown at — the cache holds a handful of entries for three
+    /// lines, where baking the fade into the image made one per step of it.
+    #[test]
+    fn light_renderer_paints_a_song() {
+        let ctx = shot_ctx();
+        let word_parts = |starts: &[i32]| {
+            starts
+                .iter()
+                .map(|s| Part { start: *s, dur: 500, text: "word".into(), bg: false })
+                .collect::<Vec<_>>()
+        };
+        let lines = (0..3)
+            .map(|i| Line {
+                start: 3000 + i as i32 * 3000,
+                dur: 2000,
+                text: "word word word".into(),
+                parts: word_parts(&[3000 + i * 3000, 3500 + i * 3000, 4000 + i * 3000]),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        let lyrics = Lyrics { lines, sync: Sync::Word, provider: crate::lyrics::Provider::LrclibSynced, language: None, songwriters: vec![] };
+        let mut style = crate::preset::LyricStyle::default();
+        style.blur = 2.0; // the lines ahead get a picture; the sweep stays sharp
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(500.0, 400.0));
+        let mut view = View::default();
+        let mut blurred_meshes = 0;
+        let show = |view: &mut View, now: f64, t: f64| {
+            let mut moving = false;
+            let mut full = ctx.run_ui({
+                let mut input = egui::RawInput::default();
+                input.time = Some(now);
+                input
+            }, |ui| {
+                let f = Frame { lyrics: &lyrics, key: 7, roman: vec![], trans: vec![], t, playing: true, now, rect, style: &style, accent: Color32::WHITE, centered: false, scale: 1.0, glow_boost: 0.0, light: true };
+                moving = view.show(ui, f).animating;
+            });
+            // The blurred pictures upload textures; a headless test has no renderer to
+            // hand the upload to, so let it go instead of panicking on drop.
+            full.textures_delta.clear();
+            (moving, full)
+        };
+        for k in 0..320 {
+            let now = 0.5 + k as f64 / 30.0;
+            let (moving, full) = show(&mut view, now, now - 0.5);
+            if k == 0 {
+                assert!(view.layout.as_ref().is_some_and(|l| l.blocks.len() >= 3));
+            }
+            if k % 64 == 0 {
+                // While it plays the sweep moves, so frames keep being asked for.
+                assert!(moving);
+            }
+            blurred_meshes += full
+                .shapes
+                .iter()
+                .filter(|s| matches!(&s.shape, Shape::Mesh(m) if m.texture_id != TextureId::default()))
+                .count();
+        }
+        // The blur pictures drew, the word glows never did, and the pictures are few:
+        // one per line per radius the distance asked for, not per step of a fade.
+        assert!(blurred_meshes > 0);
+        assert!(view.glow.textures.is_empty());
+        assert!(view.glow.lines.len() <= 8, "{} cached line pictures for 3 lines", view.glow.lines.len());
+        // Dropping the pictures frees their textures; one more pass collects those
+        // frees into a delta this test can clear, or the manager panics on drop.
+        drop(view);
+        let mut full = ctx.run_ui(egui::RawInput::default(), |_| {});
+        full.textures_delta.clear();
     }
 }
