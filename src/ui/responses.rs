@@ -378,6 +378,13 @@ impl App {
                     self.reco.new_from = cards;
                 }
             }
+            Resp::DailyDiscover(found) => {
+                // An empty answer is a failed fetch: the cards already showing stay.
+                if !found.is_empty() {
+                    self.discover = found;
+                    self.rebuild_gacha_pool();
+                }
+            }
             Resp::Uploads(t) => {
                 self.uploads = Some(t);
                 if self.page == Page::Library(LibTab::Uploads) {
@@ -697,6 +704,12 @@ impl App {
             taste: lite.clone(),
         });
         self.backend.request(Req::NewFromArtists(taste.top_artists.iter().take(8).filter_map(|(a, _)| a.id.clone()).collect()));
+        // the hero's discoveries, from seeds out of three directions (see
+        // `recommend::discover_seeds`)
+        let seeds = crate::recommend::discover_seeds(&self.listening, &mut crate::recommend::Rng::new());
+        if !seeds.is_empty() {
+            self.backend.request(Req::DailyDiscover { seeds, taste: lite });
+        }
     }
 
     /// Home's local rows, rebuilt from the listening history: recently played,
@@ -732,6 +745,27 @@ impl App {
         keep.extend(albums);
         rng.shuffle(&mut keep);
         self.home_rows = HomeRows { recently_played, most_played, forgotten, keep };
+        self.rebuild_gacha_pool();
+    }
+
+    /// The songs a gacha rolls from (Mochy's pool): the most played, the forgotten
+    /// favourites, the discoveries, the recently played and what to pick back up,
+    /// with covers, no doubles.
+    fn rebuild_gacha_pool(&mut self) {
+        let mut pool: Vec<Track> = self.listening.most_played(30, 0, 10);
+        pool.extend(self.listening.forgotten_favorites().into_iter().take(5));
+        pool.extend(self.discover.iter().map(|(_, found)| found.clone()));
+        pool.extend(self.listening.recently_played(10));
+        pool.extend(self.home_rows.keep.iter().filter_map(|c| match &c.target {
+            crate::model::Target::Song(t) => Some(t.clone()),
+            _ => None,
+        }));
+        let mut seen = HashSet::new();
+        pool.retain(|t| !t.thumbs.is_empty() && seen.insert(t.id.clone()));
+        let mut rng = crate::recommend::Rng::new();
+        rng.shuffle(&mut pool);
+        pool.truncate(10);
+        self.gacha_pool = pool;
     }
 
     /// The home feed, replacing the one shown.

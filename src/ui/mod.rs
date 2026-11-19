@@ -10,6 +10,7 @@ mod comments;
 mod dev;
 mod dialogs;
 mod glyphs;
+mod hero;
 mod integrations;
 mod jam;
 mod party;
@@ -495,6 +496,15 @@ pub struct App {
     reco_asked: Option<f64>,
     /// Home's local rows, off the same listening (rebuilt with the asks).
     home_rows: HomeRows,
+    /// The hero pager: which card is showing, and when it was switched to.
+    hero_page: usize,
+    hero_at: f64,
+    /// A gacha roll under way (see `hero::Gacha`).
+    gacha: Option<hero::Gacha>,
+    /// The songs a gacha rolls from, rebuilt with the local rows.
+    gacha_pool: Vec<Track>,
+    /// The hero's discoveries: what each grew from and what it found.
+    discover: Vec<(Track, Track)>,
     explore: Option<Explore>,
     /// The Moods & genres category last opened.
     mood: Option<crate::ytm::MoodPage>,
@@ -1111,6 +1121,11 @@ impl App {
             reco: Default::default(),
             reco_asked: None,
             home_rows: Default::default(),
+            hero_page: 0,
+            hero_at: 0.0,
+            gacha: None,
+            gacha_pool: Vec::new(),
+            discover: Vec::new(),
             zoom: 1.0,
             explore: None,
             mood: None,

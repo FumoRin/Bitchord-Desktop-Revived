@@ -40,6 +40,9 @@ pub enum Req {
     GenreRows { artists: Vec<(String, u64)>, taste: crate::recommend::TasteLite },
     /// This year's and last's releases from the artists you play most, their ids.
     NewFromArtists(Vec<String>),
+    /// The hero's discoveries: one unheard song (if there is one) off each seed
+    /// song's radio, with what grew it.
+    DailyDiscover { seeds: Vec<Track>, taste: crate::recommend::TasteLite },
     Explore(Vec<String>),
     /// A Moods & genres category, by its browse params.
     Mood(String),
@@ -155,6 +158,7 @@ impl Req {
             Req::MoreLike { .. } => "Growing your artist rows",
             Req::GenreRows { .. } => "Growing your genre rows",
             Req::NewFromArtists(_) => "Loading new releases",
+            Req::DailyDiscover { .. } => "Growing the hero's picks",
             Req::Explore(_) => "Loading new",
             Req::Mood(_) => "Loading the category",
             Req::Search(_) | Req::SearchIn { .. } => "Search",
@@ -204,7 +208,7 @@ impl Req {
 
     /// Background requests fail quietly (logged, no toast).
     fn quiet(&self) -> bool {
-        matches!(self, Req::Suggest { .. } | Req::Account | Req::Channels | Req::ServerQueue | Req::Art { .. } | Req::Canvas { .. } | Req::SpotifyCanvas { .. } | Req::ArtistSignature { .. } | Req::Prefetch { .. } | Req::HomeMore(_) | Req::SeedTaste | Req::BecauseYouLike { .. } | Req::MoreLike { .. } | Req::GenreRows { .. } | Req::NewFromArtists(_) | Req::MusicVideo(_) | Req::Lyrics(_) | Req::Segments { .. } | Req::LyricsExtras { .. } | Req::Comments { .. } | Req::CommentsPage { .. } | Req::CommentAction { .. })
+        matches!(self, Req::Suggest { .. } | Req::Account | Req::Channels | Req::ServerQueue | Req::Art { .. } | Req::Canvas { .. } | Req::SpotifyCanvas { .. } | Req::ArtistSignature { .. } | Req::Prefetch { .. } | Req::HomeMore(_) | Req::SeedTaste | Req::BecauseYouLike { .. } | Req::MoreLike { .. } | Req::GenreRows { .. } | Req::NewFromArtists(_) | Req::DailyDiscover { .. } | Req::MusicVideo(_) | Req::Lyrics(_) | Req::Segments { .. } | Req::LyricsExtras { .. } | Req::Comments { .. } | Req::CommentsPage { .. } | Req::CommentAction { .. })
     }
 }
 
@@ -390,6 +394,9 @@ pub enum Resp {
     /// "New from your artists": this year's and last's releases, at least three
     /// of them (fewer answered nothing, and the row stays off).
     NewFromArtists(Vec<Card>),
+    /// The hero's discoveries, and what each grew from; a failure answers with
+    /// nothing, keeping what's already showing.
+    DailyDiscover(Vec<(Track, Track)>),
     Uploads(Vec<Track>),
     Account { name: Option<String>, photo: Option<String> },
     Channels(Channels),
@@ -467,6 +474,7 @@ impl Resp {
                 | Resp::SeedTaste { .. }
                 | Resp::RecoRows(_)
                 | Resp::NewFromArtists(_)
+                | Resp::DailyDiscover(_)
                 | Resp::Uploads(_)
                 | Resp::Account { .. }
                 | Resp::Channels(_)
@@ -1230,6 +1238,33 @@ impl Backend {
                     Some(cards) => Resp::NewFromArtists(cards),
                     None => return Ok(None),
                 },
+                Req::DailyDiscover { seeds, taste } => {
+                    // anything already heard isn't much of a discovery: the first unheard
+                    // shuffled song off each seed's radio, else any of them
+                    let heard: std::collections::HashSet<&str> = taste.heard.iter().map(String::as_str).collect();
+                    let hidden = &taste.avoid_songs;
+                    let hide = taste.hide_explicit;
+                    let found = futures_util::future::join_all(seeds.iter().map(|seed| {
+                        let heard = &heard;
+                        let hidden = hidden;
+                        async move {
+                            let queue = ytm::radio(api, &seed.id, me, 25).await.ok()?;
+                            let candidates: Vec<&Track> = queue
+                                .iter()
+                                .filter(|t| t.id != seed.id && !hidden.contains(&t.id) && !(hide && t.explicit) && !t.has_video())
+                                .collect();
+                            let unseen = candidates.iter().filter(|t| !heard.contains(t.id.as_str())).cloned().collect::<Vec<_>>();
+                            let pool = if unseen.is_empty() { candidates } else { unseen };
+                            let found = crate::recommend::Rng::new().unit();
+                            pool.get((found * pool.len() as f64) as usize).map(|t| (seed.clone(), (*t).clone()))
+                        }
+                    }))
+                    .await
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                    Resp::DailyDiscover(found)
+                }
                 Req::Uploads => Resp::Uploads(ytm::uploads(api).await?),
                 Req::Account => {
                     let (name, photo) = ytm::account(api).await?;
