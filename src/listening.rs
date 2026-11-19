@@ -52,6 +52,11 @@ pub struct Listening {
     /// Whether the account's history and likes were pulled in once, on a first run.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub seeded: bool,
+    /// What autoplay last served, newest last, kept so fresh recommendations don't
+    /// hand the same songs straight back. A played one leaves by becoming heard, a
+    /// skipped one by its skip; the rest age out of the cap.
+    #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
+    pub recent_reco: VecDeque<String>,
     /// Plays and skips since Home's recommendation rows were last rebuilt; crossing
     /// either threshold refreshes them (see `refresh_due`).
     #[serde(skip)]
@@ -64,6 +69,9 @@ pub struct Listening {
 const SKIP_DAYS: u64 = 14;
 const MAX_EVENTS: usize = 4000;
 const MAX_SKIPS: usize = 200;
+/// How long what autoplay served stays out of recommendations; a radio asks far
+/// less often than it plays through its picks, so a handful of landings covers it.
+const MAX_RECENT_RECO: usize = 60;
 
 /// The skip test, as Mochy's `onTrackLeft` runs it: a song dropped in its first
 /// half and half a minute. Queued but never heard (<0.3 s), and anything too short
@@ -252,6 +260,17 @@ impl Listening {
         self.skips_since_refresh = 0;
     }
 
+    /// What autoplay just served: each sits out of recommendations a while (see
+    /// `recent_reco`), so the queue and Home's rows don't hand back what the last
+    /// one just did. Not one per user-started radio — the listener chose to hear it.
+    pub fn note_reco(&mut self, tracks: &[Track]) {
+        let fresh: Vec<String> = tracks.iter().map(|t| t.id.clone()).filter(|id| !self.recent_reco.contains(id)).collect();
+        self.recent_reco.extend(fresh);
+        while self.recent_reco.len() > MAX_RECENT_RECO {
+            self.recent_reco.pop_front();
+        }
+    }
+
     /// First run with an account: history stands in for events (a play each, spread
     /// back over the window so decay reads them as recent), likes come newest first.
     pub fn seed_from(&mut self, history: Vec<Track>, liked: Vec<Track>) {
@@ -411,6 +430,22 @@ mod tests {
         l.liked(song("l59", "X", None)); // again, still once
         l.unliked("l58");
         assert!(!l.liked.iter().any(|t| t.id == "l58"));
+    }
+
+    #[test]
+    fn what_autoplay_serves_sits_out_of_recommendations_a_while() {
+        let mut l = Listening::default();
+        l.note_reco(&[song("r1", "X", None), song("r2", "X", None)]);
+        l.note_reco(&[song("r2", "X", None), song("r3", "X", None)]); // r2 once only
+        assert_eq!(l.recent_reco, vec!["r1".to_owned(), "r2".to_owned(), "r3".to_owned()]);
+        for i in 0..70 {
+            l.note_reco(&[song(&format!("n{i}"), "X", None)]);
+        }
+        assert_eq!(l.recent_reco.len(), 60, "the cap holds");
+        assert!(!l.recent_reco.contains(&"r1".to_owned()), "the oldest aged out");
+        // what a round trip carries
+        let back: Listening = serde_json::from_slice(&serde_json::to_vec(&l).unwrap()).unwrap();
+        assert_eq!(back.recent_reco.len(), 60);
     }
 
     #[test]
