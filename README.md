@@ -156,7 +156,7 @@ BitChord Desktop Revived is licensed under [GPL-3.0](LICENSE).
 
 ## Acknowledgements
 
-- [BitChord](https://github.com/kushagrasinghx/BitChord) for the the orignal android app
+- The original Android app and the Liquid Glass icon are from [BitChord](https://github.com/kushagrasinghx/BitChord).
 - [ytm-rs](https://github.com/grapedjuice/ytm-rs) for the base of the app which was later modified by jackychan4891
 - [jackychan4891](https://github.com/jackychan4891/BitChord-PC-Continued) for the modification in ytm-rs app for parity with BitChord
 - [Sonora](https://github.com/sonorahq/sonora) and [Mochy-Music](https://github.com/realidkroo/Mochy-Music) for optimization and feature inspirations
