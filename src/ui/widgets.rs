@@ -644,6 +644,104 @@ pub fn card(ui: &mut Ui, c: &Card, width: f32, liked: bool, acts: &mut Vec<Actio
     }
 }
 
+/// A video/live-show card: the frame cropped wide with its title and who it's
+/// by laid over a scrim at the top — Mochy's HomeVideoCard, which knows a video
+/// is a picture with words on it, not an album cover.
+pub fn video_card(ui: &mut Ui, c: &Card, width: f32, acts: &mut Vec<Action>) {
+    // the Figma "Concert" card: 314 x 247
+    let height = width * 247.0 / 314.0;
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, height), Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let resp = named(resp, &c.title).on_hover_cursor(egui::CursorIcon::PointingHand);
+    let h = theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.contains_pointer(), 0.22);
+    let radius = theme::card_radius().min(width / 2.0);
+    paint_cover(ui, rect, &c.thumbs, radius, 1.0 + 0.04 * h * theme::hover_k());
+    // dark at the top where the words sit, clear by the middle so the frame itself shows
+    scrim(ui, rect, radius, 0.60);
+    // Play rises into the corner on hover; on the playing item it stays up and shows pause
+    let active = active_state(ui, &c.target);
+    let h = if active.is_some() { 1.0 } else { h };
+    let mut play_hit = false;
+    if h > 0.01 {
+        let center = rect.right_bottom() + vec2(-26.0, -26.0 + 8.0 * (1.0 - h));
+        let prect = Rect::from_center_size(center, Vec2::splat(40.0));
+        let p = ui.interact(prect, resp.id.with("play"), Sense::click());
+        let playing = active == Some(true);
+        let p = named(p, &format!("{} {}", if playing { "Pause" } else { "Play" }, c.title)).on_hover_cursor(egui::CursorIcon::PointingHand);
+        let ph = theme::anim_bool(ui.ctx(), p.id.with("h"), p.hovered(), 0.12);
+        ui.painter().circle_filled(center, 20.0 + 2.0 * ph, theme::shade(0.55 * h));
+        play_pause_glyph(ui, center, 9.0, theme::with_alpha(Color32::WHITE, h), playing);
+        play_hit = p.clicked();
+    }
+    let title = galley_wrapped(ui, &c.title, theme::semibold(14.0), Color32::WHITE, width - 32.0, 2);
+    let title_h = title.size().y;
+    ui.painter().galley(pos2(rect.left() + 16.0, rect.top() + 14.0), title, Color32::WHITE);
+    if !c.subtitle.is_empty() {
+        let sub = galley(ui, &c.subtitle, theme::regular(12.0), theme::with_alpha(Color32::WHITE, 0.72), width - 32.0);
+        ui.painter().galley(pos2(rect.left() + 16.0, rect.top() + 16.0 + title_h), sub, theme::with_alpha(Color32::WHITE, 0.72));
+    }
+    egui::Popup::context_menu(&resp).show(|ui| card_menu_contents(ui, c, false, acts));
+    if play_hit {
+        match &c.target {
+            _ if active.is_some() => acts.push(Action::TogglePlay),
+            Target::Song(t) => acts.push(Action::Radio(t.clone())),
+            t => acts.push(Action::PlayCollection(t.clone(), false)),
+        }
+    } else if resp.clicked() {
+        match &c.target {
+            Target::Song(t) => acts.push(Action::Radio(t.clone())),
+            t => acts.push(Action::Open(t.clone())),
+        }
+    }
+}
+
+/// A vertical scrim over the top of `rect`, fading out by its middle: the video
+/// card's words sit on it. The mesh's top edge follows the card's rounded corners
+/// (vertices sampled along the arcs, their colour reading their height), so the
+/// darkness never pokes past the rounding.
+fn scrim(ui: &Ui, rect: Rect, radius: f32, strength: f32) {
+    let alpha_at = |y: f32| {
+        let t = ((y - rect.top()) / rect.height()).clamp(0.0, 1.0);
+        if t < 0.30 {
+            strength * (1.0 - t / 0.30 * 0.5)
+        } else if t < 0.62 {
+            strength * 0.5 * (1.0 - (t - 0.30) / 0.32)
+        } else {
+            0.0
+        }
+    };
+    let r = radius.min(rect.height() / 2.0).min(rect.width() / 2.0);
+    // the top boundary, left to right: the top-left arc, the straight edge, the top-right arc
+    let mut top: Vec<(Pos2, f32)> = Vec::new();
+    for i in 0..=6usize {
+        let t = 90.0f32.to_radians() * (i as f32 / 6.0);
+        let x = rect.left() + r - r * t.cos();
+        let y = rect.top() + r - r * t.sin();
+        top.push((pos2(x, y), alpha_at(y)));
+    }
+    for i in 1..=6usize {
+        let t = 90.0f32.to_radians() * (i as f32 / 6.0);
+        let x = rect.right() - r + r * t.sin();
+        let y = rect.top() + r - r * t.cos();
+        top.push((pos2(x, y), alpha_at(y)));
+    }
+    let y_end = rect.top() + rect.height() * 0.62;
+    let mut mesh = egui::Mesh::default();
+    for (p, a) in &top {
+        mesh.colored_vertex(*p, theme::with_alpha(Color32::BLACK, *a));
+    }
+    let m = top.len();
+    mesh.colored_vertex(pos2(rect.left(), y_end), Color32::TRANSPARENT);
+    mesh.colored_vertex(pos2(rect.right(), y_end), Color32::TRANSPARENT);
+    for i in 0..m - 1 {
+        mesh.add_triangle(i as u32, (i + 1) as u32, (m + i) as u32);
+        mesh.add_triangle((i + 1) as u32, (m + i) as u32, (m + i + 1) as u32);
+    }
+    ui.painter().add(egui::Shape::mesh(mesh));
+}
+
 /// While the album or playlist `id` downloads, its whole cover darkens, then the darkness
 /// recedes from the bottom with the progress, so more and more of the picture shows in its
 /// true colours. When the download ends what's left of it fades away.
@@ -937,6 +1035,9 @@ pub fn equalizer_shown(ctx: &egui::Context) -> bool {
 
 pub struct RowOpts {
     pub number: Option<usize>,
+    /// The number is a rank, not a track number: big and bold in front of the
+    /// song, the way Mochy's Most played counts its rows down.
+    pub rank: bool,
     pub show_album: bool,
     pub current: bool,
     pub playing: bool,
@@ -1009,15 +1110,18 @@ pub fn track_row(ui: &mut Ui, t: &Track, o: &RowOpts, acts: &mut Vec<Action>) ->
         x += 30.0;
     }
     if let Some(n) = o.number {
-        let slot = Rect::from_center_size(pos2(x + 12.0, cy), vec2(24.0, 24.0));
+        let slot = Rect::from_center_size(pos2(x + 14.0, cy), vec2(28.0, 24.0));
         if o.current {
             equalizer(ui, slot.shrink(4.0), o.time, o.playing, o.accent);
         } else if h > 0.5 {
             play_triangle(ui, slot.center(), 6.0, theme::text());
+        } else if o.rank {
+            // a rank leads the row like a headline: big, bold, dimmed a touch
+            ui.painter().text(slot.center(), Align2::CENTER_CENTER, n.to_string(), theme::bold(21.0), theme::with_alpha(theme::text(), 0.85));
         } else {
             ui.painter().text(slot.center(), Align2::CENTER_CENTER, n.to_string(), theme::regular(14.0), theme::text_dim());
         }
-        x += 36.0;
+        x += if o.rank { 44.0 } else { 36.0 };
     } else {
         let img = Rect::from_min_size(pos2(x, cy - 20.0), Vec2::splat(40.0));
         let tr = theme::thumb_radius();
@@ -1123,19 +1227,19 @@ pub fn shelf_header(ui: &mut Ui, title: &str, strap: Option<&str>, strap_thumb: 
 /// music.youtube.com puts its More). Returns (left, right, show-all clicked).
 pub fn shelf_header_ext(ui: &mut Ui, title: &str, strap: Option<&str>, strap_thumb: Option<&str>, arrows: bool, show_all: bool) -> (bool, bool, bool) {
     let mut res = (false, false, false);
-    ui.add_space(34.0);
+    ui.add_space(30.0);
     ui.horizontal(|ui| {
         if let Some(url) = strap_thumb {
-            let (r, _) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::hover());
-            ui.painter().circle_filled(r.center(), 20.0, theme::glass(0.1));
-            paint_remote(ui, url, r, 20.0, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            let (r, _) = ui.allocate_exact_size(Vec2::splat(34.0), Sense::hover());
+            ui.painter().circle_filled(r.center(), 17.0, theme::glass(0.1));
+            paint_remote(ui, url, r, 17.0, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
             ui.add_space(4.0);
         }
         ui.vertical(|ui| {
             if let Some(s) = strap {
-                ui.label(egui::RichText::new(s.to_uppercase()).font(theme::semibold(11.5)).color(theme::text_dim()));
+                ui.label(egui::RichText::new(s.to_uppercase()).font(theme::semibold(10.5)).color(theme::text_dim()));
             }
-            ui.label(egui::RichText::new(title).font(theme::bold(21.0)).color(theme::text()));
+            ui.label(egui::RichText::new(title).font(theme::semibold(17.5)).color(theme::text()));
         });
         if arrows || show_all {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1150,7 +1254,7 @@ pub fn shelf_header_ext(ui: &mut Ui, title: &str, strap: Option<&str>, strap_thu
             });
         }
     });
-    ui.add_space(14.0);
+    ui.add_space(12.0);
     res
 }
 
