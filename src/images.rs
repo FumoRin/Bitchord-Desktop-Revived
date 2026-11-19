@@ -52,6 +52,8 @@ pub struct HttpImages {
     backend: Backend,
     cache: Arc<Mutex<HashMap<String, Entry>>>,
     dir: std::path::PathBuf,
+    /// Local music's covers (see `local.rs`): read from their files, never fetched.
+    covers: std::path::PathBuf,
 }
 
 impl HttpImages {
@@ -59,7 +61,8 @@ impl HttpImages {
         let dir = backend.data_dir().join("thumbs");
         let _ = std::fs::create_dir_all(&dir);
         trim(&dir);
-        Self { backend, cache: Default::default(), dir }
+        let covers = backend.data_dir().join("local-covers");
+        Self { backend, cache: Default::default(), dir, covers }
     }
 }
 
@@ -99,7 +102,10 @@ impl BytesLoader for HttpImages {
     }
 
     fn load(&self, _ctx: &egui::Context, uri: &str) -> BytesLoadResult {
-        if !is_http(uri) {
+        // Local music's covers load by their own scheme (see `local.rs`); everything
+        // else here is a fetch.
+        let local = uri.strip_prefix(crate::local::COVER).map(str::to_owned);
+        if local.is_none() && !is_http(uri) {
             return Err(LoadError::NotSupported);
         }
         let mut cache = self.cache.lock().unwrap();
@@ -122,7 +128,21 @@ impl BytesLoader for HttpImages {
         let (http, cache, uri, backend) =
             (self.backend.http(), self.cache.clone(), uri.to_owned(), self.backend.clone());
         let file = disk_path(&self.dir, &uri);
+        let local = local.and_then(|name| crate::local::cover_in(&self.covers, &name));
         self.backend.spawn(async move {
+            // A local cover is a file on this computer: read it, no fetch and no
+            // second copy in the thumbs cache (it already is on disk).
+            if let Some(path) = local {
+                let entry = match std::fs::read(&path) {
+                    Ok(bytes) => Entry::Ready(Arc::from(bytes), None, Instant::now()),
+                    Err(e) => Entry::Failed(e.to_string(), Instant::now()),
+                };
+                if let Some(slot) = cache.lock().unwrap().get_mut(&uri) {
+                    *slot = entry;
+                }
+                backend.wake();
+                return;
+            }
             if let Ok(bytes) = std::fs::read(&file) {
                 // Touch it, so trimming drops pictures that aren't used any more.
                 let _ = std::fs::File::options().write(true).open(&file).and_then(|f| f.set_modified(std::time::SystemTime::now()));
@@ -244,9 +264,10 @@ impl TextureLoader for Textures {
     }
 
     fn load(&self, ctx: &egui::Context, uri: &str, options: TextureOptions, size_hint: SizeHint) -> TextureLoadResult {
-        // Also the bundled theme covers and icon previews: egui's own loader would keep
-        // each one decoded, as well as its texture, until the app closes.
-        if !is_http(uri) && !uri.starts_with("bytes://theme-cover/") && !uri.starts_with("bytes://app-icon/") {
+        // Also the bundled theme covers, the icon previews and local music's covers:
+        // egui's own loader would keep each one decoded, as well as its texture, until
+        // the app closes.
+        if !is_http(uri) && !uri.starts_with(crate::local::COVER) && !uri.starts_with("bytes://theme-cover/") && !uri.starts_with("bytes://app-icon/") {
             return Err(LoadError::NotSupported);
         }
         {
