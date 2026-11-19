@@ -493,13 +493,36 @@ impl App {
     }
 
     /// Keep the queue topped up so autoplay never stalls at the end; a playlist still
-    /// coming in goes first.
+    /// coming in goes first. The seed drifts — the newest queue song this session
+    /// hasn't grown a radio from yet, so the queue keeps moving forward instead of
+    /// orbiting one mix (Mochy's infinite queue does the same); an answer that lands
+    /// nothing cools off first, so a dead station can't become a request a frame.
     pub(super) fn top_up(&mut self) {
-        if self.autoplay && !self.radio_pending && !self.jam.follows() && self.queue.fill.is_none() && self.queue.at_end()
-            && let Some(t) = self.current().cloned()
+        if let Some(at) = self.radio_retry_at
+            && std::time::Instant::now() < at
         {
-            self.radio_pending = true;
-            self.backend.request(Req::Radio { song_of: self.song_of(&t), seed: t.id });
+            return;
+        }
+        if self.autoplay && !self.radio_pending && !self.jam.follows() && self.queue.fill.is_none() && self.queue.at_end() {
+            let banned = &self.listening.banned;
+            let seed = self
+                .queue
+                .tracks
+                .iter()
+                .rev()
+                .find(|t| !crate::local::is_local(&t.id) && !self.used_radio_seeds.contains(&t.id) && !banned.contains(&t.id))
+                .cloned()
+                .or_else(|| self.current().cloned().filter(|t| !crate::local::is_local(&t.id)));
+            if let Some(t) = seed {
+                self.radio_pending = true;
+                self.used_radio_seeds.push_back(t.id.clone());
+                if self.used_radio_seeds.len() > 100 {
+                    self.used_radio_seeds.pop_front();
+                }
+                // the queue's own radio: picked from the taste, the way Home's rows are
+                let taste = crate::recommend::TasteLite::of(&self.listening, self.hide_explicit);
+                self.backend.request(Req::AutoRadio { song_of: self.song_of(&t), seed: t.id, taste });
+            }
         }
     }
 

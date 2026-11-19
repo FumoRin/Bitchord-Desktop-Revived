@@ -1064,6 +1064,31 @@ pub async fn radio_playlist(api: &Api, playlist_id: &str, auth: bool, limit: usi
     Ok(radio_tracks(&items).cloned().collect())
 }
 
+/// The mix YouTube itself lines up after `video_id` — the watch page's up-next
+/// panel, not a radio asked of it: the second source when a radio comes back
+/// thin or not at all, the way Mochy's infinite queue falls through to related
+/// songs. A signed-out session sometimes answers with an empty panel; that is
+/// the next source's cue.
+pub async fn up_next(api: &Api, video_id: &str, auth: bool, limit: usize) -> anyhow::Result<Vec<Track>> {
+    let body = json!({ "videoId": video_id, "isAudioOnly": true });
+    let v = api.call("next", body, auth).await?;
+    let panel = &v["contents"]["singleColumnMusicWatchNextResultsRenderer"]["tabbedRenderer"]["watchNextTabbedResultsRenderer"]["tabs"][0]
+        ["tabRenderer"]["content"]["musicQueueRenderer"]["content"]["playlistPanelRenderer"];
+    let (mut items, mut token) = panel_page(panel);
+    while radio_tracks(&items).count() < limit {
+        let Some(t) = token.take() else { break };
+        let body = json!({ "continuation": t, "isAudioOnly": true });
+        let v = api.call("next", body, auth).await?;
+        let (more, next) = panel_page(&v["continuationContents"]["playlistPanelContinuation"]);
+        if more.is_empty() {
+            break;
+        }
+        items.extend(more);
+        token = next;
+    }
+    Ok(radio_tracks(&items).cloned().collect())
+}
+
 /// A radio's songs, without its videos (`is_video`); all of it when it's videos only.
 fn radio_tracks(items: &[(Track, bool)]) -> impl Iterator<Item = &Track> {
     let songs = items.iter().any(|(_, video)| !video);
@@ -3119,6 +3144,21 @@ mod tests {
         // A music video's radio: music videos only, kept rather than nothing.
         assert_eq!(ids(&[(t("v1"), true), (t("v2"), true)]), ["v1", "v2"]);
         assert!(ids(&[]).is_empty());
+    }
+
+    #[test]
+    fn the_watch_page_panel_parses_the_up_next_mix() {
+        // the plain watch page's first tab — no playlistId asked of it — is the same
+        // panel a radio reads, which `up_next` draws its mix from
+        let item: Value = serde_json::from_str(PANEL_ITEM).unwrap();
+        let panel = json!({"contents": [
+            {"playlistPanelVideoRenderer": item["playlistPanelVideoRenderer"].clone()},
+            {"playlistPanelVideoWrapperRenderer": {"primaryRenderer": {"playlistPanelVideoRenderer": item["playlistPanelVideoRenderer"].clone()}}},
+        ]});
+        let (tracks, token) = panel_page(&panel);
+        assert_eq!(tracks.len(), 2, "a wrapped row counts the same as a bare one");
+        assert!(tracks.iter().all(|(t, _)| t.id == "aBhrEv5Z7uc"));
+        assert!(token.is_none(), "no continuation, no token");
     }
 
     #[test]

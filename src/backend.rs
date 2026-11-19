@@ -111,7 +111,13 @@ pub enum Req {
     ArtistSignature { key: String, endpoint: String, name: String },
     /// Radio seeded from a track (`seed`, its id); appended to the queue. `song_of`: the
     /// track, when it's a music video to play as its song: the song's radio is asked for.
-    Radio { seed: String, song_of: Option<Track> },
+    /// The taste travels along — what the listening has ruled out never lines up around
+    /// a song the listener chose, though the choice itself plays whatever it is.
+    Radio { seed: String, song_of: Option<Track>, taste: crate::recommend::TasteLite },
+    /// The queue topping itself up at its end: the same fetch and cascade as `Radio`,
+    /// but picked rather than kept in order — autoplay grows from the taste the way
+    /// Home's rows do, and what it serves is noted back into it.
+    AutoRadio { seed: String, song_of: Option<Track>, taste: crate::recommend::TasteLite },
     /// A song's first page of comments (now playing's Comments panel).
     Comments { video_id: String },
     /// The next page of a comments list (more comments, a comment's replies, another
@@ -195,7 +201,7 @@ impl Req {
             Req::Canvas { .. } => "Animated cover",
             Req::SpotifyCanvas { .. } => "Spotify canvas",
             Req::ArtistSignature { .. } => "Artist signature",
-            Req::Radio { .. } => "Loading radio",
+            Req::Radio { .. } | Req::AutoRadio { .. } => "Loading radio",
             Req::Comments { .. } | Req::CommentsPage { .. } | Req::CommentAction { .. } => "Comments",
             Req::PlayCollection { .. } => "Playback",
             Req::Play { .. } => "Playback",
@@ -219,7 +225,7 @@ impl Req {
 
     /// Background requests fail quietly (logged, no toast).
     fn quiet(&self) -> bool {
-        matches!(self, Req::Suggest { .. } | Req::Account | Req::Channels | Req::ServerQueue | Req::Art { .. } | Req::Canvas { .. } | Req::SpotifyCanvas { .. } | Req::ArtistSignature { .. } | Req::Prefetch { .. } | Req::HomeMore(_) | Req::SeedTaste | Req::BecauseYouLike { .. } | Req::MoreLike { .. } | Req::GenreRows { .. } | Req::NewFromArtists(_) | Req::DailyDiscover { .. } | Req::AllTimeHits | Req::CommunityPlaylists(_) | Req::ArtistVideos(_) | Req::MusicVideo(_) | Req::Lyrics(_) | Req::Segments { .. } | Req::LyricsExtras { .. } | Req::Comments { .. } | Req::CommentsPage { .. } | Req::CommentAction { .. })
+        matches!(self, Req::Suggest { .. } | Req::Account | Req::Channels | Req::ServerQueue | Req::Art { .. } | Req::Canvas { .. } | Req::SpotifyCanvas { .. } | Req::ArtistSignature { .. } | Req::Prefetch { .. } | Req::HomeMore(_) | Req::SeedTaste | Req::BecauseYouLike { .. } | Req::MoreLike { .. } | Req::GenreRows { .. } | Req::NewFromArtists(_) | Req::DailyDiscover { .. } | Req::AllTimeHits | Req::CommunityPlaylists(_) | Req::ArtistVideos(_) | Req::MusicVideo(_) | Req::AutoRadio { .. } | Req::Lyrics(_) | Req::Segments { .. } | Req::LyricsExtras { .. } | Req::Comments { .. } | Req::CommentsPage { .. } | Req::CommentAction { .. })
     }
 }
 
@@ -444,7 +450,7 @@ pub enum Resp {
     SpotifyCanvas { key: String, url: Option<String> },
     /// A signature for an artist, already whitened for the header.
     ArtistSignature { key: String, signature: Option<crate::artist_signature::Signature> },
-    Radio { seed: String, tracks: Vec<Track> },
+    Radio { seed: String, tracks: Vec<Track>, autoplay: bool },
     /// A comments response (`Req::Comments`, `CommentsPage` or `CommentAction`) by its tag;
     /// `None`: it failed.
     CommentsPage { token: String, page: Option<serde_json::Value> },
@@ -830,6 +836,11 @@ const PLAY_SONG_WAIT: std::time::Duration = std::time::Duration::from_millis(250
 const EARLY_VIDEO_AFTER: std::time::Duration = std::time::Duration::from_millis(200);
 /// A prefetch has until the song before it ends.
 const PREFETCH_SONG_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+/// How deep one radio fetch goes; the queue's own pick keeps pace with it.
+const RADIO_FETCH: usize = 50;
+/// Fewer usable songs than this from a source, and the next one is asked (Mochy's
+/// rows drop under four; a shorter queue than that barely tops anything up).
+const RADIO_MIN: usize = 4;
 /// How long playback waits for the hi-res sources before falling back to YouTube. Every
 /// source is asked at once and a miss is quick (the addon answers its search fast); this
 /// bounds the ones that are slow, not the ones that don't have the track.
@@ -1451,16 +1462,8 @@ impl Backend {
                     });
                     Resp::ArtistSignature { key, signature }
                 }
-                Req::Radio { seed, song_of } => {
-                    // A music video's radio is music videos; its song's is songs, as from the
-                    // song itself. The lookup is shared with its play's (one per video).
-                    let song = self.song_version(&seed, song_of.as_ref(), PREFETCH_SONG_WAIT).await;
-                    let from = song.as_ref().map_or(&seed, |s| &s.id);
-                    let mut tracks = ytm::radio(api, from, false, 50).await?;
-                    // The radio starts with its seed, which is playing already.
-                    tracks.retain(|t| t.id != *from);
-                    Resp::Radio { seed, tracks }
-                }
+                Req::Radio { seed, song_of, taste } => self.radio(seed, song_of, taste, false).await?,
+                Req::AutoRadio { seed, song_of, taste } => self.radio(seed, song_of, taste, true).await?,
                 Req::PlayCollection { target } => {
                     let (title, tracks) = match &target {
                         Target::Album(id) => ytm::album(api, id).await.map(|c| (c.title, c.tracks))?,
@@ -1582,6 +1585,60 @@ impl Backend {
             top: charts.top,
             moods: moods.unwrap_or_default(),
         }))
+    }
+
+    /// A radio for `seed`, asked by the listener (`autoplay` false) or by the queue
+    /// topping itself up: the sources Mochy's infinite queue falls through — the
+    /// song's radio, the watch page's own up-next mix, the artist's songs — first
+    /// one that isn't thin wins, and nothing the taste has ruled out survives any
+    /// of them. The listener's keeps YouTube's order; the queue's is picked the way
+    /// Home's rows are; the artist's own catalog plays as it lies (a spread of one
+    /// song per act would gut it, and its order is its own curation).
+    async fn radio(&self, seed: String, song_of: Option<Track>, taste: crate::recommend::TasteLite, autoplay: bool) -> anyhow::Result<Resp> {
+        // A music video's radio is music videos; its song's is songs, as from the
+        // song itself. The lookup is shared with its play's (one per video).
+        let song = self.song_version(&seed, song_of.as_ref(), PREFETCH_SONG_WAIT).await;
+        let from = song.as_ref().map_or(seed.as_str(), |s| &s.id);
+        let artist = song.as_ref().or(song_of.as_ref()).and_then(|t| t.artists.iter().find_map(|a| a.id.clone()));
+        let api = &*self.api;
+        let mut best: Vec<Track> = Vec::new();
+        let mut failure = None;
+        for source in 0..3 {
+            let fetched: anyhow::Result<Vec<Track>> = match source {
+                0 => ytm::radio(api, from, false, RADIO_FETCH).await,
+                1 => ytm::up_next(api, from, false, RADIO_FETCH).await,
+                _ => match artist.as_deref() {
+                    Some(id) => ytm::artist(api, id, false).await.map(|p| p.top),
+                    None => Ok(Vec::new()),
+                },
+            };
+            let mut tracks = match fetched {
+                Ok(tracks) => tracks,
+                Err(e) => {
+                    failure.get_or_insert(e);
+                    Vec::new()
+                }
+            };
+            // the seed is playing already, or about to
+            tracks.retain(|t| t.id != from && t.id != seed);
+            tracks = if source == 2 || !autoplay {
+                crate::recommend::user_radio(tracks, &taste)
+            } else {
+                crate::recommend::queue_radio(tracks, &taste, 2, &mut crate::recommend::Rng::new())
+            };
+            if tracks.len() > best.len() {
+                best = tracks;
+            }
+            if best.len() >= RADIO_MIN {
+                break;
+            }
+        }
+        if best.is_empty() {
+            // every source failed, or nothing survived the taste's rulings
+            let e = failure.take().unwrap_or_else(|| anyhow::anyhow!("nothing to line up after {seed}"));
+            return Err(e);
+        }
+        Ok(Resp::Radio { seed, tracks: best, autoplay })
     }
 
     /// Home's genre rows: up to three genres your top artists are filed under,

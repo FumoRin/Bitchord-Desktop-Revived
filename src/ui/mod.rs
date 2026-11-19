@@ -632,6 +632,13 @@ pub struct App {
     output_device: Option<(String, String)>,
     output_devices: Vec<crate::audio::OutputDevice>,
     radio_pending: bool,
+    /// Radio seeds this session's autoplay has already grown from, so the queue
+    /// drifts forward rather than orbiting one station (not kept: a fresh session
+    /// may want the same station back).
+    used_radio_seeds: std::collections::VecDeque<String>,
+    /// When autoplay may ask again after an answer that landed nothing — a dead
+    /// station must not become a request a frame.
+    radio_retry_at: Option<std::time::Instant>,
     seek_drag: Option<f32>,
 
     // visuals
@@ -1254,6 +1261,8 @@ impl App {
             restart_app: false,
             media_cover: Default::default(),
             radio_pending: false,
+            used_radio_seeds: Default::default(),
+            radio_retry_at: None,
             seek_drag: None,
             art_key: None,
             canvas_covers: Default::default(),
