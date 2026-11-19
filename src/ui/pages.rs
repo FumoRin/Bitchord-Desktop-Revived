@@ -488,6 +488,8 @@ fn home(app: &mut App, ui: &mut Ui, now: f64) {
         return;
     }
     let rows = Rows::new(app, now);
+    // The hero that opens the page: what's playing, a roll, discoveries, playlists.
+    super::hero::draw(app, ui, now);
     // The local rows and the recommendation rows, grown from what you play here,
     // dealt one against the other the way Mochy's home deals its categories between
     // its own rows — two of its own first, the releases after the first round of
