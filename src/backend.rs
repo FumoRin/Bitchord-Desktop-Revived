@@ -43,6 +43,14 @@ pub enum Req {
     /// The hero's discoveries: one unheard song (if there is one) off each seed
     /// song's radio, with what grew it.
     DailyDiscover { seeds: Vec<Track>, taste: crate::recommend::TasteLite },
+    /// "All time hits": the charts page's most played.
+    AllTimeHits,
+    /// "From the community": playlists off the pages of `artists` — (browse id,
+    /// name), three of the top ten — that aren't YouTube's own.
+    CommunityPlaylists(Vec<(String, String)>),
+    /// "Live shows" and "Music videos for you": the video shelves off the pages
+    /// of `artists` — (browse id, name), the six most listened.
+    ArtistVideos(Vec<(String, String)>),
     Explore(Vec<String>),
     /// A Moods & genres category, by its browse params.
     Mood(String),
@@ -159,6 +167,9 @@ impl Req {
             Req::GenreRows { .. } => "Growing your genre rows",
             Req::NewFromArtists(_) => "Loading new releases",
             Req::DailyDiscover { .. } => "Growing the hero's picks",
+            Req::AllTimeHits => "Loading all-time hits",
+            Req::CommunityPlaylists(_) => "Finding community playlists",
+            Req::ArtistVideos(_) => "Finding live shows and videos",
             Req::Explore(_) => "Loading new",
             Req::Mood(_) => "Loading the category",
             Req::Search(_) | Req::SearchIn { .. } => "Search",
@@ -208,7 +219,7 @@ impl Req {
 
     /// Background requests fail quietly (logged, no toast).
     fn quiet(&self) -> bool {
-        matches!(self, Req::Suggest { .. } | Req::Account | Req::Channels | Req::ServerQueue | Req::Art { .. } | Req::Canvas { .. } | Req::SpotifyCanvas { .. } | Req::ArtistSignature { .. } | Req::Prefetch { .. } | Req::HomeMore(_) | Req::SeedTaste | Req::BecauseYouLike { .. } | Req::MoreLike { .. } | Req::GenreRows { .. } | Req::NewFromArtists(_) | Req::DailyDiscover { .. } | Req::MusicVideo(_) | Req::Lyrics(_) | Req::Segments { .. } | Req::LyricsExtras { .. } | Req::Comments { .. } | Req::CommentsPage { .. } | Req::CommentAction { .. })
+        matches!(self, Req::Suggest { .. } | Req::Account | Req::Channels | Req::ServerQueue | Req::Art { .. } | Req::Canvas { .. } | Req::SpotifyCanvas { .. } | Req::ArtistSignature { .. } | Req::Prefetch { .. } | Req::HomeMore(_) | Req::SeedTaste | Req::BecauseYouLike { .. } | Req::MoreLike { .. } | Req::GenreRows { .. } | Req::NewFromArtists(_) | Req::DailyDiscover { .. } | Req::AllTimeHits | Req::CommunityPlaylists(_) | Req::ArtistVideos(_) | Req::MusicVideo(_) | Req::Lyrics(_) | Req::Segments { .. } | Req::LyricsExtras { .. } | Req::Comments { .. } | Req::CommentsPage { .. } | Req::CommentAction { .. })
     }
 }
 
@@ -330,6 +341,9 @@ pub struct ArtistPage {
     pub singles: Vec<Card>,
     pub playlists: Vec<Card>,
     pub similar: Vec<Card>,
+    /// The videos and live performances shelves' cards (music videos and other
+    /// uploads), for Home's "Live shows" and "Music videos for you" rows.
+    pub videos: Vec<Card>,
     /// Where a shelf's Show all goes: YouTube's own discography browse for that
     /// shelf (browseId with its params), which lists everything the artist has.
     pub albums_more: Option<ShelfLink>,
@@ -397,6 +411,11 @@ pub enum Resp {
     /// The hero's discoveries, and what each grew from; a failure answers with
     /// nothing, keeping what's already showing.
     DailyDiscover(Vec<(Track, Track)>),
+    /// "All time hits" as song cards, and the community playlists and the live/
+    /// music-video rows; failures keep what's already on screen.
+    AllTimeHits(Vec<Card>),
+    CommunityPlaylists(Vec<Card>),
+    ArtistVideos { live: Vec<Card>, videos: Vec<Card> },
     Uploads(Vec<Track>),
     Account { name: Option<String>, photo: Option<String> },
     Channels(Channels),
@@ -475,6 +494,9 @@ impl Resp {
                 | Resp::RecoRows(_)
                 | Resp::NewFromArtists(_)
                 | Resp::DailyDiscover(_)
+                | Resp::AllTimeHits(_)
+                | Resp::CommunityPlaylists(_)
+                | Resp::ArtistVideos { .. }
                 | Resp::Uploads(_)
                 | Resp::Account { .. }
                 | Resp::Channels(_)
@@ -1264,6 +1286,81 @@ impl Backend {
                     .flatten()
                     .collect();
                     Resp::DailyDiscover(found)
+                }
+                Req::AllTimeHits => {
+                    let charts = ytm::charts(api).await?;
+                    let hits: Vec<Card> = charts
+                        .top
+                        .iter()
+                        .take(20)
+                        .map(|t| Card {
+                            title: t.title.clone(),
+                            subtitle: t.artist_line(),
+                            thumbs: t.thumbs.clone(),
+                            target: Target::Song(t.clone()),
+                            round: false,
+                            links: t.artists.clone(),
+                        })
+                        .collect();
+                    Resp::AllTimeHits(hits)
+                }
+                Req::CommunityPlaylists(artists) => {
+                    // playlists off their pages that aren't YouTube's own mixes and
+                    // albums, or the seed artist's
+                    let pages = futures_util::future::join_all(artists.iter().map(|(id, _)| async move { ytm::artist(api, id, me).await.ok() })).await;
+                    let mut candidates: Vec<Card> = pages
+                        .iter()
+                        .flatten()
+                        .flat_map(|p| p.playlists.clone())
+                        .filter(|c| {
+                            let author = c.subtitle.split('•').last().map(str::trim).unwrap_or_default();
+                            let a = author.to_lowercase();
+                            !a.is_empty()
+                                && a != "youtube music"
+                                && a != "youtube"
+                                && a != "playlist"
+                                && !authors_matches(&artists, author)
+                        })
+                        .filter(|c| {
+                            !matches!(&c.target, Target::Playlist(id) if id.starts_with("RD") || id.starts_with("OLAK"))
+                        })
+                        .collect();
+                    let mut seen = std::collections::HashSet::new();
+                    candidates.retain(|c| seen.insert(c.title.clone()));
+                    let mut rng = crate::recommend::Rng::new();
+                    rng.shuffle(&mut candidates);
+                    candidates.truncate(5);
+                    Resp::CommunityPlaylists(candidates)
+                }
+                Req::ArtistVideos(artists) => {
+                    // a few of each artist's videos and live performances, dealt out
+                    // one artist at a time
+                    let pages = futures_util::future::join_all(artists.iter().map(|(id, _)| async move { ytm::artist(api, id, me).await.ok() })).await;
+                    let mut per_artist: Vec<(Vec<Card>, Vec<Card>)> = Vec::new();
+                    for page in pages.iter().flatten() {
+                        let mut live: Vec<Card> = Vec::new();
+                        let mut videos: Vec<Card> = Vec::new();
+                        let mut pool = page.videos.clone();
+                        crate::recommend::Rng::new().shuffle(&mut pool);
+                        for c in pool.into_iter().take(6) {
+                            if c.title.to_lowercase().contains("live") {
+                                live.push(c);
+                            } else {
+                                videos.push(c);
+                            }
+                        }
+                        per_artist.push((live.into_iter().take(3).collect(), videos.into_iter().take(3).collect()));
+                    }
+                    let dealt = interleave(
+                        per_artist.iter().map(|(l, _)| l.iter().cloned()).collect(),
+                        12,
+                    );
+                    let live_ids: std::collections::HashSet<&str> = dealt.iter().filter_map(|c| match &c.target { Target::Song(t) => Some(t.id.as_str()), _ => None }).collect();
+                    let videos = interleave(
+                        per_artist.iter().map(|(l, v)| v.iter().filter(|c| !live_ids.contains(match &c.target { Target::Song(t) => t.id.as_str(), _ => "" })).cloned()).collect(),
+                        12,
+                    );
+                    Resp::ArtistVideos { live: dealt, videos }
                 }
                 Req::Uploads => Resp::Uploads(ytm::uploads(api).await?),
                 Req::Account => {
@@ -3282,6 +3379,36 @@ async fn itunes_genre(http: &reqwest::Client, name: &str) -> Option<String> {
 /// A release card's year, as its subtitle spells it out ("Album • Artist • 2024").
 fn card_year(c: &Card) -> Option<u64> {
     c.subtitle.split([' ', '•', ',']).find_map(|t| t.trim().parse::<u64>().ok().filter(|y| (1950..=2100).contains(y)))
+}
+
+/// Whether `author` names one of the seed artists.
+fn authors_matches(artists: &[(String, String)], author: &str) -> bool {
+    artists.iter().any(|(_, name)| name.eq_ignore_ascii_case(author))
+}
+
+/// Lists dealt out one item at a time — an artist at a time — up to `limit`, with
+/// no doubles. Mochy's `ArtistVideos.interleave`.
+fn interleave<I: Iterator<Item = Card>>(lists: Vec<I>, limit: usize) -> Vec<Card> {
+    let mut rows: Vec<std::collections::VecDeque<Card>> = lists.into_iter().map(|l| l.collect()).collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    while out.len() < limit && rows.iter().any(|r| !r.is_empty()) {
+        for row in &mut rows {
+            if out.len() >= limit {
+                break;
+            }
+            if let Some(c) = row.pop_front() {
+                let id = match &c.target {
+                    Target::Album(i) | Target::Playlist(i) | Target::Artist(i) => Some(i.clone()),
+                    Target::Song(t) => Some(t.id.clone()),
+                };
+                if id.map_or(true, |id| seen.insert(id)) {
+                    out.push(c);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// "Episodes for later" is listed even when empty; hide it then.

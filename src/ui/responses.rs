@@ -385,6 +385,24 @@ impl App {
                     self.rebuild_gacha_pool();
                 }
             }
+            Resp::AllTimeHits(hits) => {
+                if !hits.is_empty() {
+                    self.all_time_hits = hits;
+                }
+            }
+            Resp::CommunityPlaylists(cards) => {
+                if !cards.is_empty() {
+                    self.community = cards;
+                }
+            }
+            Resp::ArtistVideos { live, videos } => {
+                if !live.is_empty() {
+                    self.live_shows = live;
+                }
+                if !videos.is_empty() {
+                    self.videos_for_you = videos;
+                }
+            }
             Resp::Uploads(t) => {
                 self.uploads = Some(t);
                 if self.page == Page::Library(LibTab::Uploads) {
@@ -710,6 +728,14 @@ impl App {
         if !seeds.is_empty() {
             self.backend.request(Req::DailyDiscover { seeds, taste: lite });
         }
+        // "All time hits" answers to nobody's taste; the community and video rows
+        // grow from the artists you play — three of the top ten for the playlists,
+        // the six most listened for the videos
+        self.backend.request(Req::AllTimeHits);
+        let mut top = taste.top_artists.iter().take(10).cloned().collect::<Vec<_>>();
+        shuffle(&mut top);
+        self.backend.request(Req::CommunityPlaylists(top.iter().take(3).filter_map(|(a, _)| a.id.clone().map(|id| (id, a.name.clone()))).collect()));
+        self.backend.request(Req::ArtistVideos(taste.top_artists.iter().take(6).filter_map(|(a, _)| a.id.clone().map(|id| (id, a.name.clone()))).collect()));
     }
 
     /// Home's local rows, rebuilt from the listening history: recently played,

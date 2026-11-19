@@ -519,9 +519,18 @@ fn home(app: &mut App, ui: &mut Ui, now: f64) {
     if reco.len() < 3 && !new_from.is_empty() {
         card_row(ui, "reco-new", "New from your artists", &new_from, &mut app.actions);
     }
+    // From the community — playlists off the artists you play that aren't YouTube's
+    // own — and the live shows and music videos of theirs
+    card_row(ui, "local-community", "From the community", &app.community, &mut app.actions);
+    card_row(ui, "local-live", "Live shows", &app.live_shows, &mut app.actions);
+    card_row(ui, "local-videos", "Music videos for you", &app.videos_for_you, &mut app.actions);
     let Some(h) = &app.home else { return };
     let mut more_picks = None;
     for (i, s) in h.shelves.iter().enumerate() {
+        // "All time hits" after the first feed shelf, the way Mochy slots the charts in
+        if i == 1 {
+            card_row(ui, "local-hits", "All time hits", &app.all_time_hits, &mut app.actions);
+        }
         let id = format!("home-{i}-{}", s.title);
         match &s.kind {
             ShelfKind::Cards(cards) => {

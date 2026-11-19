@@ -888,6 +888,7 @@ fn parse_artist(v: &Value, id: &str) -> Option<ArtistPage> {
         singles: Vec::new(),
         playlists: Vec::new(),
         similar: Vec::new(),
+        videos: Vec::new(),
         albums_more: None,
         singles_more: None,
         name,
@@ -930,6 +931,8 @@ fn parse_artist(v: &Value, id: &str) -> Option<ArtistPage> {
                 }
                 Target::Playlist(_) => page.playlists.push(card),
                 Target::Artist(_) => page.similar.push(card),
+                // a video or live performance: a song card that plays as one
+                Target::Song(ref t) if t.has_video() => page.videos.push(card),
                 Target::Song(_) => {}
             }
         }
@@ -1534,6 +1537,7 @@ fn parse_upload_artist(v: &Value, id: &str) -> Option<(ArtistPage, Option<String
         singles: Vec::new(),
         playlists: Vec::new(),
         similar: Vec::new(),
+        videos: Vec::new(),
         albums_more: None,
         singles_more: None,
     };
