@@ -349,19 +349,32 @@ impl Card {
 
 pub struct Discord {
     tx: Sender<Option<Card>>,
+    join: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Discord {
     pub fn spawn() -> Option<Self> {
         let id = std::env::var("YTM_DISCORD_ID").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| CLIENT_ID.to_owned());
         let (tx, rx) = crossbeam_channel::unbounded();
-        std::thread::Builder::new().name("discord".into()).spawn(move || run(&id, rx)).ok()?;
-        Some(Self { tx })
+        let join = std::thread::Builder::new().name("discord".into()).spawn(move || run(&id, rx)).ok()?;
+        Some(Self { tx, join: Some(join) })
     }
 
     /// `None` clears the status (paused / stopped).
     pub fn set(&self, card: Option<Card>) {
         let _ = self.tx.send(card);
+    }
+
+    /// The app is quitting: take the status down, then close the pipe. Discord keeps
+    /// a presence up for a while after the app behind it goes away, so the clear has
+    /// to actually be sent — the worker finishes it before this returns — and a
+    /// Discord that's closed anyway was never showing anything to keep.
+    pub fn quit(mut self) {
+        let _ = self.tx.send(None);
+        drop(self.tx);
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
     }
 }
 
