@@ -81,7 +81,10 @@ impl App {
                 self.play_list(vec![t.clone()], 0);
                 if !self.radio_pending {
                     self.radio_pending = true;
-                    self.backend.request(Req::Radio { song_of: self.song_of(&t), seed: t.id });
+                    // the taste travels with the ask: the song itself plays whatever it
+                    // is (the listener chose it), only what lines up around it is ruled on
+                    let taste = crate::recommend::TasteLite::of(&self.listening, self.hide_explicit);
+                    self.backend.request(Req::Radio { song_of: self.song_of(&t), seed: t.id, taste });
                 }
             }
             Action::NotRecommended(t) => {

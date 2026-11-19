@@ -498,8 +498,20 @@ impl App {
                     }
                 }
             }
-            Resp::Radio { seed, tracks } => {
+            Resp::Radio { seed, tracks, autoplay } => {
                 self.radio_pending = false;
+                if autoplay {
+                    if tracks.is_empty() {
+                        // nothing landed: ask again soon, not every frame
+                        self.radio_retry_at = Some(std::time::Instant::now() + std::time::Duration::from_secs(10));
+                    } else {
+                        self.radio_retry_at = None;
+                        // what autoplay served sits out of recommendations a while, so
+                        // the next one doesn't hand it straight back
+                        self.listening.note_reco(&tracks);
+                        self.listening.store(self.backend.data_dir());
+                    }
+                }
                 let was_at_end = self.queue.add_radio(&seed, tracks);
                 if was_at_end && self.queue.index.is_some() && !self.buffering && !self.playing() {
                     // The track ended while radio was loading: continue now.
@@ -1054,6 +1066,9 @@ impl App {
         self.loading = false;
         self.home_loading = false;
         self.radio_pending = false;
+        // An autoplay radio that failed is the queue still at its end: without a
+        // cooldown it would fire again the very next frame.
+        self.radio_retry_at = Some(std::time::Instant::now() + std::time::Duration::from_secs(10));
         if let Some(h) = &mut self.home {
             h.loading_more = None;
             h.picks_loading = false;
