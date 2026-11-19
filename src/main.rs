@@ -37,6 +37,7 @@ mod opus;
 mod party;
 mod preset;
 mod providers;
+mod recommend;
 mod shader;
 mod sponsorblock;
 mod stream;
