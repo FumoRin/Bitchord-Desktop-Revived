@@ -27,6 +27,19 @@ pub enum Req {
     /// The account's history and its fifty newest likes, to start the local taste
     /// from on a first run (see `crate::listening`).
     SeedTaste,
+    /// Home's "Because you like <song>" rows: each seed song's radio, picked. The
+    /// taste parts travel along — the picking runs here, the listening lives on
+    /// the UI thread.
+    BecauseYouLike { seeds: Vec<Track>, taste: crate::recommend::TasteLite },
+    /// Home's "More like <artist>" rows: each artist's radio minus the artist,
+    /// one song per act. `artists`: (browse id, name), three of the top eight.
+    MoreLike { artists: Vec<(String, String)>, taste: crate::recommend::TasteLite },
+    /// Home's genre rows: the ones your top artists are filed under — iTunes knows
+    /// a genre, YouTube doesn't — and a few you don't play yet. `artists`:
+    /// (name, seconds listened) of the top twelve.
+    GenreRows { artists: Vec<(String, u64)>, taste: crate::recommend::TasteLite },
+    /// This year's and last's releases from the artists you play most, their ids.
+    NewFromArtists(Vec<String>),
     Explore(Vec<String>),
     /// A Moods & genres category, by its browse params.
     Mood(String),
@@ -138,6 +151,10 @@ impl Req {
             Req::Home(_) | Req::HomeMore(_) => "Loading home",
             Req::MoreQuickPicks(_) => "Loading more picks",
             Req::SeedTaste => "Loading your taste",
+            Req::BecauseYouLike { .. } => "Growing your song rows",
+            Req::MoreLike { .. } => "Growing your artist rows",
+            Req::GenreRows { .. } => "Growing your genre rows",
+            Req::NewFromArtists(_) => "Loading new releases",
             Req::Explore(_) => "Loading new",
             Req::Mood(_) => "Loading the category",
             Req::Search(_) | Req::SearchIn { .. } => "Search",
@@ -187,7 +204,7 @@ impl Req {
 
     /// Background requests fail quietly (logged, no toast).
     fn quiet(&self) -> bool {
-        matches!(self, Req::Suggest { .. } | Req::Account | Req::Channels | Req::ServerQueue | Req::Art { .. } | Req::Canvas { .. } | Req::SpotifyCanvas { .. } | Req::ArtistSignature { .. } | Req::Prefetch { .. } | Req::HomeMore(_) | Req::SeedTaste | Req::MusicVideo(_) | Req::Lyrics(_) | Req::Segments { .. } | Req::LyricsExtras { .. } | Req::Comments { .. } | Req::CommentsPage { .. } | Req::CommentAction { .. })
+        matches!(self, Req::Suggest { .. } | Req::Account | Req::Channels | Req::ServerQueue | Req::Art { .. } | Req::Canvas { .. } | Req::SpotifyCanvas { .. } | Req::ArtistSignature { .. } | Req::Prefetch { .. } | Req::HomeMore(_) | Req::SeedTaste | Req::BecauseYouLike { .. } | Req::MoreLike { .. } | Req::GenreRows { .. } | Req::NewFromArtists(_) | Req::MusicVideo(_) | Req::Lyrics(_) | Req::Segments { .. } | Req::LyricsExtras { .. } | Req::Comments { .. } | Req::CommentsPage { .. } | Req::CommentAction { .. })
     }
 }
 
@@ -367,6 +384,12 @@ pub enum Resp {
     History(Vec<Track>),
     /// The account's history and newest likes, to seed the local taste from.
     SeedTaste { history: Vec<Track>, liked: Vec<Track> },
+    /// Rows for Home, grown from the listening (see `crate::recommend`); a failed
+    /// fetch answers with nothing, and the rows already on screen stay.
+    RecoRows(Vec<crate::recommend::Row>),
+    /// "New from your artists": this year's and last's releases, at least three
+    /// of them (fewer answered nothing, and the row stays off).
+    NewFromArtists(Vec<Card>),
     Uploads(Vec<Track>),
     Account { name: Option<String>, photo: Option<String> },
     Channels(Channels),
@@ -442,6 +465,8 @@ impl Resp {
                 | Resp::Library(_)
                 | Resp::History(_)
                 | Resp::SeedTaste { .. }
+                | Resp::RecoRows(_)
+                | Resp::NewFromArtists(_)
                 | Resp::Uploads(_)
                 | Resp::Account { .. }
                 | Resp::Channels(_)
@@ -1149,6 +1174,62 @@ impl Backend {
                     let (history, liked) = tokio::join!(ytm::history(api), ytm::playlist(api, "LM", true, Some(50)));
                     Resp::SeedTaste { history: history?, liked: liked.map(|c| c.tracks).unwrap_or_default() }
                 }
+                Req::BecauseYouLike { seeds, taste } => {
+                    let hide = taste.hide_explicit;
+                    let taste = crate::recommend::Taste::from_parts(&taste);
+                    // one row per seed; a seed that fails leaves its row out, not the lot
+                    let rows = futures_util::future::join_all(seeds.iter().map(|seed| {
+                        let taste = &taste;
+                        async move {
+                            let queue = ytm::radio(api, &seed.id, me, 25).await.ok()?;
+                            let tracks = crate::recommend::pick(queue, taste, hide, 10, 2, &mut crate::recommend::Rng::new());
+                            (!tracks.is_empty()).then(|| crate::recommend::Row {
+                                kind: crate::recommend::Kind::BecauseYouLike,
+                                title: seed.title.clone(),
+                                thumb: model::pick(&seed.thumbs, 544).map(str::to_owned),
+                                tracks,
+                                endpoint: None,
+                            })
+                        }
+                    }))
+                    .await
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                    Resp::RecoRows(rows)
+                }
+                Req::MoreLike { artists, taste } => {
+                    let hide = taste.hide_explicit;
+                    let taste = crate::recommend::Taste::from_parts(&taste);
+                    let rows = futures_util::future::join_all(artists.iter().map(|(id, name)| {
+                        let taste = &taste;
+                        let (id, name) = (id.as_str(), name.as_str());
+                        async move {
+                            let page = ytm::artist(api, id, me).await.ok()?;
+                            // the artist's radio, minus the artist themselves
+                            let queue = ytm::radio_playlist(api, &format!("RDATAR{id}"), me, 40).await.ok()?;
+                            let others: Vec<Track> = queue.into_iter().filter(|song| song.artists.iter().all(|a| a.id.as_deref() != Some(id) && !a.name.eq_ignore_ascii_case(name))).collect();
+                            let tracks = crate::recommend::pick(others, taste, hide, 12, 1, &mut crate::recommend::Rng::new());
+                            (!tracks.is_empty()).then(|| crate::recommend::Row {
+                                kind: crate::recommend::Kind::MoreLike,
+                                title: name.to_owned(),
+                                thumb: model::pick(&page.banner, 120).map(str::to_owned),
+                                tracks,
+                                endpoint: Some(crate::recommend::Endpoint::Artist(id.to_owned())),
+                            })
+                        }
+                    }))
+                    .await
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                    Resp::RecoRows(rows)
+                }
+                Req::GenreRows { artists, taste } => self.genre_rows(&artists, &taste, me).await?,
+                Req::NewFromArtists(ids) => match self.new_from_artists(&ids, me).await? {
+                    Some(cards) => Resp::NewFromArtists(cards),
+                    None => return Ok(None),
+                },
                 Req::Uploads => Resp::Uploads(ytm::uploads(api).await?),
                 Req::Account => {
                     let (name, photo) = ytm::account(api).await?;
@@ -1369,6 +1450,101 @@ impl Backend {
             top: charts.top,
             moods: moods.unwrap_or_default(),
         }))
+    }
+
+    /// Home's genre rows: up to three genres your top artists are filed under,
+    /// weighted by listening, and the rest ones you don't play yet, each with nine
+    /// songs off its page. The taste parts pick them; the artists' genres come from
+    /// iTunes, which knows one where YouTube only names tiles.
+    async fn genre_rows(&self, artists: &[(String, u64)], taste: &crate::recommend::TasteLite, me: bool) -> anyhow::Result<Resp> {
+        let api = &*self.api;
+        let hide = taste.hide_explicit;
+        let groups = ytm::moods(api, me).await?;
+        // the grid whose titles read as genres; the other one is moods
+        let genres: Vec<(String, String)> = groups
+            .iter()
+            .max_by_key(|g| crate::recommend::genre_score(&g.moods.iter().map(|m| m.title.clone()).collect::<Vec<_>>()))
+            .map(|g| g.moods.iter().map(|m| (m.title.clone(), m.params.clone())).collect())
+            .filter(|g: &Vec<_>| !g.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("no genre grid"))?;
+        let titles: Vec<String> = genres.iter().map(|(t, _)| t.clone()).collect();
+
+        let http = self.http();
+        let found = futures_util::future::join_all(artists.iter().map(|(name, secs)| {
+            let http = &http;
+            async move { (itunes_genre(http, name).await, *secs) }
+        }))
+        .await;
+        let mut weights: std::collections::HashMap<usize, u64> = Default::default();
+        for (genre, secs) in found {
+            let Some(genre) = genre else { continue };
+            let Some(i) = crate::recommend::match_genre(&genre, &titles) else { continue };
+            *weights.entry(i).or_default() += secs.max(1);
+        }
+        let mut top: Vec<(usize, u64)> = weights.into_iter().collect();
+        top.sort_by(|a, b| b.1.cmp(&a.1));
+        let yours: Vec<usize> = top.into_iter().take(3).map(|(i, _)| i).collect();
+        let mut fresh: Vec<usize> = (0..genres.len()).filter(|i| !yours.contains(i) && crate::recommend::is_genre(&titles[*i])).collect();
+        crate::recommend::Rng::new().shuffle(&mut fresh);
+        fresh.truncate(5usize.saturating_sub(yours.len()));
+
+        let picks: Vec<(usize, crate::recommend::Kind)> = yours
+            .iter()
+            .map(|i| (*i, crate::recommend::Kind::YourGenre))
+            .chain(fresh.iter().map(|i| (*i, crate::recommend::Kind::NewGenre)))
+            .collect();
+        let taste = crate::recommend::Taste::from_parts(taste);
+        let rows = futures_util::future::join_all(picks.iter().map(|(i, kind)| {
+            let taste = &taste;
+            let params = genres[*i].1.clone();
+            async move {
+                let page = ytm::mood(api, &params, me).await.ok()?;
+                // every song the page lists, a shuffle of it, then the pick
+                let mut songs: Vec<Track> = Vec::new();
+                for s in &page.shelves {
+                    if let crate::model::ShelfKind::Songs { tracks, .. } = &s.kind {
+                        songs.extend(tracks.iter().cloned());
+                    }
+                }
+                songs.truncate(40);
+                crate::recommend::Rng::new().shuffle(&mut songs);
+                let tracks = crate::recommend::pick(songs, taste, hide, 9, 2, &mut crate::recommend::Rng::new());
+                let title = page.title;
+                (!tracks.is_empty()).then(|| crate::recommend::Row { kind: *kind, title, tracks, thumb: None, endpoint: Some(crate::recommend::Endpoint::Mood(params)) })
+            }
+        }))
+        .await
+        .into_iter()
+        .flatten()
+        .collect();
+        Ok(Resp::RecoRows(rows))
+    }
+
+    /// "New from your artists": the newest album and single off each of the top
+    /// artists' pages, this year's and last's, at least three of them.
+    async fn new_from_artists(&self, ids: &[String], me: bool) -> anyhow::Result<Option<Vec<Card>>> {
+        let api = &*self.api;
+        let pages = futures_util::future::join_all(ids.iter().map(|id| async move { ytm::artist(api, id, me).await.ok() })).await;
+        let last_year = crate::listening::unix_now() / 31_557_600 + 1970 - 1;
+        let mut releases: Vec<Card> = pages
+            .iter()
+            .flatten()
+            // "Albums" and "Singles & EPs" list the newest first
+            .flat_map(|page| page.albums.iter().chain(&page.singles).take(2))
+            .filter(|c| card_year(c).is_some_and(|y| y >= last_year))
+            .cloned()
+            .collect();
+        let mut seen = std::collections::HashSet::new();
+        releases.retain(|c| {
+            let id = match &c.target {
+                Target::Album(id) | Target::Playlist(id) | Target::Artist(id) => Some(id.as_str()),
+                Target::Song(_) => None,
+            };
+            id.map(|id| seen.insert(id.to_owned())).unwrap_or(true)
+        });
+        releases.sort_by(|a, b| card_year(b).cmp(&card_year(a)));
+        releases.truncate(12);
+        Ok((releases.len() >= 3).then_some(releases))
     }
 
     /// Songs, videos, albums, artists and playlists for a search, asked at once (podcast
@@ -3035,6 +3211,42 @@ fn popular_new_albums(albums: &[Card], ranked_artists: &[String], preferred_arti
         .take(16)
         .cloned()
         .collect()
+}
+
+/// iTunes' main genre for an artist, the way Mochy's `ListeningGenres` finds it:
+/// the same name first, otherwise the top hit. YouTube never says what genre
+/// anything is; Apple does.
+async fn itunes_genre(http: &reqwest::Client, name: &str) -> Option<String> {
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("term", name.trim())
+        .append_pair("media", "music")
+        .append_pair("entity", "musicArtist")
+        .append_pair("limit", "5")
+        .finish();
+    let body: serde_json::Value = http
+        .get(format!("https://itunes.apple.com/search?{query}"))
+        .header("User-Agent", "Mozilla/5.0")
+        .timeout(std::time::Duration::from_secs(8))
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    let results = body["results"].as_array()?;
+    if results.is_empty() {
+        return None;
+    }
+    let found = results
+        .iter()
+        .find(|r| r["artistName"].as_str().is_some_and(|a| a.trim().eq_ignore_ascii_case(name.trim())))
+        .unwrap_or(&results[0]);
+    found["primaryGenreName"].as_str().map(str::trim).filter(|g| !g.is_empty()).map(str::to_owned)
+}
+
+/// A release card's year, as its subtitle spells it out ("Album • Artist • 2024").
+fn card_year(c: &Card) -> Option<u64> {
+    c.subtitle.split([' ', '•', ',']).find_map(|t| t.trim().parse::<u64>().ok().filter(|y| (1950..=2100).contains(y)))
 }
 
 /// "Episodes for later" is listed even when empty; hide it then.

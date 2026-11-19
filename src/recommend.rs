@@ -92,6 +92,16 @@ impl Rng {
     }
 }
 
+/// What the backend's row requests carry: the parts of the taste their picking
+/// needs. The taste itself is built on the UI thread, where the listening lives.
+#[derive(Clone, Debug, Default)]
+pub struct TasteLite {
+    pub heard: Vec<String>,
+    pub avoid_songs: Vec<String>,
+    pub avoid_artists: Vec<String>,
+    pub hide_explicit: bool,
+}
+
 /// The taste, read once per load and shared by every row (Mochy's `TasteProfile`).
 #[derive(Clone, Debug)]
 pub struct Taste {
@@ -107,6 +117,23 @@ pub struct Taste {
 }
 
 impl Taste {
+    /// A taste from the parts a request carries — for the picking, which needs
+    /// neither seeds nor top artists.
+    pub fn from_parts(l: &TasteLite) -> Self {
+        Self {
+            heard: l.heard.iter().cloned().collect(),
+            avoid_songs: l.avoid_songs.clone(),
+            avoid_artists: l.avoid_artists.iter().cloned().collect(),
+            song_seeds: Vec::new(),
+            top_artists: Vec::new(),
+        }
+    }
+
+    /// The parts to send along with the asks (see `Taste::build` on the UI side).
+    pub fn lite(&self, hide_explicit: bool) -> TasteLite {
+        TasteLite { heard: self.heard.iter().cloned().collect(), avoid_songs: self.avoid_songs.clone(), avoid_artists: self.avoid_artists.iter().cloned().collect(), hide_explicit }
+    }
+
     /// A play today counts 1, two weeks ago about a third, three months ago next
     /// to nothing; a like says more than a play (the newest fifty count). What you
     /// skipped or named "Not recommended" never comes back as a recommendation.

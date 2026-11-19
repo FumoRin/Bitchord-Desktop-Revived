@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 use egui::{Align2, Color32, Rect, RichText, Sense, Ui, Vec2, pos2, vec2};
 
 use super::row_drag;
-use super::widgets::{self, RowOpts, card, chip, h_scroll, named, paint_cover, pill, shelf_header, track_row};
+use super::widgets::{self, RowOpts, card, chip, h_scroll, named, paint_cover, pill, shelf_header, shelf_header_ext, track_row};
 use super::{Action, App, LibTab, Page, ProviderVerdicts, Selection};
 use crate::backend::{PlaylistSort, compact};
 use crate::model::{Card, ShelfKind, Target, Track};
@@ -489,9 +489,23 @@ fn home(app: &mut App, ui: &mut Ui, now: f64) {
     }
     let rows = Rows::new(app, now);
     let Some(h) = &app.home else { return };
-    if h.shelves.is_empty() {
+    // The rows grown from what you play here (the HomeRecommender port), and the
+    // releases from the artists you play most, which follow the first round of them.
+    let reco: Vec<crate::recommend::Row> = app.reco.rows.clone();
+    let new_from = app.reco.new_from.clone();
+    if h.shelves.is_empty() && reco.is_empty() && new_from.is_empty() {
         ui.add_space(40.0);
         ui.label(RichText::new("Nothing here yet").color(theme::text_dim()));
+    }
+    for (i, r) in reco.iter().enumerate() {
+        if i == 3 && !new_from.is_empty() {
+            card_row(ui, "reco-new", "New from your artists", &new_from, &mut app.actions);
+        }
+        let id = format!("reco-{i}-{}", r.title);
+        reco_grid(ui, &rows, &app.liked, &mut app.actions, &id, r);
+    }
+    if reco.len() < 3 && !new_from.is_empty() {
+        card_row(ui, "reco-new", "New from your artists", &new_from, &mut app.actions);
     }
     let mut more_picks = None;
     for (i, s) in h.shelves.iter().enumerate() {
@@ -533,6 +547,52 @@ fn home(app: &mut App, ui: &mut Ui, now: f64) {
     }
     if loading_more {
         widgets::skeleton(ui, now, 1, CARD);
+    }
+}
+
+/// One of Home's recommendation rows (the HomeRecommender port): a song grid with
+/// a header for what it grew from — the seed's cover beside the title, a Show all
+/// onto the artist or genre — and clicking a song starts its radio, as the feed's do.
+fn reco_grid(ui: &mut Ui, rows_ctx: &Rows, liked: &HashSet<String>, acts: &mut Vec<Action>, id: &str, r: &crate::recommend::Row) {
+    let strap = match r.kind {
+        crate::recommend::Kind::BecauseYouLike => "Because you like",
+        crate::recommend::Kind::MoreLike => "More like",
+        crate::recommend::Kind::YourGenre => "Because you listen to",
+        crate::recommend::Kind::NewGenre => "Try something new",
+    };
+    let (l, right, show_all) = shelf_header_ext(ui, &r.title, Some(strap), r.thumb.as_deref(), true, r.endpoint.is_some());
+    if show_all {
+        match r.endpoint.as_ref() {
+            Some(crate::recommend::Endpoint::Artist(id)) => acts.push(Action::Go(Page::Artist(id.clone()))),
+            Some(crate::recommend::Endpoint::Mood(params)) => acts.push(Action::Go(Page::Mood(params.clone()))),
+            None => {}
+        }
+    }
+    let tracks: Vec<&Track> = r.tracks.iter().filter(|t| rows_ctx.shows(t)).collect();
+    if tracks.is_empty() {
+        return;
+    }
+    let nudge = right as i32 - l as i32;
+    let col_w = feed_tile(ui, false);
+    let mut picked = None;
+    h_scroll(ui, id, nudge, tracks.len().div_ceil(3), col_w, 20.0, |ui| {
+        ui.spacing_mut().item_spacing.x = 20.0;
+        for (c, col) in tracks.chunks(3).enumerate() {
+            ui.allocate_ui(vec2(col_w, 3.0 * 60.0), |ui| {
+                ui.set_width(col_w);
+                ui.vertical(|ui| {
+                    for (i, t) in col.iter().enumerate() {
+                        let o = rows_ctx.opts(liked, t, None, false);
+                        if track_row(ui, t, &o, acts).clicked() {
+                            picked = Some(c * 3 + i);
+                        }
+                    }
+                });
+            });
+        }
+    });
+    if let Some(i) = picked {
+        acts.push(Action::Radio(Track::clone(tracks[i])));
     }
 }
 

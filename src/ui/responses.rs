@@ -17,6 +17,9 @@ impl App {
         // Whatever the song on now has got of actual listening, before anything else
         // moves the player on this frame.
         self.watch_listening(now);
+        // Home's rows grow from that listening: ask once, again after a few plays or
+        // skips, and every half hour (see `ask_reco`).
+        self.ask_reco(now);
         // The per-song canvas bookkeeping grows a little with every track played; keep
         // it bounded. A forgotten song asks again — Apple's answers are on disk, and a
         // Spotify miss only means a fresh 10-minute window.
@@ -367,6 +370,13 @@ impl App {
                 self.listening.seed_from(history, liked);
                 self.listening.store(self.backend.data_dir());
             }
+            Resp::RecoRows(rows) => self.reco.land(rows),
+            Resp::NewFromArtists(cards) => {
+                // An empty answer is a thin one, not nothing to show: keep what's there.
+                if !cards.is_empty() {
+                    self.reco.new_from = cards;
+                }
+            }
             Resp::Uploads(t) => {
                 self.uploads = Some(t);
                 if self.page == Page::Library(LibTab::Uploads) {
@@ -628,6 +638,62 @@ impl App {
             Resp::LoggedIn(v) => self.on_logged_in(v, now),
             Resp::Error(e) => self.on_error(e),
         }
+    }
+
+    /// Ask for Home's recommendation rows, grown from what you play here (the
+    /// HomeRecommender port): once, again after two skips or four plays — never
+    /// within a minute of the last ask — and every half hour. Nothing played and
+    /// nothing liked leaves nothing to grow from; subscribed artists stand in for
+    /// a first signed-in run.
+    fn ask_reco(&mut self, now: f64) {
+        if self.reco_asked.is_some_and(|t| now - t < 60.0) {
+            return;
+        }
+        let never = self.reco_asked.is_none();
+        let stale = self.reco_asked.is_some_and(|t| now - t > 1800.0);
+        let moved = self.listening.refresh_due();
+        if !never && !stale && !moved {
+            return;
+        }
+        let library: Vec<crate::model::Card> = self
+            .library
+            .as_ref()
+            .map(|l| l.artists.clone())
+            .or_else(|| self.sidebar_cache.clone())
+            .unwrap_or_default();
+        let fallback: Vec<(String, String)> = library
+            .iter()
+            .filter_map(|c| match &c.target {
+                crate::model::Target::Artist(id) => Some((c.title.clone(), id.clone())),
+                _ => None,
+            })
+            .collect();
+        let taste = crate::recommend::Taste::build(&self.listening, fallback);
+        if taste.song_seeds.is_empty() && taste.top_artists.is_empty() {
+            return;
+        }
+        self.reco_asked = Some(now);
+        self.listening.mark_refreshed();
+        let lite = taste.lite(self.hide_explicit);
+        self.backend.request(Req::BecauseYouLike {
+            seeds: taste.song_seeds.iter().take(4).cloned().collect(),
+            taste: lite.clone(),
+        });
+        let mut artists = taste.top_artists.iter().take(8).cloned().collect::<Vec<_>>();
+        shuffle(&mut artists);
+        self.backend.request(Req::MoreLike {
+            artists: artists
+                .iter()
+                .take(3)
+                .filter_map(|(a, _)| a.id.clone().map(|id| (id, a.name.clone())))
+                .collect(),
+            taste: lite.clone(),
+        });
+        self.backend.request(Req::GenreRows {
+            artists: taste.top_artists.iter().take(12).map(|(a, secs)| (a.name.clone(), *secs)).collect(),
+            taste: lite.clone(),
+        });
+        self.backend.request(Req::NewFromArtists(taste.top_artists.iter().take(8).filter_map(|(a, _)| a.id.clone()).collect()));
     }
 
     /// The home feed, replacing the one shown.

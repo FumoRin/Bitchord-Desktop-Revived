@@ -1029,8 +1029,15 @@ fn first_string(v: &Value, key: &str) -> Option<String> {
 }
 
 pub async fn radio(api: &Api, video_id: &str, auth: bool, limit: usize) -> anyhow::Result<Vec<Track>> {
+    radio_playlist(api, &format!("RDAMVM{video_id}"), auth, limit).await
+}
+
+/// A radio's queue, whatever seeded it — a song's (`RDAMVM…`) or an artist's
+/// (`RDATAR…`). The same `next` panel, the same paging; Home's "More like" rows
+/// grow from the artist ones.
+pub async fn radio_playlist(api: &Api, playlist_id: &str, auth: bool, limit: usize) -> anyhow::Result<Vec<Track>> {
     let body = json!({
-        "playlistId": format!("RDAMVM{video_id}"),
+        "playlistId": playlist_id,
         "params": "wAEB8gECeAE%3D",
         "enablePersistentPlaylistPanel": true,
         "isAudioOnly": true,
