@@ -205,7 +205,7 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
         app.np_tab
     };
     // Linear 0..1 over the transition; each part eases its own slice of it.
-    let shown = ui.ctx().animate_bool_with_time(egui::Id::unique("np-panel"), app.np_tab != NpTab::Art, 0.6 * theme::SPEED);
+    let shown = ui.ctx().animate_bool_with_time(egui::Id::unique("np-panel"), app.np_tab != NpTab::Art, 0.6 * theme::speed());
     if shown > 0.0 && shown < 1.0 {
         // Every frame while sliding, not the now-playing view's usual 30 fps.
         ui.ctx().request_repaint();
@@ -268,7 +268,7 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
         // Switching between Lyrics and Up next: the old one fades out over the first 55%,
         // the new one fades in and rises into place from a third of the way.
         for (tab, key) in [(NpTab::Lyrics, "np-tab-lyrics"), (NpTab::UpNext, "np-tab-upnext"), (NpTab::Comments, "np-tab-comments")] {
-            let w = ui.ctx().animate_bool_with_time(egui::Id::unique(key), panel_tab == tab, 0.45 * theme::SPEED);
+            let w = ui.ctx().animate_bool_with_time(egui::Id::unique(key), panel_tab == tab, 0.45 * theme::speed());
             if w > 0.0 && w < 1.0 {
                 ui.ctx().request_repaint();
             }
@@ -754,16 +754,18 @@ fn cover_column(app: &mut App, ui: &mut Ui, col: Rect, track: &crate::model::Tra
     let round = cs.shape != Shape::Rounded;
     let radius = if round { side / 2.0 } else { cs.radius.clamp(0.0, side / 2.0) };
     let cr = egui::CornerRadius::same(radius.min(255.0) as u8);
-    if cs.glow > 0.0 {
+    // Settings › Appearance: the sleeve's shadow and glow can be left out entirely.
+    if app.cover_fx && cs.glow > 0.0 {
         let s = egui::epaint::Shadow { offset: [0, 16], blur: 90, spread: 6, color: theme::with_alpha(app.accent_color(), cs.glow.min(1.0) * 0.7) };
         ui.painter().add(s.as_shape(art, cr));
     }
-    if cs.shadow > 0.0 {
+    if app.cover_fx && cs.shadow > 0.0 {
         widgets::soft_shadow(ui, art, radius.min(255.0), 60.0, cs.shadow.min(1.0));
     }
     let tint = Color32::from_gray((cs.brightness.clamp(0.1, 1.0) * 255.0) as u8);
     if round {
-        if cs.shape == Shape::Record && app.playing() {
+        // Reduce motion (Settings › Appearance) stops the spin, not the shape.
+        if cs.shape == Shape::Record && app.playing() && !app.reduce_motion {
             let dt = ui.input(|i| i.stable_dt).min(0.1) as f64;
             app.record_angle = (app.record_angle + dt * std::f64::consts::TAU / cs.spin_secs.max(4.0) as f64) % std::f64::consts::TAU;
         }
@@ -1109,7 +1111,25 @@ fn decorations<'a>(
 }
 
 fn synced(app: &mut App, ui: &mut Ui, rect: Rect, id: &str, lyrics: &Lyrics, now: f64, narrow: bool) {
-    let style = &app.look().lyrics;
+    // Settings › Appearance: the theme's lyrics with the blur and glow off, built once
+    // per theme and kept on the App — the karaoke view caches its layout by the style's
+    // address, so a fresh copy each frame would relayout every frame.
+    if !app.lyric_fx && app.plain_style.as_ref().is_none_or(|(theme, _)| *theme != app.look().id) {
+        let look = app.look();
+        let mut plain = look.lyrics.clone();
+        plain.blur = 0.0;
+        plain.glow = 0.0;
+        if let Some(css) = &mut plain.css {
+            css.past = css.past.map(|[opacity, _]| [opacity, 0.0]);
+            css.upcoming = css.upcoming.map(|[opacity, _]| [opacity, 0.0]);
+        }
+        app.plain_style = Some((look.id.clone(), plain));
+    }
+    let style = if app.lyric_fx {
+        &app.look().lyrics
+    } else {
+        &app.plain_style.as_ref().expect("just built").1
+    };
     let accent = app.accent_color();
     let centered = narrow || style.align == crate::preset::Align::Center;
     let playing = if app.mix_hold().is_some() { app.audio.status.outgoing_playing() } else { app.playing() };

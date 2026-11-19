@@ -2062,10 +2062,6 @@ fn settings_playback(app: &mut App, ui: &mut Ui) {
             });
         });
         divider(ui);
-        setting_row(ui, "Ambient light", Some("Now playing glows with the video's colours around it."), |ui| {
-            toggle(ui, &mut app.ambient_light, "Ambient light");
-        });
-        divider(ui);
         setting_row(ui, "Hide videos in search", Some("Only songs, albums, artists and playlists in search results."), |ui| {
             toggle(ui, &mut app.hide_search_videos, "Hide videos in search");
         });
@@ -2922,7 +2918,10 @@ fn settings_lyrics(app: &mut App, ui: &mut Ui) {
         });
         divider(ui);
         setting_row(ui, "Lyrics at the screen's refresh rate", Some("Synced lyrics animate as fast as your screen refreshes, such as 144 fps on a 144 Hz monitor, instead of 60. Smoother on fast screens, for more CPU and graphics work."), |ui| {
-            toggle(ui, &mut app.lyrics_full_rate, "Lyrics at the screen's refresh rate");
+            if toggle(ui, &mut app.lyrics_full_rate, "Lyrics at the screen's refresh rate").changed() {
+                // A bundle (Settings › Appearance) set this too; a hand change isn't one.
+                app.visual = theme::VisualPreset::Custom;
+            }
         });
         divider(ui);
         // Intensive glow: the sung words' drop-shadow lit much harder than the look
@@ -3055,20 +3054,52 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
             app.appearance = a;
         }
         divider(ui);
+        // The row and its bundle: picking one sets every setting it owns, and changing
+        // any of those by hand (here or in Lyrics, for the refresh rate) returns to
+        // Custom, so the label never claims a bundle that isn't in force.
+        setting_row(ui, "Visual preset", Some("A bundle of the visual settings below. Barebones turns every animation, blur and glow off for older computers — Now playing becomes a flat backdrop with a still cover; nothing about playback changes. High visual turns them all on. Changing any of these settings afterwards returns to Custom."), |ui| {
+            let mut pick = None;
+            let btn = dropdown_button(ui, app.visual.label(), 160.0, "Visual preset");
+            egui::Popup::menu(&btn).show(|ui| {
+                ui.set_width(160.0);
+                ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                ui.add_space(4.0);
+                for v in theme::VisualPreset::ALL {
+                    if option_row(ui, v.label(), v == app.visual).clicked() {
+                        pick = Some(v);
+                        ui.close();
+                    }
+                }
+                ui.add_space(4.0);
+            });
+            if let Some(v) = pick {
+                app.visual = v;
+                app.apply_visual(Some(ui.ctx()));
+            }
+        });
+        divider(ui);
         setting_row(ui, "Animated background", Some("The album art slowly drifts behind everything."), |ui| {
-            toggle(ui, &mut app.anim_bg, "Animated background");
+            if toggle(ui, &mut app.anim_bg, "Animated background").changed() {
+                app.visual = theme::VisualPreset::Custom;
+            }
         });
         divider(ui);
         setting_row(ui, "Pulse with the music", Some("The background swells with the beat."), |ui| {
-            toggle(ui, &mut app.reactive_bg, "Pulse with the music");
+            if toggle(ui, &mut app.reactive_bg, "Pulse with the music").changed() {
+                app.visual = theme::VisualPreset::Custom;
+            }
         });
         divider(ui);
-        setting_row(ui, "Accent-coloured controls", Some("The play button and volume slider in the accent colour, like the progress line."), |ui| {
-            toggle(ui, &mut app.accent_controls, "Accent-coloured controls");
+        setting_row(ui, "Ambient light", Some("Now playing glows with the video's colours around it."), |ui| {
+            if toggle(ui, &mut app.ambient_light, "Ambient light").changed() {
+                app.visual = theme::VisualPreset::Custom;
+            }
         });
         divider(ui);
         setting_row(ui, "Animated covers", Some("Where Apple Music has a clip for a song or its album, the cover moves in Now playing and on the album page, looping while the music plays and holding still when it's paused. Finding them sends each song's title and artist to Apple Music, remembered on disk so each song asks once."), |ui| {
-            toggle(ui, &mut app.animated_covers, "Animated covers");
+            if toggle(ui, &mut app.animated_covers, "Animated covers").changed() {
+                app.visual = theme::VisualPreset::Custom;
+            }
         });
         divider(ui);
         setting_row(ui, "Now playing backdrop", Some("What plays behind the full-screen player: the theme's own, or one of the alternatives without editing the theme."), |ui| {
@@ -3099,7 +3130,32 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
             });
             if let Some(p) = pick {
                 app.np_bg = p;
+                app.visual = theme::VisualPreset::Custom;
             }
+        });
+        divider(ui);
+        setting_row(ui, "Reduce motion", Some("Every transition lands at once — panels, hover states, the now-playing slide — and a record cover stops spinning. The lyrics' own sweep keeps its timing; how fast it redraws is set in Lyrics."), |ui| {
+            if toggle(ui, &mut app.reduce_motion, "Reduce motion").changed() {
+                theme::set_motion(!app.reduce_motion);
+                theme::install_style(ui.ctx());
+                app.visual = theme::VisualPreset::Custom;
+            }
+        });
+        divider(ui);
+        setting_row(ui, "Cover shadow and glow", Some("The soft shadow and the glow under the cover in Now playing."), |ui| {
+            if toggle(ui, &mut app.cover_fx, "Cover shadow and glow").changed() {
+                app.visual = theme::VisualPreset::Custom;
+            }
+        });
+        divider(ui);
+        setting_row(ui, "Lyric blur and glow", Some("The theme's blur on lines still to come and glow on the word being sung, in Now playing. Off leaves every line sharp and plain — much less work per frame."), |ui| {
+            if toggle(ui, &mut app.lyric_fx, "Lyric blur and glow").changed() {
+                app.visual = theme::VisualPreset::Custom;
+            }
+        });
+        divider(ui);
+        setting_row(ui, "Accent-coloured controls", Some("The play button and volume slider in the accent colour, like the progress line."), |ui| {
+            toggle(ui, &mut app.accent_controls, "Accent-coloured controls");
         });
         divider(ui);
         setting_row(ui, "Font", Some("For the whole app and the lyrics. Any font installed on this computer works, e.g. one made for your language."), |ui| {
