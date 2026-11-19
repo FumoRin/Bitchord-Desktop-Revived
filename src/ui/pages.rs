@@ -2924,26 +2924,6 @@ fn settings_lyrics(app: &mut App, ui: &mut Ui) {
             }
         });
         divider(ui);
-        // Intensive glow: the sung words' drop-shadow lit much harder than the look
-        // asks, with the listener's own strength on top.
-        setting_row(ui, "Intensive glow", Some("Light the word being sung with a far stronger glow than the theme's own, the way am-lyrics does it. Strength sets how far it goes."), |ui| {
-            toggle(ui, &mut app.lyric_prefs.glow_boost, "Intensive glow");
-        });
-        if app.lyric_prefs.glow_boost {
-            divider(ui);
-            setting_row(ui, "Glow strength", Some("How far the intensive glow goes, from a hint to all the way in."), |ui| {
-                let (min, max, step) = super::lyric_prefs::GLOW_STRENGTH;
-                let v = &mut app.lyric_prefs.glow_strength;
-                if ui.add_enabled(*v < max - 0.01, egui::Button::new("+").min_size(vec2(28.0, 26.0))).on_hover_text("Stronger").clicked() {
-                    *v = ((*v + step) * 10.0).round() / 10.0;
-                }
-                ui.label(egui::RichText::new(format!("{:.0}%", *v * 100.0)).font(theme::semibold(13.0)));
-                if ui.add_enabled(*v > min + 0.01, egui::Button::new("−").min_size(vec2(28.0, 26.0))).on_hover_text("Softer").clicked() {
-                    *v = ((*v - step) * 10.0).round() / 10.0;
-                }
-            });
-        }
-        divider(ui);
         // Offsets: seconds taken off the lyrics clock, as the extension's dock sets them.
         for (title, desc, which) in [
             ("Timing offset", "Shift all lyrics later (+) or earlier (−).", 0),
@@ -3153,6 +3133,28 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
                 app.visual = theme::VisualPreset::Custom;
             }
         });
+        divider(ui);
+        // Moved in from Lyrics: a visual effect among the others, so the presets reach it
+        // (Barebones leaves it off with every other glow).
+        setting_row(ui, "Intensive glow", Some("Light the word being sung with a far stronger glow than the theme's own, the way am-lyrics does it. Strength sets how far it goes."), |ui| {
+            if toggle(ui, &mut app.lyric_prefs.glow_boost, "Intensive glow").changed() {
+                app.visual = theme::VisualPreset::Custom;
+            }
+        });
+        if app.lyric_prefs.glow_boost {
+            divider(ui);
+            setting_row(ui, "Glow strength", Some("How far the intensive glow goes, from a hint to all the way in."), |ui| {
+                let (min, max, step) = super::lyric_prefs::GLOW_STRENGTH;
+                let v = &mut app.lyric_prefs.glow_strength;
+                if ui.add_enabled(*v < max - 0.01, egui::Button::new("+").min_size(vec2(28.0, 26.0))).on_hover_text("Stronger").clicked() {
+                    *v = ((*v + step) * 10.0).round() / 10.0;
+                }
+                ui.label(egui::RichText::new(format!("{:.0}%", *v * 100.0)).font(theme::semibold(13.0)));
+                if ui.add_enabled(*v > min + 0.01, egui::Button::new("−").min_size(vec2(28.0, 26.0))).on_hover_text("Softer").clicked() {
+                    *v = ((*v - step) * 10.0).round() / 10.0;
+                }
+            });
+        }
         divider(ui);
         setting_row(ui, "Accent-coloured controls", Some("The play button and volume slider in the accent colour, like the progress line."), |ui| {
             toggle(ui, &mut app.accent_controls, "Accent-coloured controls");
