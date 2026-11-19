@@ -160,6 +160,42 @@ impl Appearance {
     }
 }
 
+/// Settings › Appearance › Visual preset: a bundle of the visual settings beneath it,
+/// for older computers (Barebones) or everything at once (High visual). Custom is
+/// whatever the listener set by hand — also what a bundle becomes the moment one of
+/// its settings is changed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum VisualPreset {
+    #[default]
+    Custom,
+    Barebones,
+    High,
+}
+
+impl VisualPreset {
+    pub const ALL: [Self; 3] = [Self::Custom, Self::Barebones, Self::High];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Custom => "Custom",
+            Self::Barebones => "Barebones",
+            Self::High => "High visual",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Custom => "custom",
+            Self::Barebones => "barebones",
+            Self::High => "high",
+        }
+    }
+
+    pub fn from_key(s: &str) -> Self {
+        Self::ALL.into_iter().find(|v| v.key() == s).unwrap_or_default()
+    }
+}
+
 /// Windows' "app mode" (Settings › Personalization › Colors), read again every couple of
 /// seconds so switching it there shows without a restart. `None` when it can't be told.
 #[cfg(windows)]
@@ -403,25 +439,38 @@ pub fn ease_in_out(t: f32) -> f32 {
 /// for how snappy the app feels. (Lyrics keep their own timing.)
 pub const SPEED: f32 = 0.65;
 
+/// Reduce motion (Settings › Appearance): 1.0 normally, 0.0 when every transition
+/// should land at once. egui takes a zero animation time as "no transition".
+static MOTION: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1.0f32.to_bits());
+
+pub fn set_motion(on: bool) {
+    MOTION.store((on as u32 as f32).to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The fraction transitions run at: [`SPEED`], or nothing at all with Reduce motion on.
+pub fn speed() -> f32 {
+    SPEED * f32::from_bits(MOTION.load(std::sync::atomic::Ordering::Relaxed))
+}
+
 /// Animate toward `target` (eased), keyed by `id`. Requests repaints while moving.
 pub fn anim(ctx: &egui::Context, id: impl std::hash::Hash + std::fmt::Debug, target: f32, secs: f32) -> f32 {
-    ctx.animate_value_with_time(egui::Id::unique(id), target, secs * SPEED)
+    ctx.animate_value_with_time(egui::Id::unique(id), target, secs * speed())
 }
 
 pub fn anim_bool(ctx: &egui::Context, id: impl std::hash::Hash + std::fmt::Debug, on: bool, secs: f32) -> f32 {
-    ease_out(ctx.animate_bool_with_time(egui::Id::unique(id), on, secs * SPEED))
+    ease_out(ctx.animate_bool_with_time(egui::Id::unique(id), on, secs * speed()))
 }
 
 /// [`anim_bool`] for a transition whose length the theme sets itself, so `ui_fade_secs`
 /// leaves it alone (BitChord's `anim_bool` carries no such fade yet: the two agree).
 pub fn anim_bool_timed(ctx: &egui::Context, id: impl std::hash::Hash + std::fmt::Debug, on: bool, secs: f32) -> f32 {
-    ease_out(ctx.animate_bool_with_time(egui::Id::unique(id), on, secs * SPEED))
+    ease_out(ctx.animate_bool_with_time(egui::Id::unique(id), on, secs * speed()))
 }
 
 /// [`anim_bool`] that eases in and out, for a fold that opens and closes (Discord's
 /// settings): the change of direction should never read as a snap.
 pub fn anim_bool_soft(ctx: &egui::Context, id: impl std::hash::Hash + std::fmt::Debug, on: bool, secs: f32) -> f32 {
-    ease_in_out(ctx.animate_bool_with_time(egui::Id::unique(id), on, secs * SPEED))
+    ease_in_out(ctx.animate_bool_with_time(egui::Id::unique(id), on, secs * speed()))
 }
 
 // ------------------------------------------------------------------ type
@@ -1033,7 +1082,7 @@ pub fn install_style(ctx: &egui::Context) {
         s.text_styles.insert(egui::TextStyle::Small, regular(12.0));
         s.visuals = visuals();
         s.interaction.selectable_labels = false;
-        s.animation_time = 0.18 * SPEED;
+        s.animation_time = 0.18 * speed();
     });
 }
 

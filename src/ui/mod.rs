@@ -700,6 +700,19 @@ pub struct App {
     /// Settings › Appearance: the covers Apple Music moves (where it has a clip for the
     /// song or its album) move here too, in Now playing and on artist pages.
     animated_covers: bool,
+    /// Settings › Appearance › Visual preset: which bundle set the visual settings, so
+    /// the dropdown can say so until one of them is changed by hand.
+    visual: theme::VisualPreset,
+    /// Settings › Appearance: no UI transition takes time — panels, hovers and the
+    /// now-playing slide land at once, and a record cover doesn't spin.
+    reduce_motion: bool,
+    /// Settings › Appearance: the shadow and glow under the cover in Now playing.
+    cover_fx: bool,
+    /// Settings › Appearance: the theme's blur and glow on the lyrics in Now playing.
+    lyric_fx: bool,
+    /// The active preset's lyrics with the effects off (see `lyric_fx`): kept here so
+    /// its address is stable — the karaoke view caches its layout by it.
+    plain_style: Option<(String, crate::preset::LyricStyle)>,
     /// The keyboard shortcuts, and one being picked in Settings (see `keybinds`).
     keybinds: keybinds::State,
     queue_open: bool,
@@ -1210,6 +1223,11 @@ impl App {
             np_tab: if get("np_art").is_some_and(|v| v == "1") { NpTab::Art } else { NpTab::Lyrics },
             np_bg: get("np_bg").and_then(|v| crate::preset::BgMode::from_name(&v)),
             animated_covers: get("animated_covers").is_none_or(|v| v == "1"),
+            visual: theme::VisualPreset::from_key(&get("visual_preset").unwrap_or_default()),
+            reduce_motion: get("reduce_motion").is_some_and(|v| v == "1"),
+            cover_fx: get("cover_fx").is_none_or(|v| v == "1"),
+            lyric_fx: get("lyric_fx").is_none_or(|v| v == "1"),
+            plain_style: None,
             row_drag: None,
             keybinds: keybinds::State::load(&get),
             queue_open: false,
@@ -1247,6 +1265,13 @@ impl App {
             smoke: None,
         };
         app.request_liked(false);
+        // The transitions multiplier, before the first frame styles its animation time.
+        theme::set_motion(!app.reduce_motion);
+        // Dev hook: YTM_VISUAL=barebones|high tries a preset without saving it.
+        if let Some(v) = dev_var("YTM_VISUAL") {
+            app.visual = theme::VisualPreset::from_key(v);
+            app.apply_visual(None);
+        }
         app.queue.hide_explicit = hide_explicit;
         app.sorts.sorts = get("list_sorts").and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
         // Dev hooks: YTM_SMOKE="query" searches and plays the first song ("id:<videoId>[,<videoId>…]"
@@ -1706,6 +1731,46 @@ impl App {
     /// Settings › Storage's Remove all downloads, once asked.
     fn remove_downloads(&mut self, ctx: &egui::Context) {
         self.storage.remove_downloads(ctx, self.backend.data_dir(), &crate::downloads::folder());
+    }
+
+    /// Settings › Appearance › Visual preset: set every setting the bundle owns — the
+    /// rest (Mode, Font, Zoom…) are the listener's own. `ctx` re-styles the animation
+    /// time; `None` at launch, where the first frame styles it anyway.
+    pub(super) fn apply_visual(&mut self, ctx: Option<&egui::Context>) {
+        use crate::preset::BgMode;
+        use crate::theme::VisualPreset;
+        match self.visual {
+            VisualPreset::Custom => {}
+            // Older computers: no animation, blur or glow anywhere, and Now playing's
+            // backdrop a flat colour instead of the blurred-cover shader. Playback
+            // itself is untouched.
+            VisualPreset::Barebones => {
+                self.anim_bg = false;
+                self.reactive_bg = false;
+                self.animated_covers = false;
+                self.ambient_light = false;
+                self.reduce_motion = true;
+                self.cover_fx = false;
+                self.lyric_fx = false;
+                self.np_bg = Some(BgMode::AccentGradient);
+                self.lyrics_full_rate = false;
+            }
+            VisualPreset::High => {
+                self.anim_bg = true;
+                self.reactive_bg = true;
+                self.animated_covers = true;
+                self.ambient_light = true;
+                self.reduce_motion = false;
+                self.cover_fx = true;
+                self.lyric_fx = true;
+                self.np_bg = None;
+                self.lyrics_full_rate = true;
+            }
+        }
+        theme::set_motion(!self.reduce_motion);
+        if let Some(ctx) = ctx {
+            theme::install_style(ctx);
+        }
     }
 
 }
@@ -2252,6 +2317,13 @@ impl eframe::App for App {
         }
         storage.set_string("np_art", b(self.np_tab == NpTab::Art));
         storage.set_string("np_bg", self.np_bg.map(|m| m.name().to_owned()).unwrap_or_default());
+        // Dev hook: YTM_VISUAL tries a preset without saving it as the listener's.
+        if dev_var("YTM_VISUAL").is_none() {
+            storage.set_string("visual_preset", self.visual.key().to_owned());
+        }
+        storage.set_string("reduce_motion", b(self.reduce_motion));
+        storage.set_string("cover_fx", b(self.cover_fx));
+        storage.set_string("lyric_fx", b(self.lyric_fx));
         self.keybinds.bindings.save(storage);
         // Background test runs leave the user's real "last song" alone unless asked.
         let test_run = std::env::var_os("YTM_BACKGROUND").is_some() && std::env::var_os("YTM_SAVE_SESSION").is_none();
