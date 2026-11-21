@@ -373,13 +373,11 @@ impl App {
         if lyr && self.current().is_some() {
             self.toggle_lyrics();
         }
-        if queue && self.current().is_some() {
-            if self.np_open && self.np_tab == NpTab::UpNext {
-                self.np_tab = NpTab::Art;
-            } else {
-                self.np_open = true;
-                self.np_tab = NpTab::UpNext;
-            }
+        // Q makes the trip the player bar's queue button makes: in now playing the
+        // Up next panel, elsewhere the sidebar's queue — outside the view it used to
+        // drag the whole now playing up for the queue alone.
+        if queue {
+            self.toggle_queue();
         }
         // F opens and closes the now playing view; Shift+F is the player full screen
         // (opening now playing first when it isn't up, since the full screen is its view).
