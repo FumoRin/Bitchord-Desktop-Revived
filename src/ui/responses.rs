@@ -1085,7 +1085,7 @@ impl App {
 const MAX_SKIPS: u32 = 3;
 
 /// A played song as a card, for Home's "Recently played" and "Keep listening" rows.
-fn song_card(t: &Track) -> Card {
+pub(super) fn song_card(t: &Track) -> Card {
     Card { title: t.title.clone(), subtitle: t.artist_line(), thumbs: t.thumbs.clone(), target: Target::Song(t.clone()), round: false, links: t.artists.clone() }
 }
 
