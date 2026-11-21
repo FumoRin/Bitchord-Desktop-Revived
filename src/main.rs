@@ -39,6 +39,7 @@ mod preset;
 mod providers;
 mod recommend;
 mod shader;
+mod sources;
 mod sponsorblock;
 mod stream;
 mod theme;
@@ -343,7 +344,7 @@ fn data_dir() -> std::path::PathBuf {
 /// file is kept one good copy deep: a copy that parses is backed up, a copy that
 /// doesn't is set aside and the backup takes its place, before eframe ever opens it.
 /// The half-written copy stays as `app.ron.bad` for anyone who wants it back.
-fn guard_settings(dir: &std::path::Path) {
+pub(crate) fn guard_settings(dir: &std::path::Path) {
     use std::io::BufReader;
     let path = dir.join("app.ron");
     let Ok(file) = std::fs::File::open(&path) else { return };

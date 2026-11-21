@@ -1021,10 +1021,17 @@ impl App {
         let show_comments = get("comments").is_some_and(|v| v == "1");
         crate::ytm::set_podcasts(show_podcasts);
         // Before any request: a song started at launch must see the addon sources too.
-        let hires_source = get("hires_source").unwrap_or_default();
+        // They live in their own atomically-written file (see `sources`), which says
+        // the last word whenever it exists — empty included, or removals would come
+        // back from app.ron's older copy. app.ron is only the first run's, before
+        // that file exists.
+        let (hires_source, hires_disabled_saved) = match crate::sources::load(backend.data_dir()) {
+            Some(s) => (s.hires_source, s.hires_disabled),
+            None => (get("hires_source").unwrap_or_default(), get("hires_disabled").unwrap_or_default()),
+        };
         let hires_sources: Vec<String> = dedupe_hires(hires_source.lines().map(str::trim).filter(|l| !l.is_empty()));
         // The switched-off ones, saved as their links, survive reordering and removals.
-        let hires_disabled: std::collections::HashSet<String> = get("hires_disabled").unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect();
+        let hires_disabled: std::collections::HashSet<String> = hires_disabled_saved.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect();
         let hires_enabled: Vec<bool> = hires_sources.iter().map(|s| !hires_disabled.contains(s.as_str())).collect();
         let hires_on: Vec<&str> = hires_sources.iter().enumerate().filter(|(i, _)| hires_enabled[*i]).map(|(_, s)| s.as_str()).collect();
         backend.set_hires_source(&hires_on.join("\n"));
@@ -2423,9 +2430,14 @@ impl eframe::App for App {
         storage.set_string("reactive_bg", b(self.reactive_bg));
         storage.set_string("animated_covers", b(self.animated_covers));
         storage.set_string("signature_api", self.signature_api.clone());
-        storage.set_string("hires_source", dedupe_hires(self.hires_sources.iter().map(String::as_str)).join("\n"));
+        let hires_source = dedupe_hires(self.hires_sources.iter().map(String::as_str)).join("\n");
         let hires_disabled: Vec<&str> = self.hires_sources.iter().enumerate().filter(|(i, _)| !self.hires_enabled.get(*i).copied().unwrap_or(true)).map(|(_, s)| s.trim()).filter(|s| !s.is_empty()).collect();
-        storage.set_string("hires_disabled", hires_disabled.join("\n"));
+        let hires_disabled = hires_disabled.join("\n");
+        // app.ron keeps its copy for a version that reads nothing else, but the
+        // sources' own file is the one written to survive a kill mid-save.
+        crate::sources::store(self.backend.data_dir(), &crate::sources::Sources { hires_source: hires_source.clone(), hires_disabled: hires_disabled.clone() });
+        storage.set_string("hires_source", hires_source);
+        storage.set_string("hires_disabled", hires_disabled);
         storage.set_string("prefer_atmos", b(self.prefer_atmos));
         storage.set_string("show_nerd_stats", b(self.show_nerd_stats));
         storage.set_string("disable_direct_stream", b(self.disable_direct_stream));
@@ -2491,6 +2503,13 @@ impl eframe::App for App {
         // A downloaded update installs only when the user restarted for it; nothing is
         // installed behind their back as the app closes.
         let update_ready = self.updater.as_ref().is_some_and(|u| matches!(u.state(), crate::update::State::Ready { .. }));
+        if update_ready {
+            // eframe has saved and flushed app.ron by now (its save runs before
+            // on_exit), so the backup goes into the update carrying this session's
+            // every setting — the launch-time copy could be a whole session old,
+            // and a restore from it read as "my addons are gone".
+            crate::guard_settings(&self.backend.data_dir());
+        }
         if let Some(u) = &self.updater
             && self.restart_for_update
         {
