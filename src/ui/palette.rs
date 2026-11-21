@@ -91,16 +91,22 @@ struct Entry {
 
 /// Settings' categories and sections, by their titles. One named as its category opens
 /// that; any other is looked for with Settings' own search.
-const SECTIONS: [(&str, SettingsTab); 26] = {
+const SECTIONS: [(&str, SettingsTab); 32] = {
     use SettingsTab::*;
     [
         ("Account", Account),
         ("Connections", Account),
-        ("Discord", Account),
-        ("Discord status", Account),
-        ("Discord card", Account),
-        ("Discord buttons", Account),
         ("Import", Account),
+        ("Discord", Discord),
+        ("Discord connection", Discord),
+        ("Discord status", Discord),
+        ("Discord card", Discord),
+        ("Discord large image", Discord),
+        ("Discord small image", Discord),
+        ("Discord animated artwork", Discord),
+        ("Discord timestamps", Discord),
+        ("Discord buttons", Discord),
+        ("Discord advanced", Discord),
         ("Playback", Playback),
         ("Playback speed", Playback),
         ("Equalizer", Playback),

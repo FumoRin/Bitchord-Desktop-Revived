@@ -21,7 +21,7 @@ egui = { version = "0.37.0", features = ["monochrome_emoji_fonts"] }
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 egui_extras = { version = "0.37.0", default-features = false, features = ["image"] }
 env_logger = { version = "0.11.11", default-features = false, features = ["humantime"] }
-image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 # Dolby Atmos from hi-res addons: E-AC-3 JOC decoded to stereo (dash.rs).
 filmcraft-ac3 = "0.9.0"
 # Apple's motion sleeves (motion.rs): their H.264, decoded on the CPU on every platform.
@@ -29,8 +29,9 @@ openh264 = "0.8"
 localzone = "0.3.1"
 log = "0.4.34"
 memmap2 = "0.9.11"
+miniz_oxide = "0.9.1"
 raw-window-handle = "0.6"
-reqwest = { version = "0.12", default-features = false, features = ["default-tls", "gzip", "json", "socks"] }
+reqwest = { version = "0.12", default-features = false, features = ["default-tls", "gzip", "json", "socks", "multipart"] }
 # Reading app.ron the way eframe does, to tell a good copy from a broken one (main.rs).
 ron = "0.12"
 rodio = { version = "0.22.2", default-features = false, features = ["playback", "symphonia-aac", "symphonia-isomp4", "symphonia-flac", "symphonia-alac", "symphonia-wav", "symphonia-mp3", "symphonia-vorbis"] }

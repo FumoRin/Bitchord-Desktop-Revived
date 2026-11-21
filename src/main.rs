@@ -15,6 +15,7 @@ mod bidi;
 mod cache;
 mod deeplink;
 mod discord;
+mod discord_artwork;
 mod discord_link;
 mod dash;
 mod downloads;

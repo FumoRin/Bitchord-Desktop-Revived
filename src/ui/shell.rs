@@ -208,7 +208,7 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
         ui.spacing_mut().item_spacing.x = 0.0;
         ui.add_space(8.0);
         let (r, resp) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::click());
-        mark(ui, Rect::from_center_size(r.center(), vec2(30.0, 20.0)), theme::with_alpha(theme::text(), a));
+        app_logo(ui, r, theme::with_alpha(Color32::WHITE, a));
         let resp = named(resp, "Home");
         let resp = if collapsed { resp } else { resp.on_hover_cursor(egui::CursorIcon::PointingHand) };
         if resp.clicked() && !collapsed {
@@ -991,7 +991,7 @@ pub fn player_bar(app: &mut App, ui: &mut Ui, now: f64, frosted: bool) {
         }
         None => {
             ui.painter().rect_filled(cover, 6.0, theme::glass(0.08));
-            paint_mark(ui, cover.shrink(8.0));
+            app_logo(ui, cover.shrink(2.0), Color32::WHITE);
         }
     }
 
@@ -1204,30 +1204,23 @@ fn tempo_button(app: &mut App, ui: &mut Ui, resp: egui::Response, accent: Color3
     });
 }
 
-/// The BitChord mark, white, fitted inside `r` (the sleeve slot when nothing plays).
-fn paint_mark(ui: &Ui, r: Rect) {
-    mark(ui, r, Color32::from_white_alpha(170));
-}
-
-/// The BitChord mark, fitted inside `r`, tinted `tint`.
-fn mark(ui: &Ui, r: Rect, tint: Color32) {
-    const MARK: &[u8] = include_bytes!("../../assets/icon/mark.png");
-    const W: f32 = 256.0;
-    const H: f32 = 171.0;
-    let key = egui::Id::unique("bitchord-mark");
+/// The bundled app icon fitted into the sidebar and the idle player sleeve.
+fn app_logo(ui: &Ui, r: Rect, tint: Color32) {
+    let key = egui::Id::unique("bitchord-logo");
     let tex = match ui.ctx().data(|d| d.get_temp::<egui::TextureHandle>(key)) {
         Some(t) => t,
         None => {
-            let Ok(img) = image::load_from_memory(MARK) else { return };
+            let Ok(img) = image::load_from_memory(crate::appicon::PNG) else { return };
             let img = img.into_rgba8();
             let color = egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw());
-            let t = ui.ctx().load_texture("bitchord-mark", color, egui::TextureOptions::LINEAR);
+            let t = ui.ctx().load_texture("bitchord-logo", color, egui::TextureOptions::LINEAR);
             ui.ctx().data_mut(|d| d.insert_temp(key, t.clone()));
             t
         }
     };
-    let k = (r.width() / W).min(r.height() / H);
-    let dst = Rect::from_center_size(r.center(), vec2(W * k, H * k));
+    let size = tex.size_vec2();
+    let scale = (r.width() / size.x).min(r.height() / size.y);
+    let dst = Rect::from_center_size(r.center(), size * scale);
     ui.painter().image(tex.id(), dst, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), tint);
 }
 
