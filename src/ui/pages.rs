@@ -29,16 +29,19 @@ fn feed_columns(width: f32, square: bool) -> usize {
     }
 }
 
-/// One tile of an Apple feed row: a share of the content on wide windows, the site's
-/// own narrow width below its breakpoint.
+/// One tile of an Apple feed row: a share of the content on wide windows (the
+/// site's own breakpoints), and below them as many whole tiles as the width
+/// holds. The site's fixed narrow tile left a stub of the next card hanging off
+/// the edge, with room for a whole one beside it; tiling leaves neither.
 fn feed_tile(ui: &Ui, square: bool) -> f32 {
     let width = ui.available_width();
-    let min = if square { 144.0 } else { 270.0 };
-    if width < 1024.0 {
-        return min;
+    let min = if square { 144.0 } else { 240.0 };
+    if width >= 1024.0 {
+        let cols = feed_columns(width, square);
+        return ((width - 20.0 * (cols - 1) as f32) / cols as f32).max(min);
     }
-    let cols = feed_columns(width, square);
-    ((width - 20.0 * (cols - 1) as f32) / cols as f32).max(min)
+    let cols = (((width + 20.0) / (min + 20.0)).floor() as usize).max(1);
+    (width - 20.0 * (cols - 1) as f32) / cols as f32
 }
 
 pub fn page(app: &mut App, ui: &mut Ui, now: f64) {
@@ -216,7 +219,7 @@ fn card_row(ui: &mut Ui, id: &str, title: &str, cards: &[Card], acts: &mut Vec<A
         return;
     }
     reveal(ui, id, |ui| {
-        let (l, r) = shelf_header(ui, title, None, None, true);
+        let (l, r) = shelf_header(ui, title, None, None, widgets::shelf_overflows(ui, id));
         let nudge = r as i32 - l as i32;
         let tile = feed_tile(ui, true);
         h_scroll(ui, id, nudge, cards.len(), tile, 20.0, |ui| {
@@ -235,10 +238,16 @@ fn video_row(ui: &mut Ui, id: &str, title: &str, cards: &[Card], acts: &mut Vec<
         return;
     }
     reveal(ui, id, |ui| {
-        let (l, r) = shelf_header(ui, title, None, None, true);
+        let (l, r) = shelf_header(ui, title, None, None, widgets::shelf_overflows(ui, id));
         let nudge = r as i32 - l as i32;
-        // four across a wide window, the frames keeping the phone card's proportions
-        let tile = (((ui.available_width() - 60.0) / 4.0).clamp(240.0, 330.0)).min(ui.available_width() - 40.0);
+        // four across a wide window, the frames keeping the phone card's proportions;
+        // on a narrower one, fewer and wider rather than a frame cut off at the edge
+        let width = ui.available_width();
+        let mut cols = 4.0;
+        while cols > 1.0 && (width - 20.0 * (cols - 1.0)) / cols < 240.0 {
+            cols -= 1.0;
+        }
+        let tile = ((width - 20.0 * (cols - 1.0)) / cols).min(330.0).min(width - 40.0);
         h_scroll(ui, id, nudge, cards.len(), tile, 20.0, |ui| {
             ui.spacing_mut().item_spacing.x = 20.0;
             for c in cards {
@@ -281,7 +290,7 @@ fn card_row_all(ui: &mut Ui, id: &str, title: &str, cards: &[Card], all: bool, a
     if cards.is_empty() {
         return;
     }
-    let (l, r, show_all) = widgets::shelf_header_ext(ui, title, None, None, true, all);
+    let (l, r, show_all) = widgets::shelf_header_ext(ui, title, None, None, widgets::shelf_overflows(ui, id), all);
     if show_all {
         acts.push(open());
     }
@@ -299,7 +308,7 @@ fn card_row_all(ui: &mut Ui, id: &str, title: &str, cards: &[Card], all: bool, a
 /// song starts its radio. Returns whether the arrows reached the end.
 #[allow(clippy::too_many_arguments)]
 fn song_grid(ui: &mut Ui, rows_ctx: &Rows, liked: &HashSet<String>, acts: &mut Vec<Action>, id: &str, title: &str, strap: Option<&str>, tracks: &[Track], rows: usize) -> bool {
-    let (l, r) = shelf_header(ui, title, strap, None, true);
+    let (l, r) = shelf_header(ui, title, strap, None, widgets::shelf_overflows(ui, id));
     let nudge = r as i32 - l as i32;
     let col_w = feed_tile(ui, false);
     let tracks: Vec<&Track> = tracks.iter().filter(|t| rows_ctx.shows(t)).collect();
@@ -592,7 +601,7 @@ fn home(app: &mut App, ui: &mut Ui, now: f64) {
                 }
                 let (strap, thumb) = if s.title == "Listen again" { (None, None) } else { (s.strapline.as_deref(), s.strap_thumb.as_deref()) };
                 reveal(ui, &id, |ui| {
-                    let (l, r) = shelf_header(ui, &s.title, strap, thumb, true);
+                    let (l, r) = shelf_header(ui, &s.title, strap, thumb, widgets::shelf_overflows(ui, &id));
                     let nudge = r as i32 - l as i32;
                     let tile = feed_tile(ui, true);
                     let acts = &mut app.actions;
@@ -650,7 +659,7 @@ fn draw_local_row(hr: &HomeRows, which: usize, ui: &mut Ui, rows_ctx: &Rows, lik
 /// "Most played", each song with its rank in front of it — Mochy's HomeTrackGrid.
 fn ranked_grid(ui: &mut Ui, rows_ctx: &Rows, liked: &HashSet<String>, acts: &mut Vec<Action>, id: &str, title: &str, tracks: &[Track]) {
     reveal(ui, id, |ui| {
-        let (l, r) = shelf_header(ui, title, None, None, true);
+        let (l, r) = shelf_header(ui, title, None, None, widgets::shelf_overflows(ui, id));
         let nudge = r as i32 - l as i32;
         let col_w = feed_tile(ui, false);
         let tracks: Vec<&Track> = tracks.iter().filter(|t| rows_ctx.shows(t)).collect();
@@ -690,7 +699,7 @@ fn reco_grid(ui: &mut Ui, rows_ctx: &Rows, liked: &HashSet<String>, acts: &mut V
         crate::recommend::Kind::NewGenre => "Try something new",
     };
     reveal(ui, id, |ui| {
-        let (l, right, show_all) = shelf_header_ext(ui, &r.title, Some(strap), r.thumb.as_deref(), true, r.endpoint.is_some());
+        let (l, right, show_all) = shelf_header_ext(ui, &r.title, Some(strap), r.thumb.as_deref(), widgets::shelf_overflows(ui, id), r.endpoint.is_some());
         if show_all {
             match r.endpoint.as_ref() {
                 Some(crate::recommend::Endpoint::Artist(id)) => acts.push(Action::Go(Page::Artist(id.clone()))),

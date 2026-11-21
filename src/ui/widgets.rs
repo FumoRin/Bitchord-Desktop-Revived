@@ -1260,6 +1260,15 @@ pub fn shelf_header_ext(ui: &mut Ui, title: &str, strap: Option<&str>, strap_thu
     res
 }
 
+/// Whether the shelf's own scroller found more than a page to page through. Read
+/// from its last frame — the header (and its arrows) draws before the scroller
+/// measures — and until it has measured, no arrows: a shelf that fits never
+/// shows them.
+pub fn shelf_overflows(ui: &Ui, id: &str) -> bool {
+    let sid = egui::Id::unique(("hscroll", id));
+    ui.ctx().data(|d| d.get_temp::<bool>(sid.with("more"))).unwrap_or(false)
+}
+
 /// Aligned starts for complete viewport pages, with a full final page.
 fn shelf_page_starts(count: usize, visible: usize) -> Vec<usize> {
     let visible = visible.max(1);
@@ -1298,6 +1307,10 @@ pub fn h_scroll<R>(ui: &mut Ui, id: &str, nudge: i32, count: usize, item_width: 
     let viewport = ui.ctx().data(|d| d.get_temp::<f32>(viewport_id)).unwrap_or_else(|| ui.available_width());
     let step = item_width + gap;
     let visible = ((viewport + gap) / step).floor().max(1.0) as usize;
+    // Whether the shelf holds more than a page, so its header's arrows draw only
+    // when they have somewhere to go. The header draws before this measures, so it
+    // reads the last frame's verdict (see `shelf_overflows`).
+    ui.ctx().data_mut(|d| d.insert_temp(sid.with("more"), count > visible));
     let starts = shelf_page_starts(count, visible);
     let last_start = *starts.last().unwrap();
     let mut reached_end = false;
