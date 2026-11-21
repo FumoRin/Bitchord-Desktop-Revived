@@ -80,7 +80,9 @@ fn grid_items(app: &App, kind: Option<&CardKind>, max: usize) -> (String, Vec<Gr
             let recent = app.listening.recently_played(8);
             push_tracks(&mut rows, &mut seen, keep.into_iter().chain(recent), max);
         }
-        // the other discoveries, each grown from its own seed
+        // the other discoveries, each grown from its own seed; when the day's few
+        // discoveries run out, the recommendation rows carry the grid on — their
+        // songs are the unheard picks off the same taste, grown the same way
         Some(CardKind::Discover { seed, found }) => {
             label = "More discoveries";
             seen.push(found.id.clone());
@@ -93,6 +95,21 @@ fn grid_items(app: &App, kind: Option<&CardKind>, max: usize) -> (String, Vec<Gr
                 }
                 seen.push(f.id.clone());
                 rows.push(GridRow { thumbs: f.thumbs.clone(), title: f.title.clone(), sub: format!("Grown from {}", s.title), action: Some(GridAction::Radio(f.clone())) });
+            }
+            for r in app.reco.rows.iter() {
+                if rows.len() >= max {
+                    break;
+                }
+                for t in r.tracks.iter() {
+                    if rows.len() >= max {
+                        break;
+                    }
+                    if seen.contains(&t.id) {
+                        continue;
+                    }
+                    seen.push(t.id.clone());
+                    rows.push(GridRow { thumbs: t.thumbs.clone(), title: t.title.clone(), sub: format!("Grown from {}", r.title), action: Some(GridAction::Radio(t.clone())) });
+                }
             }
             let _ = seed;
         }
