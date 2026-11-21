@@ -99,14 +99,21 @@ impl Info {
 
     /// The quality mark's text, worded as Apple Music words it.
     pub fn badge(&self) -> &'static str {
+        if !self.atmos && !self.hires() && !self.lossless() && self.bitrate_kbps.is_some_and(|k| k >= 320) {
+            return "320 kbps";
+        }
+        self.tier()
+    }
+
+    /// The tier without a bitrate in it, for anywhere that names the bitrate
+    /// separately: `badge`'s "320 kbps" would only repeat what stands beside it.
+    pub fn tier(&self) -> &'static str {
         if self.atmos {
             "Dolby Atmos"
         } else if self.hires() {
             "Hi-Res Lossless"
         } else if self.lossless() {
             "Lossless"
-        } else if self.bitrate_kbps.is_some_and(|k| k >= 320) {
-            "320 kbps"
         } else {
             "High"
         }
