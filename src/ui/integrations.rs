@@ -25,6 +25,9 @@ static LINK_RESULT: std::sync::Mutex<Option<Result<(String, Option<crate::discor
 impl App {
     pub(super) fn set_discord_enabled(&mut self, enabled: bool) {
         self.discord_enabled = enabled;
+        if !enabled {
+            self.discord_artwork.allow_publish(false);
+        }
         if enabled {
             // A linked account publishes presence through the account's own gateway;
             // without one, the plain IPC client (the app id's card) does it.
@@ -104,15 +107,36 @@ impl App {
 
     /// What's playing, as Discord would get it, paused or not.
     pub(super) fn discord_presence(&self) -> Option<crate::discord::Presence> {
+        if self.discord_finished == Some(self.generation) && self.resume_at.is_none() {
+            return None;
+        }
         let t = self.playing_track()?;
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
         // In real time: a song at 2x is over in half its length.
-        let speed = self.audio.status.speed() as f64;
-        let start_ms = now - (self.audio.status.position().as_millis() as f64 / speed) as i64;
-        let dur = (self.audio.status.duration_ms.load(Ordering::Relaxed) as f64 / speed) as i64;
-        // The full quality line the player's track-info shows; YouTube's own audio is
-        // the plain compressed one, so it has no detail numbers.
-        let quality = self.audio_info.as_ref().map_or_else(|| "High".to_owned(), |(_, i)| i.rpc_line());
+        let speed = self.audio.status.speed().max(0.1);
+        let seek = self.audio.status.seek_revision.load(Ordering::Acquire);
+        let paused = !self.playing() || self.buffering;
+        let position = if paused { self.audio.status.position() } else { self.audio.status.position_smooth() };
+        let position_ms = position.as_millis() as u64;
+        let duration_ms = match self.audio.status.duration_ms.load(Ordering::Relaxed) {
+            0 => t.duration.map_or(0, |d| u64::from(d) * 1000),
+            value => value,
+        };
+        let start_ms = now - (position_ms as f64 / f64::from(speed)) as i64;
+        let dur = (duration_ms as f64 / f64::from(speed)) as i64;
+        // The stream's own sample rate can differ from the audio device's output rate.
+        let quality = self
+            .stream_stats
+            .as_ref()
+            .filter(|(generation, _)| *generation == self.generation)
+            .and_then(|(_, s)| crate::discord::quality_summary(&s.codec, Some(s.sample_rate)))
+            .or_else(|| {
+                self.audio_info
+                    .as_ref()
+                    .filter(|(generation, _)| *generation == self.generation)
+                    .and_then(|(_, i)| crate::discord::quality_summary(&i.codec, i.sample_rate))
+            })
+            .or_else(|| Some("High".to_owned()));
         let code = self.jam.code();
         Some(crate::discord::Presence {
             video_id: t.id.clone(),
@@ -122,10 +146,19 @@ impl App {
             album: t.album.as_ref().map(|a| a.name.clone()),
             album_id: t.album.as_ref().and_then(|a| a.id.clone()),
             art: backend::art_url(t),
-            quality: Some(quality),
+            artist_art: self
+                .artist
+                .as_ref()
+                .filter(|a| Some(a.id.as_str()) == t.first_artist_id())
+                .and_then(|a| crate::model::pick(&a.banner, 160))
+                .map(|u| crate::model::sized(u, 512)),
+            quality,
             start_ms,
             end_ms: (dur > 0).then_some(start_ms + dur),
-            paused: !self.playing() || self.buffering,
+            paused,
+            duration_ms,
+            position_ms,
+            clock: (self.generation, seek, speed.to_bits()),
             jam: (!code.is_empty()).then(|| crate::jam::share_link(&self.jam_server, &code)),
         })
     }
@@ -146,24 +179,50 @@ impl App {
         if !linked && self.discord.is_none() {
             return;
         }
-        // A name is sent once it's typed, not a letter at a time: Discord limits how often
-        // the card may change.
-        let typing = ctx.memory(|m| m.has_focus(super::presence::name_id()));
+        let now = std::time::Instant::now();
         let prefs = &self.discord_prefs;
-        let typed;
-        let prefs = if typing {
-            let name = self.discord_sent.as_ref().and_then(|c| c.name.clone()).unwrap_or_default();
-            typed = crate::discord::Prefs { app_name: name, ..prefs.clone() };
-            &typed
-        } else {
-            prefs
-        };
-        let want = self.discord_presence().filter(|p| !p.paused || prefs.when_paused).map(|p| crate::discord::Card::new(&p, prefs));
+        if self.discord_edit.as_ref().is_none_or(|(wanted, _)| wanted != prefs) {
+            self.discord_edit = Some((prefs.clone(), now));
+        }
+        let (wanted, edited) = self.discord_edit.as_ref().expect("settings were sampled above");
+        let settle = std::time::Duration::from_millis(600).saturating_sub(now.duration_since(*edited));
+        let applied = self.discord_applied.get_or_insert_with(|| wanted.clone());
+        if applied != wanted {
+            if settle.is_zero()
+                || wanted.hide_details != applied.hide_details
+                || wanted.when_paused != applied.when_paused
+                || (applied.artwork.host && !wanted.artwork.host)
+            {
+                applied.clone_from(wanted);
+            } else {
+                ctx.request_repaint_after(settle);
+            }
+        }
+        let prefs = self.discord_applied.as_ref().expect("settings were applied above");
+        let presence = self.discord_presence().filter(|p| !p.paused || prefs.when_paused);
+        self.discord_artwork.allow_publish(presence.is_some() && !prefs.hide_details && prefs.art && prefs.artwork.host);
+        let want = presence.map(|p| {
+            let artwork = self.discord_artwork.pictures(&self.backend, &p, prefs, self.playing_track(), false);
+            crate::discord::Card::new(&p, prefs, artwork)
+        });
         let same = match (&want, &self.discord_sent) {
-            (Some(a), Some(b)) => a.same(b),
+            (Some(a), Some(b)) => a.same(b, false),
             (a, b) => a.is_none() && b.is_none(),
         };
         if !same {
+            let badge_progress = want.as_ref().zip(self.discord_sent.as_ref()).is_some_and(|(a, b)| a.same(b, true));
+            let delay = self.discord_updates.delay(now, prefs.refresh_seconds, badge_progress);
+            let hiding = want.is_none()
+                || (prefs.hide_details
+                    && self
+                        .discord_sent
+                        .as_ref()
+                        .is_some_and(|c| c.lines.iter().any(Option::is_some) || c.annotation.is_some() || c.art.is_some() || !c.buttons.is_empty() || c.times.is_some()));
+            if !hiding && !delay.is_zero() {
+                ctx.request_repaint_after(delay);
+                return;
+            }
+            self.discord_updates.record(now);
             if linked {
                 let link = self.discord_link.as_ref().expect("checked above").clone();
                 let token = self.discord_link_token.clone().expect("checked above");

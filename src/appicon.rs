@@ -21,6 +21,7 @@ macro_rules! variant {
 }
 
 pub const CLASSIC: &str = "classic";
+pub const PNG: &[u8] = include_bytes!("../assets/icon/icon.png");
 
 pub static ALL: &[Variant] = &[
     Variant { id: CLASSIC, ico: include_bytes!("../assets/icon/icon.ico") },

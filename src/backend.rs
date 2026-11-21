@@ -900,14 +900,14 @@ pub struct Backend {
     canvas_spotify: Arc<tokio::sync::Mutex<Option<(String, Arc<crate::transfer::spotify::Client>)>>>,
     /// Canvas answers per song (`None`: Spotify has none, or nobody's signed in),
     /// shedding the oldest when full rather than everything at once.
-    canvas_cache: Arc<std::sync::Mutex<CanvasCache>>,
+    canvas_cache: Arc<tokio::sync::Mutex<CanvasCache>>,
 }
 
 /// Spotify canvas answers by song, remembering arrival order so a full cache sheds its
 /// oldest entries (a clear-all refetched the whole recent room's worth at once).
 #[derive(Default)]
 struct CanvasCache {
-    answers: std::collections::HashMap<String, Option<String>>,
+    answers: std::collections::HashMap<String, (Option<String>, std::time::Instant)>,
     order: std::collections::VecDeque<String>,
 }
 
@@ -915,7 +915,7 @@ const CANVAS_CACHE: usize = 128;
 
 impl CanvasCache {
     fn get(&self, key: &str) -> Option<&Option<String>> {
-        self.answers.get(key)
+        self.answers.get(key).filter(|(url, at)| url.is_some() || at.elapsed() < std::time::Duration::from_secs(120)).map(|(url, _)| url)
     }
 
     fn insert(&mut self, key: &str, answer: Option<String>) {
@@ -927,7 +927,7 @@ impl CanvasCache {
                 }
             }
         }
-        self.answers.insert(key.to_owned(), answer);
+        self.answers.insert(key.to_owned(), (answer, std::time::Instant::now()));
     }
 }
 
@@ -1060,12 +1060,14 @@ impl Backend {
     /// The playing song's canvas (Spotify's own looping cover video), the way the web
     /// player looks it up: search the song, take the best match, ask for its clip.
     /// Answered once per song; asked again only after the cache is dropped.
-    async fn spotify_canvas(&self, key: &str, title: &str, artist: &str, duration_ms: Option<u64>) -> Option<String> {
-        if let Some(hit) = self.canvas_cache.lock().unwrap().get(key) {
+    pub(crate) async fn spotify_canvas(&self, key: &str, title: &str, artist: &str, duration_ms: Option<u64>) -> Option<String> {
+        // Player and Discord may ask about the same song on the same frame.
+        let mut cache = self.canvas_cache.lock().await;
+        if let Some(hit) = cache.get(key) {
             return hit.clone();
         }
         let hit = self.spotify_canvas_inner(title, artist, duration_ms).await;
-        self.canvas_cache.lock().unwrap().insert(key, hit.clone());
+        cache.insert(key, hit.clone());
         hit
     }
 

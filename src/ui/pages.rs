@@ -1854,6 +1854,7 @@ fn downloads(app: &mut App, ui: &mut Ui, now: f64) {
 pub(super) enum SettingsTab {
     #[default]
     Account,
+    Discord,
     Playback,
     Sources,
     Lyrics,
@@ -1863,11 +1864,12 @@ pub(super) enum SettingsTab {
 }
 
 impl SettingsTab {
-    const ALL: [Self; 7] = [Self::Account, Self::Playback, Self::Sources, Self::Lyrics, Self::Appearance, Self::General, Self::Shortcuts];
+    const ALL: [Self; 8] = [Self::Account, Self::Discord, Self::Playback, Self::Sources, Self::Lyrics, Self::Appearance, Self::General, Self::Shortcuts];
 
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::Account => "Account",
+            Self::Discord => "Discord",
             Self::Playback => "Playback",
             Self::Sources => "Music sources",
             Self::Lyrics => "Lyrics",
@@ -2010,14 +2012,13 @@ fn settings_tab(app: &mut App, ui: &mut Ui, tab: SettingsTab) {
         SettingsTab::Account => {
             settings_account(app, ui);
             settings_connections(app, ui);
-            // The Discord card: its wording, and a preview of it, under the link.
-            super::presence::settings(app, ui);
             // Spotify, with the accounts it signs into: its transfer card and its
             // account row belong with the Google account above them.
             if filter_show(ui, "Import Spotify transfer Liked Songs playlists account") {
                 super::transfer::settings_section(app, ui);
             }
         }
+        SettingsTab::Discord => super::presence::settings(app, ui),
         SettingsTab::Playback => settings_playback(app, ui),
         SettingsTab::Sources => {
             settings_sources(app, ui);
@@ -3553,44 +3554,9 @@ fn settings_window(app: &mut App, ui: &mut Ui) {
     });
 }
 
-/// Settings › Connections: the Discord sign-in and Last.fm. The Discord card itself is
-/// laid out in the Discord section under this one (`presence::settings`).
+/// Settings › Account › Connections: Last.fm scrobbling.
 fn settings_connections(app: &mut App, ui: &mut Ui) {
-    let linked = app.discord_link_token.is_some();
-    let (mut connect, mut disconnect) = (false, false);
     settings_section(ui, "Connections", None, None, |ui| {
-        // Without a linked account the plain IPC card shows (the app id's, through the
-        // Discord app); a linked one puts the same card on the user's own profile.
-        let detail = if linked {
-            match &app.discord_link_user {
-                Some(u) => format!("The Discord card shows on {}'s profile.", u.name),
-                None => "Discord is linked; the card shows on the linked account.".to_owned(),
-            }
-        } else {
-            "Sign Discord in once and the card shows on your own profile, buttons and artwork included, without the Discord app running. Without a link, the card shows through the Discord app's rich presence instead.".to_owned()
-        };
-        let status = app.discord_link.as_ref().map(|s| s.status()).unwrap_or(("off", None));
-        let link_detail = match (&status.1, app.discord_link_busy) {
-            (Some(p), _) => p.clone(),
-            (None, true) => "Waiting for the Discord page…".to_owned(),
-            (None, false) if linked => match status.0 {
-                "ready" => detail,
-                "connecting" => "Bringing the linked account's gateway up…".to_owned(),
-                "error" => "The linked account's gateway is down.".to_owned(),
-                _ => "Linked. The card starts with the Rich Presence switch below.".to_owned(),
-            },
-            (None, false) => detail,
-        };
-        setting_row(ui, "Link Discord", Some(&link_detail), |ui| {
-            if linked {
-                disconnect = pill(ui, "Disconnect", None, false).clicked();
-            } else if app.discord_link_busy {
-                ui.spinner();
-            } else {
-                connect = pill(ui, "Connect", None, false).clicked();
-            }
-        });
-        divider(ui);
         let busy = app.lastfm_busy.load(Ordering::Relaxed);
         let desc = match &app.lastfm_user {
             Some(name) => format!("Scrobbling what you play to {name}'s profile."),
@@ -3614,12 +3580,6 @@ fn settings_connections(app: &mut App, ui: &mut Ui) {
             app.lastfm_sign_out();
         }
     });
-    if connect {
-        app.link_discord();
-    }
-    if disconnect {
-        app.unlink_discord();
-    }
 }
 
 /// Settings › Network: the proxy everything goes through, a connection test, and a
