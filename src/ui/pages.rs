@@ -691,6 +691,9 @@ fn ranked_grid(ui: &mut Ui, rows_ctx: &Rows, liked: &HashSet<String>, acts: &mut
 /// One of Home's recommendation rows (the HomeRecommender port): a song grid with
 /// a header for what it grew from — the seed's cover beside the title, a Show all
 /// onto the artist or genre — and clicking a song starts its radio, as the feed's do.
+/// A row with nowhere to send a Show all (a "Because you like" one) is a handful
+/// of songs rather than a grid's worth: it lays out as big covers, the way Listen
+/// again does.
 fn reco_grid(ui: &mut Ui, rows_ctx: &Rows, liked: &HashSet<String>, acts: &mut Vec<Action>, id: &str, r: &crate::recommend::Row) {
     let strap = match r.kind {
         crate::recommend::Kind::BecauseYouLike => "Because you like",
@@ -712,6 +715,19 @@ fn reco_grid(ui: &mut Ui, rows_ctx: &Rows, liked: &HashSet<String>, acts: &mut V
             return;
         }
         let nudge = right as i32 - l as i32;
+        if r.endpoint.is_none() {
+            // Nothing behind a Show all: the songs are the row's whole worth, and
+            // covers say more than thin rows do at that size.
+            let tile = feed_tile(ui, true);
+            h_scroll(ui, id, nudge, tracks.len(), tile, 20.0, |ui| {
+                ui.spacing_mut().item_spacing.x = 20.0;
+                for t in &tracks {
+                    let is_liked = liked.contains(&t.id);
+                    card(ui, &super::responses::song_card(t), tile, is_liked, acts);
+                }
+            });
+            return;
+        }
         let col_w = feed_tile(ui, false);
         let mut picked = None;
         h_scroll(ui, id, nudge, tracks.len().div_ceil(3), col_w, 20.0, |ui| {
