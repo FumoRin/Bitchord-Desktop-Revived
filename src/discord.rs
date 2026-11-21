@@ -390,21 +390,20 @@ impl Presence {
     }
 }
 
-pub(crate) fn quality_summary(codec: &str, sample_rate: Option<u32>) -> Option<String> {
-    let codec = codec.trim();
+/// The quality line Discord carries: the tier, the bitrate and the sample rate —
+/// "Lossless - 1411 kbps - 44.1 kHz" — each part dropped when the stream didn't
+/// say it.
+pub(crate) fn quality_summary(tier: &str, bitrate_kbps: Option<u32>, sample_rate: Option<u32>) -> String {
     let rate = sample_rate.filter(|hz| *hz > 0).map(|hz| {
         if hz % 1000 == 0 {
-            format!("{}kHz", hz / 1000)
+            format!("{} kHz", hz / 1000)
         } else {
             let fraction = format!("{:03}", hz % 1000);
-            format!("{}.{}kHz", hz / 1000, fraction.trim_end_matches('0'))
+            format!("{}.{} kHz", hz / 1000, fraction.trim_end_matches('0'))
         }
     });
-    match (codec.is_empty(), rate) {
-        (false, Some(rate)) => Some(format!("{} · {rate}", codec.to_ascii_uppercase())),
-        (false, None) => Some(codec.to_ascii_uppercase()),
-        (true, rate) => rate,
-    }
+    let bitrate = bitrate_kbps.filter(|k| *k > 0).map(|k| format!("{k} kbps"));
+    [Some(tier.to_owned()), bitrate, rate].into_iter().flatten().collect::<Vec<_>>().join(" - ")
 }
 
 pub(crate) fn web_url(value: &str, limit: usize) -> Option<String> {
@@ -955,12 +954,12 @@ mod tests {
     }
 
     #[test]
-    fn quality_summary_uses_the_stream_codec_and_sample_rate() {
-        assert_eq!(quality_summary("flac", Some(44_100)).as_deref(), Some("FLAC · 44.1kHz"));
-        assert_eq!(quality_summary("AAC", Some(48_000)).as_deref(), Some("AAC · 48kHz"));
-        assert_eq!(quality_summary("mp3", Some(22_050)).as_deref(), Some("MP3 · 22.05kHz"));
-        assert_eq!(quality_summary("AAC", None).as_deref(), Some("AAC"));
-        assert_eq!(quality_summary("", None), None);
+    fn quality_summary_says_the_tier_the_bitrate_and_the_rate() {
+        assert_eq!(quality_summary("Lossless", Some(1411), Some(44_100)), "Lossless - 1411 kbps - 44.1 kHz");
+        assert_eq!(quality_summary("High", Some(133), Some(48_000)), "High - 133 kbps - 48 kHz");
+        assert_eq!(quality_summary("Hi-Res Lossless", Some(2304), Some(96_000)), "Hi-Res Lossless - 2304 kbps - 96 kHz");
+        assert_eq!(quality_summary("High", None, Some(22_050)), "High - 22.05 kHz");
+        assert_eq!(quality_summary("High", Some(256), None), "High - 256 kbps");
     }
 
     #[test]

@@ -416,7 +416,7 @@ fn example() -> Presence {
         album_id: None,
         art: Some(discord::ICON.into()),
         artist_art: None,
-        quality: Some("FLAC · 44.1kHz".into()),
+        quality: Some("Lossless - 1411 kbps - 44.1 kHz".into()),
         duration_ms: 205_000,
         position_ms: 79_000,
         clock: (0, 0, 0),

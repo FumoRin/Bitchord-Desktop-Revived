@@ -125,18 +125,18 @@ impl App {
         let start_ms = now - (position_ms as f64 / f64::from(speed)) as i64;
         let dur = (duration_ms as f64 / f64::from(speed)) as i64;
         // The stream's own sample rate can differ from the audio device's output rate.
-        let quality = self
-            .stream_stats
-            .as_ref()
-            .filter(|(generation, _)| *generation == self.generation)
-            .and_then(|(_, s)| crate::discord::quality_summary(&s.codec, Some(s.sample_rate)))
-            .or_else(|| {
-                self.audio_info
-                    .as_ref()
-                    .filter(|(generation, _)| *generation == self.generation)
-                    .and_then(|(_, i)| crate::discord::quality_summary(&i.codec, i.sample_rate))
-            })
-            .or_else(|| Some("High".to_owned()));
+        // The line says the tier, the bitrate and the rate: the stream's measured
+        // numbers when the decoder reported them, the addon's own when it's the
+        // source of truth, and the tier off the addon's info — a plain YouTube
+        // stream has none, so it plays as High.
+        let stats = self.stream_stats.as_ref().filter(|(g, _)| *g == self.generation).map(|(_, s)| s);
+        let info = self.audio_info.as_ref().filter(|(g, _)| *g == self.generation).map(|(_, i)| i);
+        let quality = match (stats, info) {
+            (Some(s), Some(i)) => Some(crate::discord::quality_summary(i.tier(), s.bitrate_kbps, Some(s.sample_rate))),
+            (Some(s), None) => Some(crate::discord::quality_summary("High", s.bitrate_kbps, Some(s.sample_rate))),
+            (None, Some(i)) => Some(crate::discord::quality_summary(i.tier(), i.bitrate_kbps, i.sample_rate)),
+            (None, None) => Some("High".to_owned()),
+        };
         let code = self.jam.code();
         Some(crate::discord::Presence {
             video_id: t.id.clone(),
