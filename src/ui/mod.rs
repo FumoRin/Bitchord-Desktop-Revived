@@ -394,19 +394,31 @@ impl MotionView {
         self.motion.set_playing(on);
     }
 
-    /// The newest frame as a texture, once one has been decoded.
-    fn texture(&mut self, ctx: &egui::Context) -> Option<&egui::TextureHandle> {
+    /// The newest frame as a texture, once one has been decoded, and the colours of its
+    /// first frame — taken unless the song's are kept already (`known`). `None`: no
+    /// frame yet.
+    fn texture(&mut self, ctx: &egui::Context, known: bool) -> Option<(&egui::TextureHandle, Option<crate::art::Art>)> {
+        let mut colours = None;
         if let Some((version, frame)) = self.motion.latest()
             && version != self.seen
         {
             self.seen = version;
             let image = egui::ColorImage::from_rgba_unmultiplied([frame.w, frame.h], &frame.rgba);
+            // The clip is what's on screen, and a song's single and album covers can
+            // differ: its first frame sets the colours (kept for the song). They stay
+            // put while it plays: each theme decides whether its background moves.
+            if !known
+                && self.tex.is_none()
+                && let Some(art) = crate::art::from_cover_frame(&image)
+            {
+                colours = Some(art);
+            }
             match &mut self.tex {
                 Some(tex) => tex.set(image, egui::TextureOptions::LINEAR),
                 None => self.tex = Some(ctx.load_texture("motion-cover", image, egui::TextureOptions::LINEAR)),
             }
         }
-        self.tex.as_ref()
+        self.tex.as_ref().map(|t| (t, colours))
     }
 }
 
@@ -744,6 +756,15 @@ pub struct App {
     /// for the addons before the song starts.
     disable_direct_stream: bool,
     accent: Color32,
+    /// The still cover of the song playing, as the accent and background were last set
+    /// from it (`art_key` says whose it is).
+    track_art: Option<crate::art::Art>,
+    /// First-frame colours by song, kept when a decoder goes away.
+    clip_art: std::collections::HashMap<String, crate::art::Art>,
+    /// The frame just drawn had the playing song's animated cover up.
+    clip_shown: bool,
+    /// The song whose visible clip supplies the accent and background.
+    clip_leads: Option<String>,
     /// Selected theme preset (see `preset.rs`).
     theme_id: String,
     /// Preset whose chrome (glass, corner radius) is installed in the egui style.
@@ -1289,6 +1310,10 @@ impl App {
             radio_retry_at: None,
             seek_drag: None,
             art_key: None,
+            track_art: None,
+            clip_art: Default::default(),
+            clip_shown: false,
+            clip_leads: None,
             canvas_covers: Default::default(),
             canvas_apple_done: Default::default(),
             canvas_apple_waiting: Default::default(),
@@ -1712,7 +1737,16 @@ impl App {
         // owning on the one frame a lookup is started.
         let id = track.id.as_str();
         if let Some(url) = self.canvas_covers.get(id).cloned() {
-            return self.motion_sprite(ctx, format!("clip\u{1}{id}"), &url, max_width);
+            let sprite = self.motion_sprite(ctx, id, &url, max_width)?;
+            if self.current_id() == Some(id) {
+                self.clip_shown = true;
+                if self.clip_leads.as_deref() != Some(id) && self.clip_art.contains_key(id) {
+                    self.clip_leads = Some(id.to_owned());
+                    let now = ctx.input(|i| i.time);
+                    self.show_cover_colours(now);
+                }
+            }
+            return Some(sprite);
         }
         // Apple first, once per song. `canvas` remembers found clips and misses on
         // disk, so neither is asked again for days.
@@ -1803,7 +1837,7 @@ impl App {
 
     /// The newest frame of a motion clip, started the first time it's seen. The decoders
     /// on screen are capped so old pages don't leave threads behind.
-    fn motion_sprite(&mut self, ctx: &egui::Context, key: String, url: &str, max_width: u32) -> Option<widgets::MotionSprite> {
+    fn motion_sprite(&mut self, ctx: &egui::Context, id: &str, url: &str, max_width: u32) -> Option<widgets::MotionSprite> {
         // Never decode wider than the player's sleeve needs; frames and textures are
         // sized by this, so it bounds the whole feature's memory.
         let max_width = max_width.clamp(64, 640);
@@ -1812,7 +1846,7 @@ impl App {
         // One decoder per cover. The strip and the player ask for different sizes, and
         // replacing it per caller would restart the clip every frame and never show a
         // frame: a bigger view takes over only when it needs a wider decode.
-        let stale = self.motion_views.get(&key).map_or(true, |v| v.width < max_width);
+        let stale = self.motion_views.get(id).map_or(true, |v| v.width < max_width);
         if stale {
             // At the cap, the least recently used view makes way for the new one.
             if self.motion_views.len() >= MOTION_VIEWS
@@ -1824,16 +1858,48 @@ impl App {
             // one plain mp4, which decodes through its own download path.
             let is_mp4 = url.split(['?', '#']).next().is_some_and(|p| p.to_ascii_lowercase().ends_with(".mp4"));
             let motion = if is_mp4 { crate::motion::play_mp4(ctx, url, max_width) } else { crate::motion::play(ctx, url, max_width) };
-            self.motion_views.insert(key.clone(), MotionView::new(motion, max_width));
+            self.motion_views.insert(id.to_owned(), MotionView::new(motion, max_width));
         }
         // The clip's clock follows the music: paused, the cover holds still.
         // Read before the borrow of `motion_views`: `playing` wants all of `self`.
         let playing = self.playing() || self.buffering;
-        let view = self.motion_views.get_mut(&key)?;
+        // The song's clip colours are kept already: its first frame needn't be taken again.
+        let known = self.clip_art.contains_key(id);
+        let view = self.motion_views.get_mut(id)?;
         view.last_used = std::time::Instant::now();
         view.set_playing(playing);
-        let tex = view.texture(ctx)?;
+        let (tex, colours) = view.texture(ctx, known)?;
+        if let Some(art) = colours {
+            self.clip_art.insert(id.to_owned(), art);
+        }
         Some(widgets::MotionSprite { id: tex.id(), size: tex.size_vec2() })
+    }
+
+    /// The accent and background to [`Self::cover_colours`], crossfading there.
+    fn show_cover_colours(&mut self, now: f64) {
+        let Some(art) = self.cover_colours().cloned() else { return };
+        self.accent = art.accent;
+        if let Some(bg) = &self.bg {
+            bg.set_art(art);
+        }
+        self.art_changed = now;
+    }
+
+    /// The playing song's cover colours, preferring its visible animated cover.
+    fn cover_colours(&self) -> Option<&crate::art::Art> {
+        let id = self.current_id()?;
+        (self.clip_leads.as_deref() == Some(id))
+            .then(|| self.clip_art.get(id))
+            .flatten()
+            .or_else(|| self.track_art.as_ref().filter(|_| self.art_key.as_deref() == Some(id)))
+    }
+
+    /// The animated cover went off screen (Now playing closed, the window hidden): the
+    /// colours go back to the still cover's if they were the clip's.
+    fn drop_cover_clip(&mut self, now: f64) {
+        if self.clip_leads.take().is_some() {
+            self.show_cover_colours(now);
+        }
     }
 
     fn accent_color(&self) -> Color32 {
@@ -1955,6 +2021,12 @@ impl eframe::App for App {
         pace::frame(ctx);
         self.lyric_view.release_hidden(ctx.cumulative_pass_nr());
         let now = ctx.input(|i| i.time);
+        // The clip's colours stand in only while it's on screen — the frame just drawn
+        // said so (`animated_cover`); once one hasn't, back to the still cover's.
+        if !self.clip_shown || self.clip_leads.as_deref() != self.current_id() {
+            self.drop_cover_clip(now);
+        }
+        self.clip_shown = false;
         self.sync_look();
         self.pump(ctx, now);
         // A sorted playlist that loads again in a while, for its new order.

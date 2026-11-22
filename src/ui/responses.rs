@@ -29,6 +29,8 @@ impl App {
         }
         if self.canvas_covers.len() > 512 {
             self.canvas_covers.clear();
+            // A live texture has already passed its first frame.
+            self.clip_art.retain(|id, _| self.motion_views.contains_key(id));
             self.canvas_apple_done.clear();
         }
         // Sorted playlists load again when it's time, for their new order. One whose load
@@ -462,12 +464,10 @@ impl App {
             }
             Resp::Art { key, art } => {
                 if self.mix_hold().is_none() && self.current_id() == Some(key.as_str()) {
-                    self.accent = art.accent;
-                    if let Some(bg) = &self.bg {
-                        bg.set_art(art);
-                    }
+                    self.track_art = Some(art);
                     self.art_key = Some(key);
-                    self.art_changed = now;
+                    // An animated cover on screen keeps its own colours.
+                    self.show_cover_colours(now);
                 }
             }
             Resp::CanvasUrl { id, url } => {
