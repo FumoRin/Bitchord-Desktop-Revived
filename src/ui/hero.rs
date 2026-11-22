@@ -25,8 +25,10 @@ const REEL: f64 = 8.0;
 /// A gacha needs this many songs to roll from.
 const GACHA_MIN_POOL: usize = 4;
 
-/// A gacha roll under way: what it's spinning through, what it landed on, and when.
+/// A gacha roll under way: what it's spinning through, what it landed on, when it
+/// started (the reel rides the spin's progress) and when it ends.
 pub(super) struct Gacha {
+    pub from: f64,
     pub until: f64,
     pub won: Track,
     pool: Vec<Track>,
@@ -293,11 +295,22 @@ pub(super) fn draw(app: &mut App, ui: &mut Ui, now: f64) {
 
     // --- the stage's wash: the card's art, melted into the page at its edges
     let reel = if on_gacha {
-        app.gacha
-            .as_ref()
-            .and_then(|g| g.pool.get(((now * REEL) as usize) % g.pool.len()))
-            .or_else(|| app.gacha_pool.first())
-            .cloned()
+        match app.gacha.as_ref() {
+            Some(g) => {
+                // The reel runs whole turns and lands on the winner: its index rides the
+                // spin's eased progress (fast into the spin, settling at the end), so the
+                // cover it stops on is the song that then plays — never a neighbour's.
+                let n = g.pool.len().max(1);
+                let won_idx = g.pool.iter().position(|t| t.id == g.won.id).unwrap_or(0);
+                let p = (((now - g.from) / (g.until - g.from).max(0.001)) as f32).clamp(0.0, 1.0);
+                let eased = 1.0 - (1.0 - p).powi(3);
+                let turns = (((g.until - g.from) * REEL) as usize / n).max(1);
+                let steps = won_idx + n * turns;
+                g.pool.get(((eased * steps as f32) as usize) % n).cloned()
+            }
+            // Between rolls the card holds the song the last roll landed on.
+            None => app.last_roll.clone().or_else(|| app.gacha_pool.first().cloned()),
+        }
     } else {
         None
     };
@@ -392,12 +405,13 @@ pub(super) fn draw(app: &mut App, ui: &mut Ui, now: f64) {
         }
     }
     if rolled && can_roll {
-        // pick from the pool with chance: the reel spins what it spins through, and
-        // the roll takes 3.5–9 s before it lands
+        // pick from the pool with chance: the reel spins whole turns and lands on this
+        // one (see the wash above), taking 3.5–9 s before it fires
         let mut rng = crate::recommend::Rng::new();
         let won = app.gacha_pool[(rng.unit() * app.gacha_pool.len() as f64) as usize].clone();
         let spin = SPIN_MIN + rng.unit() * (SPIN_MAX - SPIN_MIN);
-        app.gacha = Some(Gacha { until: now + spin, won, pool: app.gacha_pool.clone() });
+        app.last_roll = Some(won.clone());
+        app.gacha = Some(Gacha { from: now, until: now + spin, won, pool: app.gacha_pool.clone() });
         app.hero_at = now;
     }
 

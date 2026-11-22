@@ -529,6 +529,9 @@ pub struct App {
     hero_at: f64,
     /// A gacha roll under way (see `hero::Gacha`).
     gacha: Option<hero::Gacha>,
+    /// The song the last gacha roll landed on: the card's cover between rolls, so it
+    /// keeps saying what played instead of showing the pool's first song.
+    last_roll: Option<Track>,
     /// The songs a gacha rolls from, rebuilt with the local rows.
     gacha_pool: Vec<Track>,
     /// The hero's discoveries: what each grew from and what it found.
@@ -1192,6 +1195,7 @@ impl App {
             hero_page: 0,
             hero_at: 0.0,
             gacha: None,
+            last_roll: None,
             gacha_pool: Vec::new(),
             discover: Vec::new(),
             all_time_hits: Vec::new(),
