@@ -307,6 +307,31 @@ pub fn pill(ui: &mut Ui, label: &str, glyph: Option<char>, primary: bool) -> Res
     resp
 }
 
+/// A pill pinned to a rect of its own — `pill` lays itself out in a panel's flow, but
+/// art that carries its own buttons (home's hero, the artist's banner) pins theirs.
+/// Same look; `salt` keeps the id apart from other pills of the same label.
+pub fn pill_at(ui: &mut Ui, rect: Rect, salt: &str, label: &str, glyph: Option<char>, primary: bool) -> Response {
+    let resp = ui.interact(rect, egui::Id::unique((salt, label)), Sense::click());
+    let resp = named(resp, label).on_hover_cursor(egui::CursorIcon::PointingHand);
+    let h = theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.hovered(), 0.15);
+    let (fill, fg) = if primary {
+        if theme::light() { (theme::lerp_color(theme::text(), Color32::BLACK, h), Color32::WHITE) } else { (theme::lerp_color(Color32::from_gray(240), Color32::WHITE, h), Color32::from_gray(12)) }
+    } else {
+        (theme::glass(0.10 + 0.08 * h), theme::text())
+    };
+    let r = rect.shrink(if resp.is_pointer_button_down_on() { 1.0 } else { 0.0 });
+    ui.painter().rect_filled(r, 19.0, fill);
+    let text = ui.painter().layout_no_wrap(label.to_owned(), theme::semibold(14.0), Color32::PLACEHOLDER);
+    let icon_w = if glyph.is_some() { 24.0 } else { 0.0 };
+    let mut x = r.left() + (r.width() - text.size().x - icon_w) / 2.0;
+    if let Some(g) = glyph {
+        icon_at(ui, pos2(x + 8.0, r.center().y), g, 17.0, fg);
+        x += icon_w;
+    }
+    ui.painter().galley(pos2(x, r.center().y - text.size().y / 2.0), text, fg);
+    resp
+}
+
 /// Selectable chip (home moods, library tabs).
 pub fn chip(ui: &mut Ui, label: &str, selected: bool) -> Response {
     let text = ui.painter().layout_no_wrap(label.to_owned(), theme::semibold(13.5), Color32::PLACEHOLDER);

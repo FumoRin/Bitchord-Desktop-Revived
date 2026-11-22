@@ -223,6 +223,9 @@ enum Dialog {
     /// `info` until it loads; `busy` while a change is on its way; `confirm_off` asks
     /// before turning collaboration off (that removes the collaborators).
     Collaborate { id: String, info: Option<crate::ytm::Collaboration>, busy: bool, confirm_off: bool },
+    /// The artist page's About, from the card on the banner: the channel's picture and
+    /// the full description, which the card only previews.
+    ArtistAbout { name: String, description: String, avatar: Option<String>, subscribers: Option<u64> },
 }
 
 /// Songs picked in a list for a batch action: Ctrl-click toggles one, Shift-click a range,
@@ -2353,7 +2356,9 @@ impl eframe::App for App {
             egui::CentralPanel::default()
                 // Nothing at the right: the pages' scroll bar hugs the window's edge (the
                 // page keeps its own gutter inside), like the base this fork came from.
-                .frame(egui::Frame::new().inner_margin(egui::Margin { left: 28, right: 0, top: titlebar::top_margin(14, 42.0), bottom: 0 }))
+                // `pages::PAGE_INSET` on the left: full-bleed art (the artist's banner,
+                // home's hero) paints across it to reach the sidebar's edge.
+                .frame(egui::Frame::new().inner_margin(egui::Margin { left: pages::PAGE_INSET, right: 0, top: titlebar::top_margin(14, 42.0), bottom: 0 }))
                 .show(ui, |ui| {
                     shell::top_bar(self, ui);
                     ui.add_space(2.0);
@@ -2623,15 +2628,11 @@ impl eframe::App for App {
             link.shutdown();
         }
         // A downloaded update installs only when the user restarted for it; nothing is
-        // installed behind their back as the app closes.
+        // installed behind their back as the app closes. The settings' backup into the
+        // update is `main`'s to take, after `run_native` has torn eframe's storage
+        // (and the background thread that writes app.ron) down — here that write
+        // would still be on its way, and a backup taken off it could race it.
         let update_ready = self.updater.as_ref().is_some_and(|u| matches!(u.state(), crate::update::State::Ready { .. }));
-        if update_ready {
-            // eframe has saved and flushed app.ron by now (its save runs before
-            // on_exit), so the backup goes into the update carrying this session's
-            // every setting — the launch-time copy could be a whole session old,
-            // and a restore from it read as "my addons are gone".
-            crate::guard_settings(&self.backend.data_dir());
-        }
         if let Some(u) = &self.updater
             && self.restart_for_update
         {
