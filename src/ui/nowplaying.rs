@@ -231,11 +231,6 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
     // Artwork alone: centered.
     let col_art = Rect::from_center_size(content.center(), vec2(content.width().min(content.height() * 0.9), content.height()));
     let slide = 72.0;
-    // The volume dial's wake zone: the whole margin the sleeve leaves at the window's
-    // left edge, out to the art itself, not the old sliver beside it. Where nothing
-    // of the sleeve rests at the left (a right-side sleeve, narrow lyrics) the edge
-    // keeps its sliver; a centred artwork (artwork alone) answers to the margin.
-    let mut strip_right = content.left() + 8.0;
     let right = if lyrics_only {
         // No cover column next to the panel: the artwork fades in from the left as the panel leaves.
         let px = (art_side(cs, col_art) * ppp) as u32;
@@ -258,9 +253,6 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
             Rect::from_min_size(content.min, vec2(col_w, content.height()))
         };
         let col = Rect::from_min_max(col_art.min.lerp(col_panel.min, glide), col_art.max.lerp(col_panel.max, glide));
-        if cs.side != Side::Right {
-            strip_right = ((col.center().x - art_side(cs, col) / 2.0 - 6.0).min(content.left() + 96.0)).max(full.left() + 44.0);
-        }
         // One image size for the whole glide, the bigger of its two ends.
         let px = (art_side(cs, col_art).max(art_side(cs, col_panel)) * ppp) as u32;
         cover_column(app, ui, col, &track, &heard, no_lyrics, now, px);
@@ -334,29 +326,33 @@ fn body(app: &mut App, ui: &mut Ui, now: f64) {
         app.np_tab = if on { NpTab::Art } else { NpTab::UpNext };
     }
 
-    edge_volume(app, ui, full, content, strip_right);
+    edge_volume(app, ui, full, content);
 }
 
-/// The volume along the view's left edge: the margin stays empty until the pointer
-/// comes into it, then osu!'s volume dial grows in — the level a neon arc round a
-/// dark disc, the number in its middle, the speaker a mute. Dragged across like a
-/// slider, the wheel a nudge. The view keeps its breathing room; the edge only has
-/// to be asked.
-fn edge_volume(app: &mut App, ui: &mut Ui, full: Rect, content: Rect, strip_right: f32) {
+/// The volume at the screen's left edge: a half disc pressed flat against it, its rim
+/// running the whole window edge with no spacing. The level is a neon arc round the
+/// rim — the foot silence, the crown full — the number at its heart, the speaker a
+/// mute. Dragged up and down along the rim like the arc reads it, the wheel a nudge.
+/// Only its own ground wakes it: the edge stays empty until the pointer comes onto
+/// the half disc, then the dial grows in.
+fn edge_volume(app: &mut App, ui: &mut Ui, full: Rect, content: Rect) {
     let open_id = egui::Id::unique("np-vol-open");
     let was = ui.ctx().data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
     // The window's resize border owns the outermost sliver in a layer above this
     // one, so the hover is read from the pointer's position rather than egui's
     // `rect_contains_pointer`, which would report the border's verdict instead.
-    let hover = |r: Rect| ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| r.contains(p));
-    // The strip that wakes the dial runs from past the resize border to the sleeve.
+    let hover_pos = ui.input(|i| i.pointer.hover_pos());
+    let r = 74.0;
+    // The flat side sits on the window's left edge, centred on the view: no spacing
+    // anywhere, the dial hanging off the screen's border like the reference's.
+    let at = pos2(full.left(), content.center().y);
+    let dial = Rect::from_min_size(pos2(full.left(), at.y - r), vec2(r, r * 2.0));
+    // Its own ground, and nothing else: on the half disc (the corners of its rect
+    // are air), a touch past the rim so the edge is easy to catch.
+    let over = |p: Pos2, pad: f32| dial.expand(pad).contains(p) && p.distance(at) <= r + pad;
     // Once awake, the dial's own ground holds it — and any press, so a drag off the
     // dial doesn't drop it mid-turn.
-    let strip = Rect::from_min_max(pos2(full.left() + 5.0, content.top()), pos2(strip_right, content.bottom()));
-    let r = 62.0;
-    let at = pos2(strip.center().x.max(full.left() + r + 8.0), content.center().y);
-    let dial = Rect::from_center_size(at, Vec2::splat(r * 2.0));
-    let open = hover(strip) || (was && (hover(dial.expand(10.0)) || ui.input(|i| i.pointer.any_down())));
+    let open = hover_pos.is_some_and(|p| over(p, 12.0)) || (was && (hover_pos.is_some_and(|p| over(p, 10.0)) || ui.input(|i| i.pointer.any_down())));
     ui.ctx().data_mut(|d| d.insert_temp(open_id, open));
     let reveal = theme::anim_bool(ui.ctx(), "np-vol-reveal", open, 0.15);
     if reveal <= 0.001 {
@@ -365,14 +361,16 @@ fn edge_volume(app: &mut App, ui: &mut Ui, full: Rect, content: Rect, strip_righ
     let vol = app.audio.volume();
     let resp = ui
         .interact(dial, egui::Id::unique("np-vol"), Sense::click_and_drag())
-        .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+        .on_hover_cursor(egui::CursorIcon::ResizeVertical);
     let vh = theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.hovered() || resp.dragged(), 0.15);
     resp.widget_info(|| egui::WidgetInfo::slider(true, vol as f64, "Volume"));
-    // Across the dial like a slider: its left edge silence, its right edge full.
+    // Round the rim the way the arc reads it: the foot silence, the crown full, a
+    // drag up the half disc louder and down quieter.
     if let Some(p) = resp.interact_pointer_pos()
         && (resp.dragged() || resp.clicked())
     {
-        app.audio.set_volume(((p.x - dial.left()) / dial.width()).clamp(0.0, 1.0));
+        let a = (p.y - at.y).atan2(p.x - at.x);
+        app.audio.set_volume(((std::f32::consts::FRAC_PI_2 - a) / std::f32::consts::PI).clamp(0.0, 1.0));
     }
     if resp.hovered() {
         let scroll = ui.input(|i| i.smooth_scroll_delta.y);
@@ -381,22 +379,24 @@ fn edge_volume(app: &mut App, ui: &mut Ui, full: Rect, content: Rect, strip_righ
         }
     }
     // The disc: darker than the old pill, so the gauge reads over whatever the
-    // background carries, with a rim to lift it off the art.
+    // background carries, with a rim to lift it off the art. The window clips its
+    // half past the edge — the flat side is the screen's own border.
+    let outer = ui.clip_rect();
+    ui.set_clip_rect(Rect::from_min_max(pos2(outer.left().max(full.left()), (outer.top()).max(full.top())), pos2(outer.right(), outer.bottom())));
     ui.painter().circle_filled(at, r, theme::shade(0.60 * reveal));
     ui.painter().circle_stroke(at, r, egui::Stroke::new(1.0, theme::glass(0.10 * reveal)));
-    // The level as a neon arc: from the dial's foot, round the left and over the
-    // top, its length the volume — a notch stays at the foot, as in the reference,
-    // so full never closes. egui can't blur; layered strokes stand in for the glow,
-    // lit a touch stronger while it has the pointer.
+    // The level as a neon arc: from the dial's foot, round the rim and up to where
+    // the volume puts it — a notch stays at the foot, as in the reference, so full
+    // never closes. egui can't blur; layered strokes stand in for the glow, lit a
+    // touch stronger while it has the pointer.
     let accent = if app.accent_controls { app.accent_color() } else { Color32::WHITE };
-    let sweep = std::f32::consts::PI * 5.0 / 3.0;
-    let len = sweep * vol.clamp(0.0, 1.0);
+    let len = std::f32::consts::PI * vol.clamp(0.0, 1.0);
     let steps = 48;
     let arc_r = r - 9.0;
     let pts: Vec<Pos2> = (0..=steps)
         .map(|i| {
-            let a = -std::f32::consts::FRAC_PI_2 - len * i as f32 / steps as f32;
-            at + vec2(a.cos(), -a.sin()) * arc_r
+            let a = std::f32::consts::FRAC_PI_2 - len * i as f32 / steps as f32;
+            at + vec2(a.cos(), a.sin()) * arc_r
         })
         .collect();
     for (w, a) in [(9.0, 0.10), (5.5, 0.22), (2.8 + 0.6 * vh, 1.0)] {
@@ -408,13 +408,13 @@ fn edge_volume(app: &mut App, ui: &mut Ui, full: Rect, content: Rect, strip_righ
             ui.painter().circle_filled(p, 1.5, theme::with_alpha(accent, reveal));
         }
     }
-    // The level, said the way the reference says it: MAX at the top of the dial, the
-    // bare number under way.
+    // The level, said the way the reference says it: MAX near the crown, the bare
+    // number under way, both at the heart of the half disc.
     let label = if vol >= 0.995 { "MAX".to_owned() } else { format!("{}", (vol * 100.0).round()) };
-    ui.painter().text(pos2(at.x, at.y - 15.0), egui::Align2::CENTER_CENTER, &label, theme::bold(26.0), theme::with_alpha(Color32::WHITE, reveal));
-    // The speaker in its puck at the dial's heart: a click mutes (the player bar's
-    // own trip), a hover rings it in the accent, as the reference's hovered icon.
-    let chip = Rect::from_center_size(pos2(at.x, at.y + 26.0), Vec2::splat(34.0));
+    ui.painter().text(pos2(at.x + r * 0.5, at.y - 24.0), egui::Align2::CENTER_CENTER, &label, theme::bold(26.0), theme::with_alpha(Color32::WHITE, reveal));
+    // The speaker in its puck under the number: a click mutes (the player bar's own
+    // trip), a hover rings it in the accent, as the reference's hovered icon.
+    let chip = Rect::from_center_size(pos2(at.x + r * 0.5, at.y + 26.0), Vec2::splat(34.0));
     let mresp = ui.interact(chip, egui::Id::unique("np-vol-mute"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
     let mh = theme::anim_bool(ui.ctx(), mresp.id.with("h"), mresp.hovered(), 0.15);
     ui.painter().circle_filled(chip.center(), 17.0, theme::glass(0.10 * reveal));
@@ -422,6 +422,7 @@ fn edge_volume(app: &mut App, ui: &mut Ui, full: Rect, content: Rect, strip_righ
         ui.painter().circle_stroke(chip.center(), 19.0, egui::Stroke::new(2.0, theme::with_alpha(accent, mh * reveal)));
     }
     glyphs::draw(ui, chip.center(), 17.0, glyphs::VOLUME[glyphs::volume_step(vol)], theme::with_alpha(Color32::WHITE, reveal));
+    ui.set_clip_rect(outer);
     if mresp.hovered() {
         let scroll = ui.input(|i| i.smooth_scroll_delta.y);
         if scroll != 0.0 {
