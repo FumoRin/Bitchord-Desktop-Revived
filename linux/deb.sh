@@ -39,7 +39,7 @@ chmod 644 "$pkg/usr/lib/bitchord/deb.txt"
 
 # The libraries it links, at the versions it was built against. The tray's
 # appindicator is loaded at run time, so it's added by hand. desktop-file-utils
-# builds the MIME cache that `ytm-rs://` links are found through.
+# builds the MIME cache that `bitchord://` links are found through.
 mkdir -p "$work/debian"
 printf 'Source: bitchord\n\nPackage: bitchord\nArchitecture: any\n' > "$work/debian/control"
 shlibs=$(cd "$work" && dpkg-shlibdeps -O "$pkg/usr/lib/bitchord/bitchord" 2>/dev/null | sed -n 's/^shlibs:Depends=//p')
