@@ -156,7 +156,9 @@ DISPLAY=:99 YTM_BACKGROUND=1 YTM_DATA_DIR=/tmp/profile YTM_SIZE=1400x900 \
   log in `<dir>/bitchord.log` (rotated to `bitchord.prev.log`), renderer
   choice in `<dir>/renderer`, caches and sign-ins beside them. A fresh
   empty dir is a signed-out first launch — the state screenshots want.
-  Without it, everything lands in `~/.local/share/ytm-rs`.
+  Without it, everything lands in `~/.local/share/bitchord` (an install
+  from before 2.0.3 kept it in `~/.local/share/ytm-rs`; `src/migrate.rs`
+  moves that over once, on the first launch of a newer version).
 - `YTM_SIZE=WxH` sets the window in points (background mode defaults to
   1920x1057; first-launch default is 1200x780, minimum 760x480). The Xvfb
   screen must be at least as big as the window.
@@ -261,9 +263,12 @@ screenshot/script/probe machinery itself is `src/ui/dev.rs`.
   `src/ytmapi.rs` the YouTube Music API; `src/cache.rs` storage
   measure/clear; `src/downloads.rs` the download index;
   `src/audio.rs` rodio output; `src/theme.rs` theming and fonts;
-  `src/preset.rs` theme presets; `src/login.rs` the webview sign-ins.
+  `src/preset.rs` theme presets; `src/login.rs` the webview sign-ins;
+  `src/migrate.rs` the one-time move from the pre-2.0.3 (ytm-rs-named) data
+  folder and credential service.
 - `server/` the jam relay (separate crate, with its own smoke tests);
-  `site/` the website; `docs/readme` the README images;
+  `site/discord` the Discord card's artwork (bundled, and fetched from this
+  repo's raw files); `docs/readme` the README images;
   `installer/`, `linux/`, `macos/` packaging; `flake.nix` the Nix build.
 - `vendor/souvlaki` — a patched copy of the media-controls crate, wired in
   through `[patch]` in `Cargo.toml` (its Linux fixes live there, not on

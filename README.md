@@ -22,6 +22,8 @@
 
 > BitChord is an independent, unofficial client. It is not affiliated with, endorsed by, or connected to YouTube, Google, or Apple.
 
+> **BitChord Desktop Revived is a fork of [ytm-rs](https://github.com/grapedjuice/ytm-rs) by [grapedjuice](https://github.com/grapedjuice)** — most of the code it runs, from the playback engine and UI to the jam sync and installers, comes from ytm-rs, and this project wouldn't exist without it. It continues the desktop line of [BitChord-PC-Continued](https://github.com/jackychan4891/BitChord-PC-Continued) by [jackychan4891](https://github.com/jackychan4891), in the style of the [BitChord Android app](https://github.com/kushagrasinghx/BitChord) by kushagrasinghx. See [Acknowledgements](#acknowledgements) for the full credits.
+
 ## Screenshots (thx [unwrten](https://github.com/unwrten))
 
 <table>
@@ -68,7 +70,7 @@
 
 Download the latest build from [Releases](https://github.com/LoserDenji/Bitchord-Desktop-Revived/releases/latest).
 
-- **Windows** — download the Windows release asset (`-windows-x64-setup.exe` or `-windows-x64-portable.zip`), extract/install it, and run `bitchord.exe`.
+- **Windows** — download the Windows release asset (`bitchord-setup-<version>.exe`, or `-arm64` on ARM, or `bitchord-portable-<version>.zip`), extract/install it, and run `bitchord.exe`.
 
   If Windows SmartScreen appears for an unsigned build, choose **More info → Run anyway**.
   
@@ -94,11 +96,13 @@ Sign-ins are kept in your login Keychain. Jam links don't open the app on macOS 
 curl -fsSL https://raw.githubusercontent.com/LoserDenji/Bitchord-Desktop-Revived/main/linux/install.sh | sh
 ```
 
-This installs bitchord for your user (no root) in `~/.local/lib/ytm-rs`, with a `ytm-rs` command and an app menu entry. If WebKitGTK, other required libraries or desktop-file-utils (which lets the browser open jam and party links in the app) are missing, it installs them too (that step asks for your password). You can also download `bitchord-<version>-linux-x86_64.tar.gz`, extract it and run `./install.sh`.
+This installs bitchord for your user (no root) in `~/.local/lib/bitchord`, with a `bitchord` command and an app menu entry. If WebKitGTK, other required libraries or desktop-file-utils (which lets the browser open party links in the app) are missing, it installs them too (that step asks for your password). You can also download `bitchord-<version>-linux-x86_64.tar.gz`, extract it and run `./install.sh`.
 
-On Debian, Ubuntu and their derivatives you can instead download `bitchord_<version>_amd64.deb` and open it, or run `sudo apt install ./ytm-rs_<version>_amd64.deb`. It doesn't update itself: when a new version is out, the app says so and links to the new `.deb`, which installs over the old one. To uninstall it, run `sudo apt remove ytm-rs`.
+On Debian, Ubuntu and their derivatives you can instead download `bitchord_<version>_amd64.deb` and open it, or run `sudo apt install ./bitchord_<version>_amd64.deb`. It doesn't update itself: when a new version is out, the app says so and links to the new `.deb`, which installs over the old one. To uninstall it, run `sudo apt remove bitchord`.
 
-Sign-ins are kept in your keyring (GNOME Keyring or KWallet). To uninstall, run `~/.local/lib/ytm-rs/install.sh --uninstall`.
+Sign-ins are kept in your keyring (GNOME Keyring or KWallet). To uninstall, run `~/.local/lib/bitchord/install.sh --uninstall`.
+
+**Updating from 2.0.2 or earlier:** your settings, queue, downloads and sign-ins move to the app's own data folder automatically the first time the new version starts — nothing to do, and nothing is deleted. (Before 2.0.3 the app kept its data, and its Discord and Last.fm links, under the names of its origin project, ytm-rs; it no longer does. Last.fm asks you to link it once more, and Discord presence needs the project's own Discord application, which the maintainers register separately.) If BitChord had taken over `ytm-rs://` links on your machine, the update gives them back to ytm-rs.
 
 ## Building from source
 
@@ -106,7 +110,7 @@ You need the [Rust toolchain](https://rustup.rs/).
 
 ```sh
 git clone https://github.com/LoserDenji/Bitchord-Desktop-Revived.git
-cd BitChord-PC-Continued
+cd Bitchord-Desktop-Revived
 cargo build --release
 ```
 
@@ -118,9 +122,9 @@ Platform builds may require native dependencies (audio/system libraries and tool
 
 The app writes `bitchord.log` beside its settings, keeping the previous run as `bitchord.prev.log` — attach both (secrets removed) to a bug report. Panics, warnings and errors are captured in it on Windows, macOS and Linux. Find it at:
 
-- **Windows** — `%APPDATA%\ytm-rs\data\bitchord.log` (portable builds: a `data` folder next to the exe)
-- **macOS** — `~/Library/Application Support/ytm-rs/data/bitchord.log`
-- **Linux** — `~/.local/share/ytm-rs/data/bitchord.log`
+- **Windows** — `%APPDATA%\bitchord\data\bitchord.log` (portable builds: a `data` folder next to the exe; a pre-2.0.3 install: `%APPDATA%\ytm-rs\data\`)
+- **macOS** — `~/Library/Application Support/bitchord/data/bitchord.log`
+- **Linux** — `~/.local/share/bitchord/data/bitchord.log`
 
 The sign-in windows are separate processes and log to `bitchord-login.log`, `bitchord-spotify.log` and `bitchord-turnstile.log` in the same folder.
 
@@ -156,11 +160,16 @@ BitChord Desktop Revived is licensed under [GPL-3.0](LICENSE).
 
 ## Acknowledgements
 
-- The original Android app and the Liquid Glass icon are from [BitChord](https://github.com/kushagrasinghx/BitChord).
-- [ytm-rs](https://github.com/grapedjuice/ytm-rs) for the base of the app which was later modified by jackychan4891
-- [jackychan4891](https://github.com/jackychan4891/BitChord-PC-Continued) for the modification in ytm-rs app for parity with BitChord
-- [Sonora](https://github.com/sonorahq/sonora) for optimization and feature inspirations
-- [Mochy-Music](https://github.com/realidkroo/Mochy-Music) for the recommendation system and gatcha system
-- [egui](https://github.com/emilk/egui) for the interface.
-- [rodio](https://github.com/RustAudio/rodio) and Symphonia for audio playback and decoding.
-- Lyrics, metadata, playback, and integrations depend on the upstream libraries and third-party services used by this project.
+BitChord Desktop Revived stands on the work of others:
+
+- **[ytm-rs](https://github.com/grapedjuice/ytm-rs) by [grapedjuice](https://github.com/grapedjuice)** — the app this is. Most of the code (playback, UI, jam sync, installers, updater) comes from ytm-rs, ported forward and built upon here. The jam relay in `server/` is built on ytm-rs's jam server design.
+- **[BitChord-PC-Continued](https://github.com/jackychan4891/BitChord-PC-Continued) by [jackychan4891](https://github.com/jackychan4891)** — the desktop fork line this project continues, which brought the ytm-rs app to BitChord's feature set.
+- **[BitChord for Android](https://github.com/kushagrasinghx/BitChord) by kushagrasinghx** — the Liquid Glass icon, the Listen Together relay that parties run on (`api.bitchord.kushagrasingh.in`), and the wire protocol its backend speaks.
+- **[nxfu](https://github.com/nxfu)** — the customizable Discord Rich Presence card ([PR #6](https://github.com/LoserDenji/Bitchord-Desktop-Revived/pull/6)), and co-maintainer of this repo.
+- **[unwrten](https://github.com/unwrten)** — the screenshots above.
+- **ForkChord** — the extra lyrics sources, the tray and the artist-page hero follow its providers and layout.
+- **[Sonora](https://github.com/sonorahq/sonora)** and **[Mochy-Music](https://github.com/realidkroo/Mochy-Music)** — optimization and feature inspirations, and the recommendation and gacha systems.
+- **[egui](https://github.com/emilk/egui)** for the interface, **[rodio](https://github.com/RustAudio/rodio)** and Symphonia for audio playback and decoding, and the maintainers of every crate in `Cargo.toml`.
+- A Linux CI fix came from GitHub Copilot ([PR #3](https://github.com/LoserDenji/Bitchord-Desktop-Revived/pull/3)); CodeRabbit reviewed pull requests.
+
+Lyrics, metadata, playback, and integrations depend on the upstream libraries and third-party services used by this project.
