@@ -2043,8 +2043,9 @@ fn settings_tab(app: &mut App, ui: &mut Ui, tab: SettingsTab) {
             settings_downloads(ui);
             settings_updates(app, ui);
             settings_section(ui, "Network", None, None, |ui| network(app, ui));
-            // Last, as most apps keep it.
             super::storage::settings_section(app, ui);
+            // Last, as most apps keep it.
+            settings_about(ui);
         }
         SettingsTab::Shortcuts => {
             if filter_show(ui, "Keyboard shortcuts keys hotkeys shortcuts combo") {
@@ -3078,6 +3079,33 @@ fn settings_updates(app: &mut App, ui: &mut Ui) {
     if let Some(nightly) = channel {
         app.set_update_nightly(nightly);
     }
+}
+
+/// Settings › General › About: where this app comes from. Most of it — the playback
+/// engine, the UI, the jam sync, the installers — is ytm-rs's code, and the credit
+/// for that belongs with ytm-rs. The README's Acknowledgements has the whole list.
+fn settings_about(ui: &mut Ui) {
+    settings_section(ui, "About", None, None, |ui| {
+        let link = |ui: &mut Ui, label: &str, url: &str| {
+            let color = if theme::light() { Color32::from_rgb(0, 102, 204) } else { Color32::from_rgb(62, 166, 255) };
+            ui.hyperlink_to(RichText::new(label).font(theme::regular(13.5)).color(color), url);
+        };
+        setting_row(ui, "A fork of ytm-rs", Some("By grapedjuice — most of the code this app runs, from playback to the installers, comes from ytm-rs."), |ui| {
+            link(ui, "github.com/grapedjuice/ytm-rs", "https://github.com/grapedjuice/ytm-rs");
+        });
+        divider(ui);
+        setting_row(ui, "It continues BitChord-PC-Continued", Some("By jackychan4891 — in the style of the BitChord Android app by kushagrasinghx, which made the icon and hosts the Listen Together relay."), |ui| {
+            link(ui, "github.com/jackychan4891/BitChord-PC-Continued", "https://github.com/jackychan4891/BitChord-PC-Continued");
+        });
+        divider(ui);
+        setting_row(ui, "Credits", Some("Changes and additions by LoserDenji and nxfu, with lyrics providers following ForkChord and ideas from Sonora and Mochy-Music. The full list is in the README's Acknowledgements."), |ui| {
+            link(ui, "github.com/LoserDenji/Bitchord-Desktop-Revived", "https://github.com/LoserDenji/Bitchord-Desktop-Revived");
+        });
+        divider(ui);
+        setting_row(ui, "License", Some("BitChord Desktop Revived is free software under the GPL-3.0 license."), |ui| {
+            link(ui, "gnu.org/licenses/gpl-3.0", "https://www.gnu.org/licenses/gpl-3.0");
+        });
+    });
 }
 
 /// Settings › Downloads.
