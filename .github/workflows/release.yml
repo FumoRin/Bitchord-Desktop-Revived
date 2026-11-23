@@ -34,9 +34,10 @@ permissions:
 
 env:
   # What goes into the downloads: the code, assets, build and packaging. Only changes
-  # here make a nightly, or appear in its notes; the site, docs, Markdown, the server
-  # in server/, .github and the like don't change the app.
-  APP_PATHS: "src assets build.rs Cargo.toml Cargo.lock installer linux macos :(exclude)*.md"
+  # here make a nightly, or appear in its notes; docs, Markdown, the server
+  # in server/, .github and the like don't change the app (site/discord does: the
+  # Discord card bundles and fetches its artwork from there).
+  APP_PATHS: "src assets site/discord build.rs Cargo.toml Cargo.lock installer linux macos :(exclude)*.md"
 
 jobs:
   # The version to build, and for a nightly its build number, or whether there's
@@ -109,6 +110,10 @@ jobs:
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
       YTM_NIGHTLY: ${{ needs.prepare.outputs.nightly }}
+      # This project's own accounts (see CODE_SIGNING.md); unset = feature off.
+      BITCHORD_DISCORD_CLIENT_ID: ${{ vars.BITCHORD_DISCORD_CLIENT_ID }}
+      BITCHORD_LASTFM_API_KEY: ${{ vars.BITCHORD_LASTFM_API_KEY }}
+      BITCHORD_LASTFM_SECRET: ${{ vars.BITCHORD_LASTFM_SECRET }}
     steps:
       - uses: actions/checkout@v4
 
@@ -169,6 +174,10 @@ jobs:
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
       YTM_NIGHTLY: ${{ needs.prepare.outputs.nightly }}
+      # This project's own accounts (see CODE_SIGNING.md); unset = feature off.
+      BITCHORD_DISCORD_CLIENT_ID: ${{ vars.BITCHORD_DISCORD_CLIENT_ID }}
+      BITCHORD_LASTFM_API_KEY: ${{ vars.BITCHORD_LASTFM_API_KEY }}
+      BITCHORD_LASTFM_SECRET: ${{ vars.BITCHORD_LASTFM_SECRET }}
     steps:
       - uses: actions/checkout@v4
 
@@ -227,6 +236,10 @@ jobs:
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
       YTM_NIGHTLY: ${{ needs.prepare.outputs.nightly }}
+      # This project's own accounts (see CODE_SIGNING.md); unset = feature off.
+      BITCHORD_DISCORD_CLIENT_ID: ${{ vars.BITCHORD_DISCORD_CLIENT_ID }}
+      BITCHORD_LASTFM_API_KEY: ${{ vars.BITCHORD_LASTFM_API_KEY }}
+      BITCHORD_LASTFM_SECRET: ${{ vars.BITCHORD_LASTFM_SECRET }}
     steps:
       - uses: actions/checkout@v4
 
@@ -239,6 +252,9 @@ jobs:
           docker run --rm \
             -v "$PWD:/src" -w /src \
             -e YTM_NIGHTLY \
+            -e BITCHORD_DISCORD_CLIENT_ID \
+            -e BITCHORD_LASTFM_API_KEY \
+            -e BITCHORD_LASTFM_SECRET \
             archlinux:latest bash linux/arch.sh "$VERSION"
 
       - uses: actions/upload-artifact@v4
@@ -262,6 +278,10 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
       VERSION: ${{ needs.prepare.outputs.version }}
       YTM_NIGHTLY: ${{ needs.prepare.outputs.nightly }}
+      # This project's own accounts (see CODE_SIGNING.md); unset = feature off.
+      BITCHORD_DISCORD_CLIENT_ID: ${{ vars.BITCHORD_DISCORD_CLIENT_ID }}
+      BITCHORD_LASTFM_API_KEY: ${{ vars.BITCHORD_LASTFM_API_KEY }}
+      BITCHORD_LASTFM_SECRET: ${{ vars.BITCHORD_LASTFM_SECRET }}
     steps:
       - uses: actions/checkout@v4
 
