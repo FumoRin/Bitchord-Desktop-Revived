@@ -1,4 +1,5 @@
-//! ytm-rs Jam relay. One Durable Object per room relays small JSON control
+//! BitChord's Jam relay (listen together), on the jam server inherited from ytm-rs
+//! (github.com/grapedjuice/ytm-rs). One Durable Object per room relays small JSON control
 //! messages between a host and its guests; audio never passes through here.
 //! See README.md for the protocol.
 
@@ -20,7 +21,7 @@ const BEAT_MS: i64 = 10 * 60 * 1000;
 async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let url = req.url()?;
     if url.path() == "/" {
-        return Response::ok("ytm-rs jam server");
+        return Response::ok("bitchord jam server");
     }
     if url.path() == "/stats" {
         return stats_stub(&env)?.fetch_with_str("https://stats/stats").await;
