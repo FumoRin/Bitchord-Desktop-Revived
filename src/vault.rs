@@ -9,13 +9,21 @@
 
 use std::path::Path;
 
-const SERVICE: &str = "ytm-rs";
+const SERVICE: &str = "bitchord";
+/// The service name every version before 2.0.3 kept its secrets under, inherited
+/// from ytm-rs (see `migrate`).
+const OLD_SERVICE: &str = "ytm-rs";
+
+/// Every secret the app keeps in the credential store, by the module that owns it:
+/// `import_legacy` copies these, and only these, over from the old service name.
+/// Add a name here when adding a vault.
+const NAMES: &[&str] = &["google session", "spotify sp_dc", "discord token", "lastfm", "proxy"];
 
 /// The credential names for `name`, scoped to the data folder when it isn't the
 /// default one (`YTM_DATA_DIR` dev profiles, tests), so those never share or touch
 /// the real sign-ins.
 fn key(name: &str, data_dir: &Path) -> String {
-    let default = directories::ProjectDirs::from("", "", "ytm-rs").map(|d| d.data_dir().to_path_buf());
+    let default = directories::ProjectDirs::from("", "", "bitchord").map(|d| d.data_dir().to_path_buf());
     if default.as_deref() == Some(data_dir) {
         name.to_owned()
     } else {
@@ -46,8 +54,39 @@ mod store {
     }
 
     fn entry(key: &str, part: usize) -> keyring::Result<keyring::Entry> {
+        entry_in(super::SERVICE, key, part)
+    }
+
+    fn entry_in(service: &str, key: &str, part: usize) -> keyring::Result<keyring::Entry> {
         let user = if part == 0 { key.to_owned() } else { format!("{key} #{}", part + 1) };
-        keyring::Entry::new(super::SERVICE, &user)
+        keyring::Entry::new(service, &user)
+    }
+
+    /// Read `key` from the service name versions before 2.0.3 used and write it under
+    /// ours, if it's there and ours doesn't have it yet. Copied, never moved: a
+    /// parallel ytm-rs install keeps its sign-in under the old name.
+    pub fn import_legacy(key: &str) -> anyhow::Result<()> {
+        let mut old = Vec::new();
+        for part in 0.. {
+            match entry_in(super::OLD_SERVICE, key, part)?.get_secret() {
+                Ok(bytes) => {
+                    let full = bytes.len() == CHUNK;
+                    old.extend(bytes);
+                    if !full {
+                        break;
+                    }
+                }
+                Err(keyring::Error::NoEntry) if part == 0 => return Ok(()),
+                Err(keyring::Error::NoEntry) => break,
+                Err(e) => return Err(e.into()),
+            }
+        }
+        let ours = entry(key, 0).is_ok_and(|e| matches!(e.get_secret(), Err(keyring::Error::NoEntry)));
+        if ours {
+            set(key, &old)?;
+            log::info!("imported {key:?} from the {} credential service", super::OLD_SERVICE);
+        }
+        Ok(())
     }
 
     pub fn get(key: &str) -> anyhow::Result<Option<Vec<u8>>> {
@@ -209,11 +248,27 @@ pub fn delete(name: &str, data_dir: &Path) {
     }
 }
 
+/// Copy the secrets kept under the service name versions before 2.0.3 used over to
+/// this app's own service (see `migrate`). Called once, on the first launch after the
+/// rename, and only for the default data folder — the plain names, not a dev
+/// profile's suffixed ones.
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+pub fn import_legacy() {
+    for name in NAMES {
+        if let Err(e) = store::import_legacy(name) {
+            log::debug!("couldn't import {name:?} from the old credential service: {e:#}");
+        }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+pub fn import_legacy() {}
+
 #[cfg(all(test, windows))]
 mod tests {
     #[test]
     fn round_trip_across_chunks() {
-        let key = &format!("ytm-rs vault test {}", std::process::id());
+        let key = &format!("bitchord vault test {}", std::process::id());
         for len in [0, 10, 2560, 2561, 6000, 100] {
             let secret: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
             super::store::set(key, &secret).unwrap();
@@ -234,7 +289,7 @@ mod stress {
             .map(|t| {
                 std::thread::spawn(move || {
                     for round in 0..15 {
-                        let key = format!("ytm-rs stress {pid} {t}");
+                        let key = format!("bitchord stress {pid} {t}");
                         super::store::set(&key, &vec![7u8; 6000]).unwrap();
                         super::store::set(&key, &[7u8; 100]).unwrap();
                         assert_eq!(super::store::get(&key).unwrap().unwrap().len(), 100, "round {round}");
@@ -256,7 +311,7 @@ mod stress {
 mod unix_tests {
     #[test]
     fn round_trip_in_keyring_or_file() {
-        let dir = std::env::temp_dir().join(format!("ytm-rs-vault-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("bitchord-vault-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         for len in [0, 10, 2560, 2561, 6000, 100] {
             let secret: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
@@ -283,7 +338,7 @@ mod unix_tests {
     /// in one entry and removes the old parts.
     #[test]
     fn parts_from_earlier_versions() {
-        let key = &format!("ytm-rs vault parts test {}", std::process::id());
+        let key = &format!("bitchord vault parts test {}", std::process::id());
         let old: Vec<u8> = (0..2660).map(|i| (i % 251) as u8).collect();
         let (first, second) = old.split_at(2560);
         let part = |i| super::store::tests_entry(key, i);

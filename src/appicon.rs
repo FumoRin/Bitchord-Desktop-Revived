@@ -385,7 +385,7 @@ mod desktop {
         let apps = data_home.join("applications");
         let changed = sync_at(icon.as_deref(), &apps, &system, &std::env::current_exe()?)?;
         if changed {
-            // GLib finds the `ytm-rs://` handler in the MIME cache of the entry's own
+            // GLib finds the `bitchord://` handler in the MIME cache of the entry's own
             // folder, and a copy here hides the system's entry along with its cache line.
             let _ = std::process::Command::new("update-desktop-database").arg("-q").arg(&apps).status();
         }
@@ -506,7 +506,7 @@ mod desktop {
     mod tests {
         use super::*;
 
-        const ENTRY: &str = "[Desktop Entry]\nType=Application\nName=YT Music\nExec=EXE\nIcon=bitchord\nStartupWMClass=bitchord\nMimeType=x-scheme-handler/ytm-rs;x-scheme-handler/bitchord;\n\n[Desktop Action x]\nIcon=other\n";
+        const ENTRY: &str = "[Desktop Entry]\nType=Application\nName=BitChord\nExec=EXE\nIcon=bitchord\nStartupWMClass=bitchord\nMimeType=x-scheme-handler/bitchord;\n\n[Desktop Action x]\nIcon=other\n";
 
         fn scratch(name: &str) -> PathBuf {
             let dir = std::env::temp_dir().join(format!("bitchord-desktop-{name}-{}", std::process::id()));

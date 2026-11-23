@@ -189,7 +189,7 @@ mod os {
     }
 
     pub struct Os {
-        /// Clicking the toast brings the window back, through the `ytm-rs:` link the
+        /// Clicking the toast brings the window back, through the `bitchord:` link the
         /// installed copy registers (a second launch hands over to the running one).
         launch: Option<&'static str>,
     }
@@ -197,7 +197,7 @@ mod os {
     impl Default for Os {
         fn default() -> Self {
             let linked = crate::update::installed() && !cfg!(debug_assertions);
-            Self { launch: linked.then_some("ytm-rs://show") }
+            Self { launch: linked.then_some("bitchord://show") }
         }
     }
 
@@ -292,8 +292,8 @@ mod tests {
     fn toast_links_back_and_shows_the_cover() {
         let cover = std::env::temp_dir().join("cover art.jpg");
         let song = Song { title: "T".into(), artist: "A".into(), cover: Some(cover) };
-        let xml = toast_xml(&song, Some("ytm-rs://show"));
-        assert!(xml.starts_with("<toast launch=\"ytm-rs://show\" activationType=\"protocol\">"), "{xml}");
+        let xml = toast_xml(&song, Some("bitchord://show"));
+        assert!(xml.starts_with("<toast launch=\"bitchord://show\" activationType=\"protocol\">"), "{xml}");
         assert!(xml.contains("placement=\"appLogoOverride\" src=\"file:///"), "{xml}");
         assert!(xml.contains("cover%20art.jpg"), "{xml}");
     }

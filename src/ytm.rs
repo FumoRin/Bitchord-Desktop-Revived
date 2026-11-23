@@ -2843,7 +2843,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn album_songs_live() {
-        let api = crate::ytmapi::Api::new(&std::env::temp_dir().join("ytm-rs-album-songs-test"));
+        let api = crate::ytmapi::Api::new(&std::env::temp_dir().join("bitchord-album-songs-test"));
         let a = album(&api, "MPREb_dcYZhAh5urI").await.unwrap();
         println!("{:?}", a.tracks.iter().map(|t| (&t.id, &t.title, t.duration)).collect::<Vec<_>>());
         assert_eq!(a.tracks[0].id, "lYBUbBu4W08", "Never Gonna Give You Up should be the song, not the music video");
@@ -3178,7 +3178,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn searched_song_live() {
-        let api = crate::ytmapi::Api::new(&std::env::temp_dir().join("ytm-rs-album-songs-test"));
+        let api = crate::ytmapi::Api::new(&std::env::temp_dir().join("bitchord-album-songs-test"));
         for v in [
             video("Never Gonna Give You Up", &["Rick Astley"], 214),
             video("Take On Me (Official Video)", &["a-ha"], 244),

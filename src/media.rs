@@ -101,7 +101,10 @@ impl Media {
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Option<Self> {
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
-        let config = PlatformConfig { display_name: "YT Music", dbus_name: "ytm_rs", desktop_entry: Some("bitchord"), hwnd };
+        // This app's own name on the desktop's media controls: until 2.0.3 it
+        // registered as ytm-rs's `ytm_rs`, and only one of the two apps could ever
+        // hold the media keys.
+        let config = PlatformConfig { display_name: "BitChord", dbus_name: "bitchord", desktop_entry: Some("bitchord"), hwnd };
         let mut controls = MediaControls::new(config)
             .map_err(|e| log::warn!("media controls unavailable: {e:?}"))
             .ok()?;
