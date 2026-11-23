@@ -1,6 +1,6 @@
 //! Dialogs: new and edited playlists, collaborators, confirmations, and their parts.
 
-use egui::{Color32, Ui};
+use egui::{Color32, Rect, Ui};
 
 use crate::backend::Req;
 use crate::model::Target;
@@ -10,6 +10,7 @@ use super::{Action, App, Dialog, notes, pages, widgets};
 
 impl App {
     pub(super) fn draw_dialog(&mut self, ctx: &egui::Context) {
+        log::info!("DDCALLED {}", match &self.dialog { Some(d) => match d { Dialog::ArtistAbout { .. } => "ArtistAbout", Dialog::ConfirmDelete { .. } => "ConfirmDelete", _ => "other" }, None => "none" });
         if let Some(Dialog::ConfirmClearCache) = &self.dialog {
             let mut body = "Saved covers, translated lyrics and the lyrics check's browser data are deleted. They come back as you play and browse. Your library and your downloads stay as they are.".to_owned();
             if let Some(n) = self.storage.known().map(|u| u.cache).filter(|n| *n > 0) {
@@ -40,6 +41,13 @@ impl App {
             }
             return;
         }
+        if let Some(Dialog::ArtistAbout { name, description, avatar, subscribers }) = &self.dialog {
+            let (name, description, avatar, subscribers) = (name.clone(), description.clone(), avatar.clone(), *subscribers);
+            if artist_about(ctx, &name, &description, avatar.as_deref(), subscribers) {
+                self.dialog = None;
+            }
+            return;
+        }
         if let Some(Dialog::ConfirmDelete { id, title }) = &self.dialog {
             let (id, title) = (id.clone(), title.clone());
             let body = format!("\u{201c}{title}\u{201d} will be removed from your YouTube Music library. This can't be undone.");
@@ -65,6 +73,7 @@ impl App {
             Dialog::ConfirmRemoveDownloads => "Remove all downloads",
             Dialog::ConfirmDownload { .. } => "Download",
             Dialog::Collaborate { .. } => "Collaborate",
+            Dialog::ArtistAbout { .. } => "About",
         };
         // The same modal card as "Delete playlist?" and the update dialog.
         let modal = egui::Modal::new(egui::Id::unique("playlist-dialog")).frame(notes::surface()).backdrop_color(theme::shade(0.55)).show(ctx, |ui| {
@@ -139,7 +148,7 @@ impl App {
                         done = ok || cancel;
                     }
                     Dialog::Collaborate { info, busy, confirm_off, .. } => done = self.collaborate_dialog(ui, info, busy, confirm_off, accent),
-                    Dialog::ConfirmDelete { .. } | Dialog::ConfirmClearCache | Dialog::ConfirmRemoveDownloads => unreachable!("drawn by confirm"),
+                    Dialog::ConfirmDelete { .. } | Dialog::ConfirmClearCache | Dialog::ConfirmRemoveDownloads | Dialog::ArtistAbout { .. } => unreachable!("drawn by their own cards"),
                 }
             });
         });
@@ -359,4 +368,40 @@ fn confirm(ctx: &egui::Context, heading: &str, body: &str, label: &str, name: &s
         answer = Some(false);
     }
     answer
+}
+
+/// The artist page's About, opened from the card on the banner: the channel's picture,
+/// its name and how many listen, and the full description the card only previews.
+/// True once it's closed.
+fn artist_about(ctx: &egui::Context, name: &str, description: &str, avatar: Option<&str>, subscribers: Option<u64>) -> bool {
+    let mut closed = false;
+    let modal = egui::Modal::new(egui::Id::unique("artist-about")).frame(notes::surface()).backdrop_color(theme::shade(0.55)).show(ctx, |ui| {
+        ui.set_width(520.0_f32.min(ctx.content_rect().width() - 48.0));
+        egui::Frame::new().inner_margin(egui::Margin { left: 26, right: 26, top: 24, bottom: 22 }).show(ui, |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+            let (r, _) = ui.allocate_exact_size(egui::Vec2::splat(56.0), egui::Sense::hover());
+            match avatar {
+                Some(url) => widgets::paint_remote(ui, url, r, 28.0, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE),
+                None => {
+                    ui.painter().circle_filled(r.center(), 28.0, theme::glass(0.12));
+                    widgets::icon_at(ui, r.center(), theme::icon::CIRCLE_USER, 26.0, theme::text_dim());
+                }
+            }
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new(name).font(theme::bold(22.0)).color(theme::text()));
+            if let Some(s) = subscribers {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(format!("{} subscribers", crate::backend::compact(s))).font(theme::regular(13.0)).color(theme::text_dim()));
+            }
+            ui.add_space(16.0);
+            egui::ScrollArea::vertical().max_height(340.0).auto_shrink([false, true]).show(ui, |ui| {
+                let g = widgets::galley_wrapped(ui, description, theme::regular(14.0), theme::text_dim(), ui.available_width(), usize::MAX);
+                ui.label(g);
+            });
+        });
+    });
+    if modal.should_close() || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        closed = true;
+    }
+    closed
 }
