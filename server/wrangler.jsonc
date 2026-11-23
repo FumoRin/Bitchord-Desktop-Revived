@@ -1,5 +1,5 @@
 {
-  "name": "ytm-rs-jam",
+  "name": "bitchord-jam", // was ytm-rs-jam: renaming deploys a NEW worker — move any custom domain (api.bitchord.kushagrasingh.in) over, or keep the old name to deploy over the existing one
   "main": "build/worker/shim.mjs",
   "compatibility_date": "2026-09-01",
   "workers_dev": true,
