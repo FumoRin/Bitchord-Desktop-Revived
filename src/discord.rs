@@ -21,8 +21,14 @@ use serde::{Deserialize, Serialize};
 use crate::discord_artwork::{ImagePrefs, Picture};
 
 /// Application ID from the Discord Developer Portal. Its name is what Discord shows
-/// as "Listening to <name>" in the profile card.
-const CLIENT_ID: &str = "1521756469433991299";
+/// as "Listening to <name>" in the profile card. This project's own, set at build
+/// time (`BITCHORD_DISCORD_CLIENT_ID`): until 2.0.3 the fork rode on ytm-rs's
+/// application, showing its users as ytm-rs on Discord. A build without one of its
+/// own (empty here) keeps the card off rather than do that again.
+const CLIENT_ID: &str = match option_env!("BITCHORD_DISCORD_CLIENT_ID") {
+    Some(id) if !id.is_empty() => id,
+    _ => "",
+};
 
 /// That application's name, unless the listener gives another.
 pub const APP_NAME: &str = "BitChord PC";
@@ -615,6 +621,10 @@ pub struct Discord {
 impl Discord {
     pub fn spawn() -> Option<Self> {
         let id = std::env::var("YTM_DISCORD_ID").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| CLIENT_ID.to_owned());
+        if id.is_empty() {
+            log::warn!("discord: no application of this project's own in this build; the card stays off");
+            return None;
+        }
         let (tx, rx) = crossbeam_channel::unbounded();
         let join = std::thread::Builder::new().name("discord".into()).spawn(move || run(&id, rx)).ok()?;
         Some(Self { tx, join: Some(join) })

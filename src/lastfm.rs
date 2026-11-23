@@ -1,7 +1,7 @@
 //! Last.fm scrobbling: "now playing" when a song starts, and a scrobble once it has
 //! played half its length or 4 minutes (Last.fm's rule; songs under 30 s don't count).
 //!
-//! Sign-in is Last.fm's desktop flow: get a token, let the user allow ytm-rs in the
+//! Sign-in is Last.fm's desktop flow: get a token, let the user allow BitChord in the
 //! browser, then trade the token for a session key (kept in Credential Manager).
 //! Scrobbles that can't be sent (offline, Last.fm down) wait in `lastfm_queue.json`
 //! and go out with the next one.
@@ -14,8 +14,22 @@ use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-const API_KEY: &str = "f66d99b311f6d58e14be93a8a6cd8893";
-const SECRET: &str = "403541d654c21a4fcd515c9b3eb474d9";
+/// This build's API credentials, from the account this project registered at
+/// <https://www.last.fm/api/accounts/create> and set at build time
+/// (`BITCHORD_LASTFM_API_KEY` / `BITCHORD_LASTFM_SECRET`). Until 2.0.3 the fork sent
+/// ytm-rs's key: users approved "ytm-rs" on Last.fm and their scrobbles counted
+/// against its quota. A build without its own (empty here) keeps scrobbling off
+/// rather than do that again.
+const API_KEY: &str = match option_env!("BITCHORD_LASTFM_API_KEY") {
+    Some(k) if !k.is_empty() => k,
+    _ => "",
+};
+const SECRET: &str = match option_env!("BITCHORD_LASTFM_SECRET") {
+    Some(s) if !s.is_empty() => s,
+    _ => "",
+};
+/// Whether this build can talk to Last.fm as itself.
+const CONFIGURED: bool = !API_KEY.is_empty() && !SECRET.is_empty();
 const ROOT: &str = "https://ws.audioscrobbler.com/2.0/";
 const VAULT: &str = "lastfm";
 /// Last.fm takes up to 50 scrobbles per request.
@@ -53,8 +67,21 @@ static SENDING: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(Default::defaul
 pub fn init(data_dir: &Path) {
     let session = crate::vault::get(VAULT, data_dir).and_then(|b| {
         let s = String::from_utf8(b).ok()?;
-        let (name, key) = s.split_once('\n')?;
-        Some(Session { name: name.to_owned(), key: key.to_owned() })
+        let mut lines = s.split('\n');
+        let name = lines.next()?.to_owned();
+        let key = lines.next()?.to_owned();
+        // The key the session was linked under: a session belongs to the API key that
+        // made it, so one saved under another project's key (before 2.0.3, ytm-rs's)
+        // only fails server-side — it has to be linked again.
+        if !CONFIGURED {
+            return None;
+        }
+        if lines.next().unwrap_or_default() != API_KEY {
+            log::info!("last.fm: the saved link was made with another project's key; sign in again");
+            crate::vault::delete(VAULT, data_dir);
+            return None;
+        }
+        Some(Session { name, key })
     });
     let queue = std::fs::read(data_dir.join("lastfm_queue.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     *STATE.lock().unwrap() = State { session, data_dir: data_dir.to_owned(), queue };
@@ -73,9 +100,12 @@ pub fn sign_out() {
     crate::vault::delete(VAULT, &st.data_dir);
 }
 
-/// Ask the user to allow ytm-rs on last.fm (in their browser) and wait until they do.
-/// Returns the account name.
+/// Ask the user to allow BitChord on last.fm (in their browser) and wait until they
+/// do. Returns the account name.
 pub async fn sign_in(http: &reqwest::Client) -> anyhow::Result<String> {
+    if !CONFIGURED {
+        anyhow::bail!("this build has no Last.fm API key of its own yet");
+    }
     let token = call(http, "auth.getToken", &[], None, false).await?;
     let token = token["token"].as_str().ok_or_else(|| anyhow::anyhow!("no token from Last.fm"))?.to_owned();
     open_browser(&format!("https://www.last.fm/api/auth/?api_key={API_KEY}&token={token}"));
@@ -87,7 +117,9 @@ pub async fn sign_in(http: &reqwest::Client) -> anyhow::Result<String> {
                 let name = v["session"]["name"].as_str().unwrap_or_default().to_owned();
                 let key = v["session"]["key"].as_str().ok_or_else(|| anyhow::anyhow!("no session key from Last.fm"))?.to_owned();
                 let data_dir = STATE.lock().unwrap().data_dir.clone();
-                crate::vault::set(VAULT, &data_dir, format!("{name}\n{key}").as_bytes())?;
+                // The API key goes in with the session: it's what the session is
+                // bound to, so a later build with another key knows to ask again.
+                crate::vault::set(VAULT, &data_dir, format!("{name}\n{key}\n{API_KEY}").as_bytes())?;
                 STATE.lock().unwrap().session = Some(Session { name: name.clone(), key });
                 log::info!("last.fm: signed in as {name}");
                 return Ok(name);
