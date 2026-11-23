@@ -1,5 +1,8 @@
-//! Jam deep links: `ytm-rs://jam/CODE` and `https://grapedjuice.github.io/ytm-rs/jam/?c=CODE`,
-//! and the single-instance hand-off built on the same channel.
+//! Jam deep links: `bitchord://party/CODE` and the invite pages (`…/invite/<CODE>`),
+//! plus `ytm-rs://jam/CODE` — read when a link arrives (an install from before 2.0.3
+//! could be handed one), but never registered: that scheme is ytm-rs's, and this app
+//! gives back any claim on it (see `register_protocol`). The same channel carries the
+//! single-instance hand-off.
 //!
 //! Clicking a link (or the app's own shortcut, while a copy is already running) starts a
 //! new process. [`claim`] runs before anything slow: the first instance takes the
@@ -175,7 +178,9 @@ fn channel_id() -> String {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
         .collect();
-    let mut name = format!("ytm-rs-jam-{}", if user.is_empty() { "default".to_owned() } else { user });
+    // This app's own channel name: until 2.0.3 it was ytm-rs's, and the two apps
+    // handed their launches to whichever of them held it.
+    let mut name = format!("bitchord-jam-{}", if user.is_empty() { "default".to_owned() } else { user });
     if let Some(dir) = std::env::var_os("YTM_DATA_DIR") {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -419,7 +424,7 @@ mod win {
         ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
         PIPE_WAIT,
     };
-    use windows::Win32::System::Registry::{HKEY, REG_SZ, RegSetKeyValueW};
+    use windows::Win32::System::Registry::{HKEY, RegDeleteTreeW, RegGetValueW, RegSetKeyValueW, RRF_RT_REG_SZ, REG_SZ};
     use windows::core::HSTRING;
 
     use super::received;
@@ -541,7 +546,7 @@ mod win {
         }
     }
 
-    /// The registry writer for `ytm-rs:` and `bitchord:` links (see `register_protocol`).
+    /// The registry writer for a URL-protocol class (see `register_protocol`).
     pub(super) fn register_at(root: HKEY, key: &str, exe: &str) -> windows::core::Result<()> {
         let set = |sub: &str, name: &str, value: &str| -> windows::core::Result<()> {
             let path = if sub.is_empty() { key.to_string() } else { format!(r"{key}\{sub}") };
@@ -559,27 +564,52 @@ mod win {
             }
             .ok()
         };
-        set("", "", "URL:ytm-rs Protocol")?;
+        // The class's name is its last path segment: `Software\Classes\bitchord`
+        // describes the `bitchord:` protocol.
+        let scheme = key.rsplit('\\').next().unwrap_or(key);
+        set("", "", &format!("URL:{scheme} Protocol"))?;
         set("", "URL Protocol", "")?;
         set("DefaultIcon", "", &format!("\"{exe}\",0"))?;
         set(r"shell\open\command", "", &format!("\"{exe}\" \"%1\""))
     }
+
+    /// Delete the protocol class at `key` if it opens this app (`exe`), so an install
+    /// that claimed another app's scheme stops doing so. A registration pointing
+    /// anywhere else — the other app's own — is left exactly as it is.
+    pub(super) fn unregister_if_ours(root: HKEY, key: &str, exe: &str) {
+        let mut buf = [0u16; 512];
+        let mut len = (buf.len() * 2) as u32;
+        let command = format!(r"{key}\shell\open\command");
+        let read = unsafe {
+            RegGetValueW(root, &HSTRING::from(command.as_str()), &HSTRING::from(""), RRF_RT_REG_SZ, None, Some(buf.as_mut_ptr().cast()), Some(&mut len))
+        };
+        if read.is_err() {
+            return;
+        }
+        let value = String::from_utf16_lossy(&buf[..(len as usize / 2).saturating_sub(1)]);
+        if value.to_ascii_lowercase().contains(&exe.to_ascii_lowercase()) {
+            unsafe {
+                let _ = RegDeleteTreeW(root, &HSTRING::from(key));
+            }
+            log::info!("link protocols: gave the {} scheme back", key.rsplit('\\').next().unwrap_or(key));
+        }
+    }
 }
 
-/// Register the `ytm-rs:` and `bitchord:` URL protocols for this user, pointing at
-/// this exe. The party's invite links (`bitchord://party/CODE`) need the second.
-/// Call only from an installed copy, so dev builds don't take the protocol over.
+/// Register the `bitchord:` URL protocol for this user, pointing at this exe. The
+/// party's invite links (`bitchord://party/CODE`) need it. Call only from an
+/// installed copy, so dev builds don't take the protocol over. A `ytm-rs:` class an
+/// earlier version wrote is dropped when it opens this exe — ytm-rs's own
+/// registration is left alone.
 #[cfg(windows)]
 pub fn register_protocol() {
     match std::env::current_exe() {
         Ok(exe) => {
             let exe = exe.to_string_lossy();
-            if let Err(e) = win::register_at(HKEY_CURRENT_USER, r"Software\Classes\ytm-rs", &exe) {
-                log::warn!("registering the ytm-rs: protocol: {e}");
-            }
             if let Err(e) = win::register_at(HKEY_CURRENT_USER, r"Software\Classes\bitchord", &exe) {
                 log::warn!("registering the bitchord: protocol: {e}");
             }
+            win::unregister_if_ours(HKEY_CURRENT_USER, r"Software\Classes\ytm-rs", &exe);
         }
         Err(e) => log::warn!("registering the link protocols: {e}"),
     }
@@ -661,7 +691,7 @@ mod tests {
     #[test]
     fn channel_name_is_per_user() {
         let name = channel_id();
-        assert!(name.starts_with("ytm-rs-jam-"), "{name}");
+        assert!(name.starts_with("bitchord-jam-"), "{name}");
         // The Windows pipe form keeps its prefix; the Unix socket form is a plain name.
         assert!(!name.contains('\\'));
     }
@@ -726,10 +756,10 @@ mod tests {
     fn register_under_scratch_key() {
         use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegDeleteTreeW, RegGetValueW};
         use windows::core::HSTRING;
-        let key = format!(r"Software\ytm-rs-deeplink-test-{}", std::process::id());
+        let key = format!(r"Software\Classes\bitchord-deeplink-test-{}", std::process::id());
         // `register_at` lives in `mod win` (`pub(super)`): reachable from here only
         // through the module path, not via `use super::*`.
-        win::register_at(HKEY_CURRENT_USER, &key, r"C:\x\ytm-rs.exe").unwrap();
+        win::register_at(HKEY_CURRENT_USER, &key, r"C:\x\bitchord.exe").unwrap();
         let read = |sub: &str, name: &str| -> String {
             let mut buf = [0u16; 256];
             let mut len = (buf.len() * 2) as u32;
@@ -753,9 +783,36 @@ mod tests {
             let _ = RegDeleteTreeW(HKEY_CURRENT_USER, &HSTRING::from(key.as_str()));
             let _ = windows::Win32::System::Registry::RegDeleteKeyW(HKEY_CURRENT_USER, &HSTRING::from(key.as_str()));
         }
-        assert_eq!(results.0, "URL:ytm-rs Protocol");
+        assert_eq!(results.0, format!("URL:{} Protocol", key.rsplit('\\').next().unwrap()));
         assert_eq!(results.1, "");
-        assert_eq!(results.2, r#""C:\x\ytm-rs.exe",0"#);
-        assert_eq!(results.3, r#""C:\x\ytm-rs.exe" "%1""#);
+        assert_eq!(results.2, r#""C:\x\bitchord.exe",0"#);
+        assert_eq!(results.3, r#""C:\x\bitchord.exe" "%1""#);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unregister_gives_back_only_our_claim() {
+        use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegDeleteTreeW, RegGetValueW};
+        use windows::core::HSTRING;
+        let key = format!(r"Software\Classes\ytm-rs-giveback-test-{}", std::process::id());
+        let (ours, theirs) = (r"C:\Apps\BitChord\bitchord.exe", r"C:\Apps\ytm-rs\ytm-rs.exe");
+        let exists = || -> bool {
+            let mut buf = [0u16; 64];
+            let mut len = (buf.len() * 2) as u32;
+            unsafe {
+                RegGetValueW(HKEY_CURRENT_USER, &HSTRING::from(format!(r"{key}\shell\open\command")), &HSTRING::from(""), RRF_RT_REG_SZ, None, Some(buf.as_mut_ptr().cast()), Some(&mut len)).is_ok()
+            }
+        };
+        // Another exe's registration is not ours to take.
+        win::register_at(HKEY_CURRENT_USER, &key, ours).unwrap();
+        win::unregister_if_ours(HKEY_CURRENT_USER, &key, theirs);
+        assert!(exists(), "a registration pointing elsewhere was deleted");
+        // Ours goes.
+        win::unregister_if_ours(HKEY_CURRENT_USER, &key, ours);
+        assert!(!exists(), "our own registration stayed");
+        unsafe {
+            let _ = RegDeleteTreeW(HKEY_CURRENT_USER, &HSTRING::from(key.as_str()));
+            let _ = windows::Win32::System::Registry::RegDeleteKeyW(HKEY_CURRENT_USER, &HSTRING::from(key.as_str()));
+        }
     }
 }

@@ -9,8 +9,10 @@ use std::sync::OnceLock;
 use egui::Color32;
 use serde::Deserialize;
 
-/// Id of the built-in look (the app's own design, not a Better Lyrics theme).
-pub const DEFAULT_ID: &str = "ytm-rs";
+/// Id of the built-in look (the app's own design, not a Better Lyrics theme). A
+/// setting saved as the pre-2.0.3 id (`ytm-rs`) lands here too: unknown ids read as
+/// this preset, and it's the same look.
+pub const DEFAULT_ID: &str = "bitchord";
 
 #[derive(Clone, Copy, PartialEq, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]

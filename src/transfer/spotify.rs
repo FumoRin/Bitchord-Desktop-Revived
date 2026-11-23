@@ -742,7 +742,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn spotify_live() {
-        let dir = std::env::temp_dir().join("ytm-rs-spotify-test");
+        let dir = std::env::temp_dir().join("bitchord-spotify-test");
         std::fs::create_dir_all(&dir).unwrap();
         let c = Client::connect(None, &dir).await.unwrap();
         let p = c.playlist("37i9dQZF1DXcBWIGoYBM5M", |_, _| {}).await.unwrap();
@@ -759,7 +759,7 @@ mod library_live {
     #[tokio::test]
     #[ignore]
     async fn library_live() {
-        let dir = directories::ProjectDirs::from("", "", "ytm-rs").unwrap().data_dir().to_path_buf();
+        let dir = directories::ProjectDirs::from("", "", "bitchord").unwrap().data_dir().to_path_buf();
         let cookie = String::from_utf8(crate::vault::get("spotify sp_dc", &dir).expect("signed in")).unwrap();
         let c = super::Client::connect(Some(&cookie), &dir).await.unwrap();
         let body = c

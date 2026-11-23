@@ -1,4 +1,4 @@
-//! Settings › Network › Proxy. Everything ytm-rs fetches goes through one setting:
+//! Settings › Network › Proxy. Everything the app fetches goes through one setting:
 //! the API and song streams, lyrics, translation, updates, the Spotify transfer,
 //! yt-dlp, the sign-in windows and Listen together.
 //!
@@ -145,7 +145,7 @@ pub fn http() -> reqwest::Client {
 fn build_for(n: u32) -> reqwest::Client {
     let b = match (n, active().resolve()) {
         (1.., Some(mut p)) => {
-            let _ = p.set_username(&format!("ytm-rs-{n}"));
+            let _ = p.set_username(&format!("bitchord-{n}"));
             let _ = p.set_password(Some("x"));
             reqwest::Proxy::all(p.as_str()).map_or_else(|_| apply(reqwest::Client::builder()), |p| reqwest::Client::builder().proxy(p))
         }

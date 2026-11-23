@@ -31,6 +31,7 @@ mod logging;
 mod login;
 mod lyrics;
 mod media;
+mod migrate;
 mod model;
 mod motion;
 mod notify;
@@ -138,6 +139,9 @@ fn main() -> eframe::Result {
         deeplink::push(code);
     }
     logging::init(&data_dir());
+    // Before anything reads the folder: an install from before 2.0.3 kept its data
+    // (and its sign-ins) under ytm-rs's names, and moves over once, here.
+    migrate::run(&data_dir());
     guard_settings(&data_dir());
     if show_requested {
         if claim.busy() {
@@ -222,7 +226,7 @@ fn main() -> eframe::Result {
             theme::follow_system_scheme(wake);
             // Whether song notifications can show here (Windows: a Start menu entry).
             notify::look_up();
-            // Keep `ytm-rs:` links pointing at this copy; dev builds leave it alone
+            // Keep `bitchord:` links pointing at this copy; dev builds leave it alone
             // (even with YTM_UPDATE_FORCE).
             if update::installed() && !cfg!(debug_assertions) {
                 deeplink::register_protocol();
@@ -336,7 +340,7 @@ fn data_dir() -> std::path::PathBuf {
     if let Some(dir) = update::portable_dir() {
         return dir.join("data");
     }
-    directories::ProjectDirs::from("", "", "ytm-rs").expect("no home directory").data_dir().to_path_buf()
+    directories::ProjectDirs::from("", "", "bitchord").expect("no home directory").data_dir().to_path_buf()
 }
 
 /// eframe reads an unparsable `app.ron` as no settings at all, and its next save

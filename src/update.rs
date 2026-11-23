@@ -145,8 +145,8 @@ fn pacman_package(version: &str, arch: &str) -> String {
     format!("bitchord-{}-1-{arch}.pkg.tar.zst", version.replace('-', "."))
 }
 
-/// The release asset this copy updates from. The release workflow names them as
-/// ytm-rs does: on Windows a setup exe and a portable zip (x64, plus `-arm64` builds
+/// The release asset this copy updates from. The release workflow names them all
+/// after the app: on Windows a setup exe and a portable zip (x64, plus `-arm64` builds
 /// cross-compiled on the x64 runner), on macOS a per-architecture dmg and portable
 /// zip, and on Linux an installer tarball (installed by `install.sh`), a `-portable-`
 /// one, a .deb and an Arch package; a copy a package manager owns instead points at
