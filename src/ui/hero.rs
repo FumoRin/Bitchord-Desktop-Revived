@@ -265,8 +265,8 @@ pub(super) fn draw(app: &mut App, ui: &mut Ui, now: f64) {
 
     // Half the screen stood wide: enough for a cover, its words and a grid,
     // without the stage pushing the rows below off the first view.
-    let screen_h = ui.ctx().input(|i| i.raw.screen_rect.map_or(800.0, |r| r.height()));
-    let height = (screen_h * 0.52).clamp(300.0, 430.0);
+    let screen = ui.ctx().input(|i| i.raw.screen_rect.unwrap_or(ui.clip_rect()));
+    let height = (screen.height() * 0.52).clamp(300.0, 430.0);
     let width = ui.available_width();
     let (band, band_resp) = ui.allocate_exact_size(vec2(width, height), Sense::click());
     let band_resp = band_resp.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -274,6 +274,11 @@ pub(super) fn draw(app: &mut App, ui: &mut Ui, now: f64) {
     if !ui.is_rect_visible(band) {
         return;
     }
+    // The stage washes out to the window's own edges: the gutters it crosses are the
+    // panel's left inset (PAGE_INSET) and the scroll content's right one, plus the
+    // title strip above.
+    let clip = ui.clip_rect();
+    let bleed = Rect::from_min_max(pos2(clip.left() - super::pages::PAGE_INSET as f32, band.top() - (clip.top() - screen.top())), pos2(clip.right(), band.bottom()));
     let page = app.hero_page % pages;
     let on_gacha = gacha_slot && page == 1;
     // page 0 is the first card; with a gacha, page 1 is its card, the rest follow
@@ -319,11 +324,14 @@ pub(super) fn draw(app: &mut App, ui: &mut Ui, now: f64) {
         (Some(k), None) => card_thumbs(Some(k)).to_vec(),
         _ => Vec::new(),
     };
-    widgets::paint_backdrop(ui, wash_id(ui), band, theme::card_radius().min(24.0), &wash_thumbs, Color32::WHITE);
+    let outer = ui.clip_rect();
+    ui.set_clip_rect(Rect::from_min_max(pos2(bleed.left(), screen.top()), pos2(bleed.right(), clip.bottom())));
+    widgets::paint_backdrop(ui, wash_id(ui), bleed, 0.0, &wash_thumbs, Color32::WHITE);
     // a quiet dim so the wash reads as a stage, and the gradients melt its left
     // and bottom into the page the way the TV's backdrop sinks away
-    ui.painter().rect_filled(band, theme::card_radius().min(24.0), Color32::from_black_alpha(if on_gacha { 115 } else { 55 }));
-    melt(ui, band, theme::bg());
+    ui.painter().rect_filled(bleed, 0.0, Color32::from_black_alpha(if on_gacha { 115 } else { 55 }));
+    melt(ui, bleed, theme::bg());
+    ui.set_clip_rect(outer);
 
     // --- the square cover, left, with the wipe sliding the next art in over it
     let cover = (height - 88.0).clamp(180.0, 290.0);
@@ -502,6 +510,31 @@ pub(super) fn draw(app: &mut App, ui: &mut Ui, now: f64) {
             }
         }
     }
+
+    // The title strip washes in at the window's top edge, pinned there while the art
+    // is still under it: the account's circle and the window buttons sit over it and
+    // keep their contrast whatever the wash carries.
+    if band.bottom() > screen.top() + super::titlebar::HEIGHT {
+        let outer = ui.clip_rect();
+        ui.set_clip_rect(Rect::from_min_max(pos2(bleed.left(), screen.top()), pos2(bleed.right(), clip.bottom())));
+        let wash_top = Rect::from_min_max(pos2(bleed.left(), screen.top()), pos2(bleed.right(), screen.top() + super::titlebar::HEIGHT));
+        super::shell::vgradient(ui.painter(), wash_top, theme::with_alpha(theme::bg(), 0.92), theme::with_alpha(theme::bg(), 0.0));
+        ui.set_clip_rect(outer);
+    }
+
+    // The strip above the art acts as the title bar: dragging it moves the window, a
+    // double-click maximizes or restores. It reads the clicks first (drawn last), so
+    // the stage under it never plays instead — it just isn't clickable there.
+    // (`drag_area` stands down where the OS draws the title bar itself.)
+    if band.bottom() > screen.top() + super::titlebar::HEIGHT {
+        let row = Rect::from_min_size(pos2(bleed.left(), screen.top()), vec2(bleed.width(), 44.0));
+        // Until where the account's circle shows: the refresh button beside it and the
+        // buttons past it take their own clicks (both drawn over this).
+        let right = bleed.right() - super::titlebar::right_gap(ui.ctx(), row, 20.0) - 104.0;
+        if right > bleed.left() {
+            super::titlebar::drag_area(ui, Rect::from_min_max(pos2(bleed.left(), screen.top()), pos2(right, screen.top() + super::titlebar::HEIGHT)), "hero");
+        }
+    }
 }
 
 /// The wipe: the incoming cover slides in over the last one's dark underlay.
@@ -555,27 +588,9 @@ fn melt(ui: &Ui, band: Rect, bg: Color32) {
 }
 
 /// A pill at a rect of the hero's own — `widgets::pill` lays itself out in a
-/// panel's flow; the hero pins its own. Same look: white when primary.
+/// panel's flow; the hero pins its own.
 fn pill_at(ui: &mut Ui, rect: Rect, label: &str, glyph: Option<char>, primary: bool) -> egui::Response {
-    let resp = ui.interact(rect, egui::Id::unique(("hero-pill", label)), Sense::click());
-    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
-    let h = theme::anim_bool(ui.ctx(), resp.id.with("h"), resp.hovered(), 0.15);
-    let (fill, fg) = if primary {
-        if theme::light() { (theme::lerp_color(theme::text(), Color32::BLACK, h), Color32::WHITE) } else { (theme::lerp_color(Color32::from_gray(240), Color32::WHITE, h), Color32::from_gray(12)) }
-    } else {
-        (theme::glass(0.14 + 0.12 * h), theme::text())
-    };
-    let r = rect.shrink(if resp.is_pointer_button_down_on() { 1.0 } else { 0.0 });
-    ui.painter().rect_filled(r, r.height() / 2.0, fill);
-    let text = ui.painter().layout_no_wrap(label.to_owned(), theme::semibold(14.0), Color32::PLACEHOLDER);
-    let icon_w = if glyph.is_some() { 24.0 } else { 0.0 };
-    let mut x = r.left() + (r.width() - text.size().x - icon_w) / 2.0;
-    if let Some(g) = glyph {
-        icon_at(ui, pos2(x + 8.0, r.center().y), g, 15.0, fg);
-        x += icon_w;
-    }
-    ui.painter().galley(pos2(x, r.center().y - text.size().y / 2.0), text, fg);
-    resp
+    widgets::pill_at(ui, rect, "hero-pill", label, glyph, primary)
 }
 
 /// The pager's ‹ › circles on the stage's right edge, halfway up — a mouse's

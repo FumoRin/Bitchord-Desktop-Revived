@@ -222,8 +222,8 @@ pub(super) fn dev_probe(ctx: &egui::Context) {
         *last = Some(p);
     }
     let (hovered, under) = ctx.viewport(|v| (v.interact_widgets.hovered.clone(), v.interact_widgets.contains_pointer.len()));
-    // This fork's drag areas: the main top strip and now playing's top.
-    let names = ["main", "now-playing"];
+    // This fork's drag areas: the main top strip, now playing's top, home hero's.
+    let names = ["main", "now-playing", "hero"];
     let title = names.iter().any(|n| hovered.contains(&egui::Id::unique(("titlebar-drag", *n))));
     log::info!("probe {:.0},{:.0}: title bar {}, {} hovered, {under} under", p.x, p.y, if title { "yes" } else { "NO" }, hovered.len());
 }
