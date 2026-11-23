@@ -69,9 +69,10 @@ body:
       description: |
         Paste the part of `bitchord.log` from around when it happened. If you've restarted the app since, it's in `bitchord.prev.log` instead. Have a look through it before posting and take out anything you'd rather keep private.
 
-        - Windows: `%APPDATA%\ytm-rs\data`
-        - macOS: `~/Library/Application Support/ytm-rs`
-        - Linux: `~/.local/share/ytm-rs`
+        - Windows: `%APPDATA%\bitchord\data`
+        - macOS: `~/Library/Application Support/bitchord`
+        - Linux: `~/.local/share/bitchord`
+        - Before 2.0.3: the same paths named `ytm-rs` instead
         - Portable: the `data` folder beside the app
       render: text
   - type: textarea
