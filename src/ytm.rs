@@ -876,6 +876,11 @@ fn parse_artist(v: &Value, id: &str) -> Option<ArtistPage> {
     let mut page = ArtistPage {
         id: id.to_owned(),
         banner: thumbs(&h["thumbnail"]["musicThumbnailRenderer"]),
+        // The microformat carries the channel's square picture, which the header's
+        // (the banner) doesn't.
+        avatar: arr(&v["microformat"]["microformatDataRenderer"]["thumbnail"]["thumbnails"]).iter().filter_map(|t| {
+            Some(Thumb { url: t["url"].as_str()?.to_owned(), width: t["width"].as_u64().unwrap_or(0) as u32, height: t["height"].as_u64().unwrap_or(0) as u32 })
+        }).collect(),
         subscribers,
         subscribed: sub["subscribed"].as_bool().unwrap_or(false),
         channel_id: sub["channelId"].as_str().map(str::to_owned),
@@ -1550,6 +1555,7 @@ fn parse_upload_artist(v: &Value, id: &str) -> Option<(ArtistPage, Option<String
         id: id.to_owned(),
         name,
         banner: Vec::new(),
+        avatar: Vec::new(),
         subscribers: None,
         subscribed: false,
         channel_id: None,

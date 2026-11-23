@@ -330,6 +330,8 @@ pub struct ArtistPage {
     pub id: String,
     pub name: String,
     pub banner: Vec<Thumb>,
+    /// The channel's own square picture (the microformat's), for the About card.
+    pub avatar: Vec<Thumb>,
     pub subscribers: Option<u64>,
     /// The account subscribes to it (false signed out).
     pub subscribed: bool,
