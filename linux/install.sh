@@ -26,7 +26,7 @@ if [ "$1" = "--uninstall" ]; then
     rm -f "$desktop" "$icon"
     [ -L "$bin/bitchord" ] && rm -f "$bin/bitchord"
     refresh
-    echo "bitchord is uninstalled. Settings are still in $data/ytm-rs, and sign-ins in your keyring."
+    echo "bitchord is uninstalled. Settings are still in $data/bitchord (a pre-2.0.3 install kept them in $data/ytm-rs), and sign-ins in your keyring."
     exit 0
 fi
 
@@ -59,7 +59,7 @@ cp "$here/bitchord.png" "$icon"
 refresh
 
 # Libraries: WebKitGTK (sign-in, lyrics), GTK, the tray's appindicator and ALSA. And
-# desktop-file-utils: browsers find the app for `ytm-rs://` links in its MIME cache.
+# desktop-file-utils: browsers find the app for `bitchord://` links in its MIME cache.
 missing=$(ldd "$lib/bitchord" 2>/dev/null | awk '/not found/ { print $1 }' | tr '\n' ' ')
 command -v update-desktop-database >/dev/null || missing="${missing}desktop-file-utils "
 # (Loaded at run time, so ldd doesn't list it. ldconfig is in /sbin, off a user's PATH on Debian.)

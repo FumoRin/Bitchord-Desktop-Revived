@@ -9,4 +9,4 @@ Terminal=false
 Categories=AudioVideo;Audio;Player;
 Keywords=music;player;
 StartupWMClass=bitchord
-MimeType=x-scheme-handler/ytm-rs;x-scheme-handler/bitchord;
+MimeType=x-scheme-handler/bitchord;
