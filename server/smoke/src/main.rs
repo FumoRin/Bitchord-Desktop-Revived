@@ -133,7 +133,7 @@ async fn main() -> R {
     if base().starts_with("ws://") {
         step!("GET / -> 200", async {
             let r = http_get("/").await?;
-            check(r.starts_with("HTTP/1.1 200") && r.ends_with("ytm-rs jam server"), &r)
+            check(r.starts_with("HTTP/1.1 200") && r.ends_with("bitchord jam server"), &r)
         }.await);
     } else {
         println!("skip GET / -> 200 (TLS)");

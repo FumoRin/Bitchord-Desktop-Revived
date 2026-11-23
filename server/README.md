@@ -1,10 +1,13 @@
-# ytm-rs Jam server
+# BitChord Jam server
 
-The relay behind ytm-rs "Jam" (listen together). It's a Cloudflare Worker written in Rust
-with [workers-rs](https://github.com/cloudflare/workers-rs). Each room is one SQLite-backed
-Durable Object, which means it runs on the Workers free plan. Audio never passes through
-it. Every client streams from YouTube itself, and the server only relays small JSON control
-messages. It also keeps the host's last state so late joiners can catch up.
+The relay behind BitChord's "Listen together" (jams and parties). It's a Cloudflare Worker
+written in Rust with [workers-rs](https://github.com/cloudflare/workers-rs), on the jam
+server design inherited from [ytm-rs](https://github.com/grapedjuice/ytm-rs) — the desktop
+app this project forked from, and where this protocol comes from. Each room is one
+SQLite-backed Durable Object, which means it runs on the Workers free plan. Audio never
+passes through it. Every client streams from YouTube itself, and the server only relays
+small JSON control messages. It also keeps the host's last state so late joiners can
+catch up.
 
 ## Deploy
 
@@ -17,7 +20,12 @@ npx wrangler login
 npx wrangler deploy
 ```
 
-The worker comes up at `https://ytm-rs-jam.<your-subdomain>.workers.dev`.
+The worker comes up at `https://bitchord-jam.<your-subdomain>.workers.dev`.
+
+The worker was named `ytm-rs-jam` until 2.0.3. `wrangler deploy` with the new name
+creates a **new** worker: move any custom domain or route bound to the old one (the
+app's default relay is `api.bitchord.kushagrasingh.in`) over to it, or set the name in
+`wrangler.jsonc` back to deploy over the existing one.
 
 ## Develop and test
 
@@ -28,7 +36,6 @@ cd smoke && cargo run         # end-to-end smoke test against it (JAM_URL overri
 
 ## Metrics
 
-The dashboard is [grapedjuice.github.io/ytm-rs/jam/stats](https://grapedjuice.github.io/ytm-rs/jam/stats/) (`site/jam/stats/`).
 `GET /stats` returns aggregate JSON from a single `Stats` Durable Object: live rooms and
 listeners (and the biggest room), totals (rooms created, joins, guest joins, rooms ended,
 sessions and their average length), all-time peaks, and the last 30 days of rooms, joins
