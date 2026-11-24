@@ -98,6 +98,10 @@ const
   // treated the two apps as one program. Ours is a new one; an old install under
   // the shared ID is uninstalled here so it doesn't linger beside the new entry.
   LegacyAppId = '{6E0B7C4A-2D1F-4C8E-9B3A-7F5D1E2A9C40}';
+  GenericCredential = 1;
+  CredentialNotFound = 1168;
+  CredentialServiceSuffix = '.bitchord';
+  MaxCredentialTargetLength = 32767;
 
 var
   // Where a previous BitChord install lives, from its uninstall key's
@@ -107,43 +111,86 @@ var
   // update that just runs it would mix old files into the new install.
   PrevDir: String;
 
-// Read a value of the install's uninstall key under `id`. HKCU covers a per-user
-// install, HKLM an all-users one, and the 32-bit view ('WOW6432Node\') an install
-// a 32-bit build made. Sets `value` and returns True when the key is there.
-function UninstallValue(id: String; name: String; var value: String): Boolean;
-var
-  path: String;
+// Keep the registry root and view with the first matching value so related
+// values can be read from that same registration.
+function FindUninstallValue(id, name: String; var root: Integer; var path, value: String): Boolean;
 begin
   path := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' + id + '_is1';
-  Result := RegQueryStringValue(HKEY_CURRENT_USER, path, name, value);
-  if not Result then
-    Result := RegQueryStringValue(HKEY_LOCAL_MACHINE, path, name, value);
-  if not Result then
-    Result := RegQueryStringValue(HKEY_LOCAL_MACHINE, 'Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\' + id + '_is1', name, value);
+  root := HKEY_CURRENT_USER;
+  Result := RegQueryStringValue(root, path, name, value);
+  if Result then exit;
+  root := HKEY_LOCAL_MACHINE;
+  Result := RegQueryStringValue(root, path, name, value);
+  if Result or not IsWin64 then exit;
+  root := HKEY_LOCAL_MACHINE_32;
+  Result := RegQueryStringValue(root, path, name, value);
 end;
 
-// Where this install goes by default: a pre-2.0.3 install under the shared AppId
-// may live somewhere custom — an update keeps that place. A ytm-rs that owns the
-// shared key is not ours to follow; the standard folder it is.
+function FindLegacyRegistration(var root: Integer; var path: String): Boolean;
+var
+  name: String;
+begin
+  Result := False;
+  if not FindUninstallValue(LegacyAppId, 'DisplayName', root, path, name) then exit;
+  name := Lowercase(Trim(name));
+  // Inno's default display name is AppName or "AppName version AppVersion".
+  Result := (name = 'bitchord') or (Pos('bitchord version ', name) = 1);
+  if not Result then
+    Log('The shared AppId has a different display name; leaving it alone.');
+end;
+
+// Accept absolute drive paths and ordinary UNC paths only. Work with the
+// expanded path so dot segments and extra separators cannot hide a root.
+function NormalizeInstallDir(var dir: String): Boolean;
+var
+  i: Integer;
+  drive, tail: String;
+begin
+  Result := False;
+  dir := Trim(dir);
+  StringChangeEx(dir, '/', '\', True);
+  drive := Uppercase(Copy(dir, 1, 1));
+  if Copy(dir, 1, 2) = '\\' then begin
+    if (Copy(dir, 3, 1) = '\') or (Copy(dir, 3, 2) = '.\') then exit;
+    tail := Copy(dir, 3, Length(dir));
+  end else begin
+    if (Length(dir) < 3) or (drive < 'A') or (drive > 'Z') or
+       (Copy(dir, 2, 2) <> ':\') then exit;
+    tail := Copy(dir, 4, Length(dir));
+  end;
+  for i := 1 to Length(tail) do
+    if (Ord(tail[i]) < 32) or (Pos(tail[i], ':*?"<>|') > 0) then exit;
+  dir := RemoveBackslashUnlessRoot(ExpandFileName(dir));
+  drive := ExtractFileDrive(dir);
+  if (drive = '') or (CompareText(AddBackslash(dir), AddBackslash(drive)) = 0) then exit;
+
+  // Win32 can treat trailing dots and spaces as aliases for another directory.
+  tail := AddBackslash(Copy(dir, Length(drive) + 1, Length(dir)));
+  if (Pos('.\', tail) > 0) or (Pos(' \', tail) > 0) then exit;
+  Result := True;
+end;
+
+// Keep a valid custom directory only when it belongs to legacy BitChord.
 function DefaultDir(Param: String): String;
 var
-  name, location: String;
+  root: Integer;
+  path, location: String;
 begin
   Result := ExpandConstant('{autopf}\{#AppName}');
-  if not UninstallValue(LegacyAppId, 'DisplayName', name) then exit;
-  if Pos('ytm-rs', Lowercase(name)) > 0 then exit;
-  if UninstallValue(LegacyAppId, 'InstallLocation', location) and (location <> '') then
+  if not FindLegacyRegistration(root, path) then exit;
+  if RegQueryStringValue(root, path, 'InstallLocation', location) and
+     NormalizeInstallDir(location) then
     Result := location;
 end;
 
-// The previous install's folder, read before setup touches anything: our own
-// uninstall key is still in place here — setup runs its uninstaller itself later.
+// Read our install location before setup runs its uninstaller.
 function InitializeSetup(): Boolean;
 var
-  location: String;
+  root: Integer;
+  path, location: String;
 begin
   PrevDir := '';
-  if UninstallValue(OurAppId, 'InstallLocation', location) and (location <> '') then
+  if FindUninstallValue(OurAppId, 'InstallLocation', root, path, location) then
     PrevDir := location;
   Result := True;
 end;
@@ -188,68 +235,55 @@ begin
   Log('The old uninstaller is taking its time; carrying on.');
 end;
 
-// A path at a drive or share root is never ours to clear: a stray InstallLocation
-// naming one would take everything under it along. A real install folder always
-// keeps a folder name past the drive ('X:\name') or the share ('\\srv\share\name').
-function RootLike(dir: String): Boolean;
-var
-  i, depth: Integer;
-begin
-  Result := True;
-  if Copy(dir, 2, 1) = ':' then begin
-    Result := Length(dir) <= 3;
-    exit;
-  end;
-  if Copy(dir, 1, 2) = '\\' then begin
-    // '\\srv\share' carries one separator past the leading pair; deeper is a folder
-    depth := 0;
-    for i := 3 to Length(dir) do
-      if dir[i] = '\' then
-        depth := depth + 1;
-    Result := depth < 2;
-    exit;
-  end;
-end;
+function GetFileAttributes(name: String): LongWord;
+  external 'GetFileAttributesW@kernel32.dll stdcall';
 
-// An install folder's leftovers: every file and folder still there goes, so the
-// new files land alone and nothing old rides along. The folder itself stays when
-// the new install is about to fill it again; a root or an empty path is skipped.
 procedure WipeLeftovers(dir: String);
+var
+  parent, next, root: String;
+  attributes: LongWord;
 begin
-  while (Length(dir) > 1) and (Copy(dir, Length(dir), 1) = '\') do
-    SetLength(dir, Length(dir) - 1);
   if dir = '' then exit;
-  if RootLike(dir) then begin
-    Log('Not wiping ' + dir + ': it names a drive or share root.');
+  if not NormalizeInstallDir(dir) then begin
+    Log('Skipping leftover cleanup: unsupported install path or root.');
     exit;
   end;
   if not DirExists(dir) then exit;
-  DelTree(dir, True, True, False);
-  Log('Removed an install''s leftover files at ' + dir);
+  // The wildcard passed to DelTree would follow a junction in the base path.
+  parent := dir;
+  root := AddBackslash(ExtractFileDrive(dir));
+  while CompareText(AddBackslash(parent), root) <> 0 do begin
+    attributes := GetFileAttributes(parent);
+    if (attributes = $FFFFFFFF) or ((attributes and $400) <> 0) then begin
+      Log('Skipping leftover cleanup: cannot safely traverse ' + parent);
+      exit;
+    end;
+    next := ExtractFileDir(parent);
+    if (next = '') or (next = parent) then exit;
+    parent := next;
+  end;
+  if DelTree(AddBackslash(dir) + '*', False, True, True) then
+    Log('Removed an install''s leftover files at ' + dir)
+  else
+    Log('Could not remove all leftover files at ' + dir);
 end;
 
-// An old BitChord install under the shared AppId: uninstall it, so this install
-// doesn't end up beside a second "BitChord" in Settings › Apps. A ytm-rs that owns
-// the shared key is recognized by its DisplayName and left strictly alone. Its
-// folder is the previous install's: the uninstaller this runs only removes what
-// its own installer laid down, so the leftovers go right after it.
+// The uninstaller can erase its registration, so capture its directory first.
 procedure RemoveLegacyInstall;
 var
-  name, unins, location: String;
+  root: Integer;
+  path, unins, location: String;
 begin
-  if not UninstallValue(LegacyAppId, 'DisplayName', name) then exit;
-  if Pos('ytm-rs', Lowercase(name)) > 0 then begin
-    Log('The shared AppId is held by ' + name + '; leaving it alone.');
-    exit;
-  end;
-  if not UninstallValue(LegacyAppId, 'QuietUninstallString', unins) then
-    if not UninstallValue(LegacyAppId, 'UninstallString', unins) then begin
+  if not FindLegacyRegistration(root, path) then exit;
+  if not RegQueryStringValue(root, path, 'QuietUninstallString', unins) or (unins = '') then
+    if not RegQueryStringValue(root, path, 'UninstallString', unins) or (unins = '') then begin
       Log('No uninstaller for the old install under the shared AppId; skipping.');
       exit;
     end;
+  if not RegQueryStringValue(root, path, 'InstallLocation', location) then
+    location := '';
   RunUninstaller(unins);
-  if UninstallValue(LegacyAppId, 'InstallLocation', location) then
-    WipeLeftovers(location);
+  WipeLeftovers(location);
 end;
 
 // The install under our own AppId, which setup uninstalls itself before this
@@ -282,6 +316,58 @@ begin
   RemoveStaleSchemeAt(HKEY_LOCAL_MACHINE);
 end;
 
+// Inno Setup 6 runs this script in a 32-bit process on every target.
+function CredEnumerate(filter, flags: LongWord; var count, entries: LongWord): Integer;
+  external 'CredEnumerateW@advapi32.dll stdcall';
+function CredDelete(target: String; kind, flags: LongWord): Integer;
+  external 'CredDeleteW@advapi32.dll stdcall';
+procedure CredFree(entries: LongWord);
+  external 'CredFree@advapi32.dll stdcall';
+function ReadCredentialWord(process: Integer; address: LongWord; var value: LongWord;
+  size, bytesRead: LongWord): Integer;
+  external 'ReadProcessMemory@kernel32.dll stdcall';
+function CopyCredentialTarget(dest: String; source: LongWord; limit: Integer): LongWord;
+  external 'lstrcpynW@kernel32.dll stdcall';
+
+procedure ClearBitChordCredentials;
+var
+  count, entries, i, entry, kind, namePtr: LongWord;
+  target: String;
+begin
+  if CredEnumerate(0, 0, count, entries) = 0 then begin
+    if DLLGetLastError <> CredentialNotFound then
+      Log('Could not enumerate Windows credentials for the BitChord reset.');
+    exit;
+  end;
+  try
+    for i := 1 to count do begin
+      // CREDENTIALW starts with Flags, Type and TargetName. The keyring crate
+      // uses "user.service", with vault parts named "user #2", "user #3", etc.
+      if (ReadCredentialWord(-1, entries + (i - 1) * 4, entry, 4, 0) = 0) or
+         (ReadCredentialWord(-1, entry + 4, kind, 4, 0) = 0) or
+         (ReadCredentialWord(-1, entry + 8, namePtr, 4, 0) = 0) then begin
+        Log('Could not read a Windows credential entry during the BitChord reset.');
+        continue;
+      end;
+      if kind <> GenericCredential then continue;
+      SetLength(target, MaxCredentialTargetLength + 1);
+      if CopyCredentialTarget(target, namePtr, MaxCredentialTargetLength + 1) = 0 then begin
+        Log('Could not read a Windows credential target during the BitChord reset.');
+        continue;
+      end;
+      SetLength(target, Pos(#0, target) - 1);
+      if Length(target) <= Length(CredentialServiceSuffix) then continue;
+      if CompareText(Copy(target, Length(target) - Length(CredentialServiceSuffix) + 1,
+         Length(CredentialServiceSuffix)), CredentialServiceSuffix) <> 0 then continue;
+      if CredDelete(target, kind, 0) = 0 then
+        if DLLGetLastError <> CredentialNotFound then
+          Log('Could not remove a BitChord credential during the reset.');
+    end;
+  finally
+    CredFree(entries);
+  end;
+end;
+
 // An update lands as a fresh install: the previous version's leftover files go,
 // and the data folder goes with it — an old settings file or cache is exactly
 // what leaves an updated app misbehaving, and nothing is migrated in its place.
@@ -293,7 +379,12 @@ begin
     RemoveLegacyInstall();
     RemoveStaleScheme();
     WipePreviousInstall();
-    DelTree(ExpandConstant('{userappdata}\bitchord'), True, True, True);
-    Log('Removed the previous BitChord data (%AppData%\bitchord) with the old install.');
+    if DirExists(ExpandConstant('{userappdata}\bitchord')) then begin
+      if DelTree(ExpandConstant('{userappdata}\bitchord'), True, True, True) then
+        Log('Removed the previous BitChord data (%AppData%\bitchord) with the old install.')
+      else
+        Log('Could not remove all previous BitChord data.');
+    end;
+    ClearBitChordCredentials();
   end;
 end;
