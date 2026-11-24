@@ -785,6 +785,7 @@ pub struct App {
     appearance: theme::Appearance,
     anim_bg: bool,
     reactive_bg: bool,
+    pub disable_blur: bool,
     /// The play button and volume slider in the accent colour, like the progress line.
     accent_controls: bool,
     /// Skip the parts of music videos SponsorBlock marks as not music.
@@ -1379,6 +1380,7 @@ impl App {
             accent_controls: get("accent_controls").is_some_and(|v| v == "1"),
             anim_bg: get("anim_bg").is_none_or(|v| v == "1"),
             reactive_bg: get("reactive_bg").is_none_or(|v| v == "1"),
+            disable_blur: get("disable_blur").is_some_and(|v| v == "1"),
             sponsorblock: get("sponsorblock").is_some_and(|v| v == "1"),
             crossfade: get("crossfade").is_some_and(|v| v == "1"),
             automix: get("automix").is_some_and(|v| v == "1"),
@@ -1993,6 +1995,7 @@ impl App {
             VisualPreset::Barebones => {
                 self.anim_bg = false;
                 self.reactive_bg = false;
+                self.disable_blur = true;
                 self.animated_covers = false;
                 self.ambient_light = false;
                 self.reduce_motion = true;
@@ -2006,6 +2009,7 @@ impl App {
             VisualPreset::High => {
                 self.anim_bg = true;
                 self.reactive_bg = true;
+                self.disable_blur = false;
                 self.animated_covers = true;
                 self.ambient_light = true;
                 self.reduce_motion = false;
@@ -2214,11 +2218,16 @@ impl eframe::App for App {
                 ctx.request_repaint_after(Duration::from_secs(2));
             }
         } else if self.np_open && playing && !self.mini.busy() {
-            pace::repaint_after(ctx, Duration::from_millis(33));
+            let wait = if self.disable_blur && !self.lyrics_full_rate {
+                Duration::from_millis(66)
+            } else {
+                Duration::from_millis(33)
+            };
+            pace::repaint_after(ctx, wait);
         } else if playing && widgets::equalizer_shown(ctx) {
             // The playing row's bars need a steady, full rate to read as smooth.
             pace::repaint_after(ctx, Duration::from_millis(16));
-        } else if playing && self.anim_bg && shell::pages_bg_moves(self.look()) {
+        } else if playing && self.anim_bg && !self.disable_blur && shell::pages_bg_moves(self.look()) {
             pace::repaint_after(ctx, Duration::from_millis(66));
         } else if playing || self.buffering {
             ctx.request_repaint_after(Duration::from_millis(250));
@@ -2558,6 +2567,9 @@ impl eframe::App for App {
         storage.set_string("accent_controls", b(self.accent_controls));
         storage.set_string("anim_bg", b(self.anim_bg));
         storage.set_string("reactive_bg", b(self.reactive_bg));
+        if dev_var("YTM_VISUAL").is_none() {
+            storage.set_string("disable_blur", b(self.disable_blur));
+        }
         storage.set_string("animated_covers", b(self.animated_covers));
         storage.set_string("signature_api", self.signature_api.clone());
         let hires_source = dedupe_hires(self.hires_sources.iter().map(String::as_str)).join("\n");
