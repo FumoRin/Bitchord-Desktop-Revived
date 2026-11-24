@@ -10,14 +10,129 @@
 use std::path::Path;
 
 const SERVICE: &str = "bitchord";
-/// The service name every version before 2.0.3 kept its secrets under, inherited
-/// from ytm-rs (see `migrate`).
-const OLD_SERVICE: &str = "ytm-rs";
 
-/// Every secret the app keeps in the credential store, by the module that owns it:
-/// `import_legacy` copies these, and only these, over from the old service name.
-/// Add a name here when adding a vault.
-const NAMES: &[&str] = &["google session", "spotify sp_dc", "discord token", "lastfm", "proxy"];
+#[cfg(windows)]
+pub(crate) fn install_profile_dir() -> anyhow::Result<std::path::PathBuf> {
+    let dirs = directories::ProjectDirs::from("", "", SERVICE).ok_or_else(|| anyhow::anyhow!("no profile directory"))?;
+    // On Windows ProjectDirs uses %AppData%\bitchord\data.
+    Ok(dirs.data_dir().parent().expect("data directory has a parent").to_owned())
+}
+
+/// The installer calls this before launching the app, using its original user's token.
+#[cfg(windows)]
+pub(crate) fn reset_install_profile() -> anyhow::Result<()> {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    // Inno cannot recover the original token if Setup started already elevated.
+    // Fail closed before touching either the profile or the credential store.
+    let mut token = HANDLE::default();
+    let mut elevation = TOKEN_ELEVATION::default();
+    let mut size = 0;
+    // SAFETY: The token is queried into a correctly sized buffer and then closed.
+    unsafe {
+        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)?;
+        let result = GetTokenInformation(token, TokenElevation, Some((&mut elevation as *mut TOKEN_ELEVATION).cast()),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32, &mut size);
+        let _ = CloseHandle(token);
+        result?;
+    }
+    anyhow::ensure!(elevation.TokenIsElevated == 0, "profile reset requires an unelevated user");
+
+    let files = match std::fs::remove_dir_all(install_profile_dir()?) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    };
+    let credentials = clear_windows_credentials();
+    files?;
+    credentials?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn clear_windows_credentials() -> windows::core::Result<()> {
+    use windows::Win32::Foundation::ERROR_NOT_FOUND;
+    use windows::Win32::Security::Credentials::{CRED_TYPE_GENERIC, CredDeleteW, CredEnumerateW, CredFree};
+    use windows::core::PCWSTR;
+
+    let mut count = 0;
+    let mut entries = std::ptr::null_mut();
+    let mut result = Ok(());
+    // SAFETY: CredEnumerateW owns the array, its entries and their target strings
+    // until CredFree. No pointer escapes this block.
+    unsafe {
+        let not_found = ERROR_NOT_FOUND.to_hresult();
+        match CredEnumerateW(PCWSTR::null(), None, &mut count, &mut entries) {
+            Err(e) if e.code() == not_found => return Ok(()),
+            other => other?,
+        }
+        for i in 0..count as usize {
+            // Wine can pack entries and their strings without alignment padding.
+            let entry = (*entries.add(i)).read_unaligned();
+            if entry.Type != CRED_TYPE_GENERIC {
+                continue;
+            }
+            let mut target = Vec::new();
+            loop {
+                let unit = entry.TargetName.0.add(target.len()).read_unaligned();
+                target.push(unit);
+                if unit == 0 {
+                    break;
+                }
+            }
+            // keyring uses "user.service"; numbered parts change only "user".
+            let name = String::from_utf16_lossy(&target[..target.len() - 1]);
+            if !is_default_credential(&name) {
+                continue;
+            }
+            if let Err(e) = CredDeleteW(PCWSTR(target.as_ptr()), CRED_TYPE_GENERIC, None) {
+                if e.code() != not_found {
+                    result = Err(e);
+                }
+            }
+        }
+        CredFree(entries.cast());
+    }
+    result
+}
+
+#[cfg(any(windows, test))]
+fn is_default_credential(name: &str) -> bool {
+    let Some((user, service)) = name.rsplit_once('.') else { return false };
+    if !service.eq_ignore_ascii_case(SERVICE) {
+        return false;
+    }
+    let base = if let Some((base, number)) = user.rsplit_once(" #") {
+        if number.starts_with('0') || !number.bytes().all(|c| c.is_ascii_digit()) ||
+            !number.parse::<usize>().is_ok_and(|n| n >= 2)
+        {
+            return false;
+        }
+        base
+    } else {
+        user
+    };
+    // Non-default usernames include a data path before the optional chunk suffix.
+    ["google session", "spotify sp_dc", "discord token", "lastfm", "proxy"]
+        .iter().any(|key| base.eq_ignore_ascii_case(key))
+}
+
+#[cfg(test)]
+#[test]
+fn reset_matches_only_default_credential_targets() {
+    for target in ["google session.bitchord", "spotify sp_dc #2.BITCHORD", "discord token #15.bitchord", "lastfm.bitchord", "proxy.bitchord"] {
+        assert!(is_default_credential(target), "{target}");
+    }
+    for target in [
+        r"google session (C:\BitChord\data).bitchord",
+        r"spotify sp_dc (D:\alt.profile #2) #3.bitchord",
+        "proxy #1.bitchord", "proxy #02.bitchord", "proxy #x.bitchord",
+        "unrelated.bitchord", "lastfm.ytm-rs",
+    ] {
+        assert!(!is_default_credential(target), "{target}");
+    }
+}
 
 /// The credential names for `name`, scoped to the data folder when it isn't the
 /// default one (`YTM_DATA_DIR` dev profiles, tests), so those never share or touch
@@ -60,33 +175,6 @@ mod store {
     fn entry_in(service: &str, key: &str, part: usize) -> keyring::Result<keyring::Entry> {
         let user = if part == 0 { key.to_owned() } else { format!("{key} #{}", part + 1) };
         keyring::Entry::new(service, &user)
-    }
-
-    /// Read `key` from the service name versions before 2.0.3 used and write it under
-    /// ours, if it's there and ours doesn't have it yet. Copied, never moved: a
-    /// parallel ytm-rs install keeps its sign-in under the old name.
-    pub fn import_legacy(key: &str) -> anyhow::Result<()> {
-        let mut old = Vec::new();
-        for part in 0.. {
-            match entry_in(super::OLD_SERVICE, key, part)?.get_secret() {
-                Ok(bytes) => {
-                    let full = bytes.len() == CHUNK;
-                    old.extend(bytes);
-                    if !full {
-                        break;
-                    }
-                }
-                Err(keyring::Error::NoEntry) if part == 0 => return Ok(()),
-                Err(keyring::Error::NoEntry) => break,
-                Err(e) => return Err(e.into()),
-            }
-        }
-        let ours = entry(key, 0).is_ok_and(|e| matches!(e.get_secret(), Err(keyring::Error::NoEntry)));
-        if ours {
-            set(key, &old)?;
-            log::info!("imported {key:?} from the {} credential service", super::OLD_SERVICE);
-        }
-        Ok(())
     }
 
     pub fn get(key: &str) -> anyhow::Result<Option<Vec<u8>>> {
@@ -247,22 +335,6 @@ pub fn delete(name: &str, data_dir: &Path) {
         log::warn!("couldn't delete {name} from the credential store: {e:#}");
     }
 }
-
-/// Copy the secrets kept under the service name versions before 2.0.3 used over to
-/// this app's own service (see `migrate`). Called once, on the first launch after the
-/// rename, and only for the default data folder — the plain names, not a dev
-/// profile's suffixed ones.
-#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-pub fn import_legacy() {
-    for name in NAMES {
-        if let Err(e) = store::import_legacy(name) {
-            log::debug!("couldn't import {name:?} from the old credential service: {e:#}");
-        }
-    }
-}
-
-#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-pub fn import_legacy() {}
 
 #[cfg(all(test, windows))]
 mod tests {

@@ -148,6 +148,12 @@ jobs:
         run: |
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q ${{ matrix.iscc }} "/DAppVersion=$env:VERSION" installer\bitchord.iss
           if ($LASTEXITCODE) { exit 1 }
+          $asset = "installer\Output\bitchord-setup-$env:VERSION${{ matrix.suffix }}.exe"
+          $payload = "installer\Output\bitchord-payload-$env:VERSION${{ matrix.suffix }}.exe"
+          $env:BITCHORD_INNO_SETUP = (Resolve-Path $payload).Path
+          rustc --edition 2024 -O ${{ matrix.target && format('--target {0}', matrix.target) }} installer\launcher.rs -o $asset
+          if ($LASTEXITCODE) { exit 1 }
+          Remove-Item $payload
 
       # The portable zip: the exe, the marker that makes it portable, README and LICENSE.
       - name: Build portable zip

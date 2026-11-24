@@ -31,7 +31,6 @@ mod logging;
 mod login;
 mod lyrics;
 mod media;
-mod migrate;
 mod model;
 mod motion;
 mod notify;
@@ -67,6 +66,13 @@ pub const DEFAULT_SIZE: [f32; 2] = [1200.0, 780.0];
 pub const MIN_SIZE: [f32; 2] = [760.0, 480.0];
 
 fn main() -> eframe::Result {
+    #[cfg(windows)]
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--reset-install-profile")) {
+        std::process::exit(match vault::reset_install_profile() {
+            Ok(()) => 0,
+            Err(_) => 1,
+        });
+    }
     // glibc gives each thread that allocates its own heap (up to 8 per core), and what a
     // song frees in one isn't reused by the next song's threads: on Linux the app grew a
     // few MB with every song. Two heaps keep the freed memory in use. And big blocks (a
@@ -139,9 +145,6 @@ fn main() -> eframe::Result {
         deeplink::push(code);
     }
     logging::init(&data_dir());
-    // Before anything reads the folder: an install from before 2.0.3 kept its data
-    // (and its sign-ins) under ytm-rs's names, and moves over once, here.
-    migrate::run(&data_dir());
     guard_settings(&data_dir());
     if show_requested {
         if claim.busy() {

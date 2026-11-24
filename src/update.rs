@@ -451,20 +451,51 @@ impl Updater {
         // it: under /VERYSILENT the installer's Restart Manager closes whatever is
         // still holding files, and one caught mid-save leaves app.ron half-written
         // (which reads at the next launch as settings wiped). Five beats of slack.
-        let mut script = format!(
-            "ping -n 6 127.0.0.1 >NUL & \"{}\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART {scope}",
-            installer.display()
-        );
-        if relaunch {
-            script += &format!(" & start \"\" \"{}\" {}", exe.display(), crate::deeplink::RELAUNCH_FLAG);
-        }
+        let script = |setup: &str, app: &str| {
+            let mut script = format!(
+                "ping -n 6 127.0.0.1 >NUL & \"{setup}\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART {scope}"
+            );
+            if relaunch {
+                script += &format!(" && start \"\" \"{app}\" {}", crate::deeplink::RELAUNCH_FLAG);
+            }
+            script
+        };
         if std::env::var_os("YTM_UPDATE_DRYRUN").is_some() {
-            log::info!("update (dry run): cmd /C {script}");
+            log::info!("update (dry run): cmd /C {}", script(&installer.to_string_lossy(), &exe.to_string_lossy()));
             return;
         }
-        log::info!("update: installing {}", installer.display());
-        run_detached(&script);
+        // A running setup executable cannot be deleted by the profile reset.
+        if let Err(e) = launch_staged_installer(installer, exe, script("%BITCHORD_UPDATE_SETUP%", "%BITCHORD_UPDATE_APP%")) {
+            log::warn!("update: couldn't start the installer: {e:#}");
+        }
     }
+}
+
+#[cfg(windows)]
+fn launch_staged_installer(installer: &Path, exe: &Path, mut script: String) -> anyhow::Result<()> {
+    use std::os::windows::process::CommandExt;
+
+    let temp = std::path::absolute(std::env::temp_dir())?;
+    match crate::vault::install_profile_dir()?.canonicalize() {
+        Ok(profile) => {
+            let temp_path = temp.canonicalize()?;
+            anyhow::ensure!(!temp_path.ancestors().any(|dir| dir.to_string_lossy().eq_ignore_ascii_case(&profile.to_string_lossy())),
+                "temporary directory is inside the profile being reset");
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    let stage = tempfile::Builder::new().prefix("bitchord-update-").tempdir_in(&temp)?;
+    let setup = stage.path().join("setup.exe");
+    std::fs::copy(installer, &setup)?;
+    // The detached command owns the copy once it starts; remove it on either setup exit path.
+    script += r#" & del "%BITCHORD_UPDATE_SETUP%" & rd "%BITCHORD_UPDATE_STAGE%""#;
+    log::info!("update: installing {}", setup.display());
+    detached_cmd().arg("/D").arg("/V:OFF").arg("/C").raw_arg(script)
+        .current_dir(temp).env("BITCHORD_UPDATE_SETUP", setup).env("BITCHORD_UPDATE_APP", exe)
+        .env("BITCHORD_UPDATE_STAGE", stage.path()).spawn()?;
+    let _ = stage.keep();
+    Ok(())
 }
 
 /// The portable update: Windows lets a running exe be renamed, so move this one aside
@@ -610,13 +641,21 @@ fn unzip_exe(zip: &Path, dir: &Path) -> anyhow::Result<PathBuf> {
 }
 
 /// Run a cmd script detached and windowless, so it outlives this process.
+#[cfg(windows)]
+fn detached_cmd() -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    let mut cmd = std::process::Command::new("cmd");
+    cmd.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
+    cmd
+}
+
 fn run_detached(script: &str) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        if let Err(e) = std::process::Command::new("cmd").arg("/C").raw_arg(script).creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS).spawn() {
+        if let Err(e) = detached_cmd().arg("/C").raw_arg(script).spawn() {
             log::warn!("update: couldn't run the update: {e}");
         }
     }
