@@ -274,11 +274,12 @@ pub(super) fn draw(app: &mut App, ui: &mut Ui, now: f64) {
     if !ui.is_rect_visible(band) {
         return;
     }
-    // The stage washes out to the window's own edges: the gutters it crosses are the
-    // panel's left inset (PAGE_INSET) and the scroll content's right one, plus the
-    // title strip above.
+    // The stage washes out to the window's own edges. The scroll's clip already
+    // spans the panel — its left is the sidebar's own edge, so crossing a page
+    // gutter again would paint over the sidebar — and on the right the content's
+    // gutter sits inside the clip. The title strip above is crossed.
     let clip = ui.clip_rect();
-    let bleed = Rect::from_min_max(pos2(clip.left() - super::pages::PAGE_INSET as f32, band.top() - (clip.top() - screen.top())), pos2(clip.right(), band.bottom()));
+    let bleed = Rect::from_min_max(pos2(clip.left(), band.top() - (clip.top() - screen.top())), pos2(clip.right(), band.bottom()));
     let page = app.hero_page % pages;
     let on_gacha = gacha_slot && page == 1;
     // page 0 is the first card; with a gacha, page 1 is its card, the rest follow
