@@ -2218,7 +2218,11 @@ impl eframe::App for App {
                 ctx.request_repaint_after(Duration::from_secs(2));
             }
         } else if self.np_open && playing && !self.mini.busy() {
-            let wait = if self.disable_blur && !self.lyrics_full_rate {
+            // Blur off halves the rate — but the record's spin and a moving cover
+            // read as stutter at half of it, so they keep the full one.
+            let spinning = !self.reduce_motion && self.look().cover.shape == crate::preset::Shape::Record;
+            let clip = self.animated_covers && self.clip_leads.as_deref() == self.current_id();
+            let wait = if self.disable_blur && !self.lyrics_full_rate && !spinning && !clip {
                 Duration::from_millis(66)
             } else {
                 Duration::from_millis(33)
