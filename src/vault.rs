@@ -11,6 +11,88 @@ use std::path::Path;
 
 const SERVICE: &str = "bitchord";
 
+/// The installer calls this before launching the app, using its original user's token.
+#[cfg(windows)]
+pub(crate) fn reset_install_profile() -> anyhow::Result<()> {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    // Inno cannot recover the original token if Setup started already elevated.
+    // Fail closed before touching either the profile or the credential store.
+    let mut token = HANDLE::default();
+    let mut elevation = TOKEN_ELEVATION::default();
+    let mut size = 0;
+    // SAFETY: The token is queried into a correctly sized buffer and then closed.
+    unsafe {
+        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)?;
+        let result = GetTokenInformation(token, TokenElevation, Some((&mut elevation as *mut TOKEN_ELEVATION).cast()),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32, &mut size);
+        let _ = CloseHandle(token);
+        result?;
+    }
+    anyhow::ensure!(elevation.TokenIsElevated == 0, "profile reset requires an unelevated user");
+
+    let dirs = directories::ProjectDirs::from("", "", SERVICE).ok_or_else(|| anyhow::anyhow!("no profile directory"))?;
+    // On Windows ProjectDirs uses %AppData%\bitchord\data.
+    let profile = dirs.data_dir().parent().expect("data directory has a parent");
+    let files = match std::fs::remove_dir_all(profile) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    };
+    let credentials = clear_windows_credentials();
+    files?;
+    credentials?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn clear_windows_credentials() -> windows::core::Result<()> {
+    use windows::Win32::Foundation::ERROR_NOT_FOUND;
+    use windows::Win32::Security::Credentials::{CRED_TYPE_GENERIC, CredDeleteW, CredEnumerateW, CredFree};
+    use windows::core::PCWSTR;
+
+    let mut count = 0;
+    let mut entries = std::ptr::null_mut();
+    let mut result = Ok(());
+    // SAFETY: CredEnumerateW owns the array, its entries and their target strings
+    // until CredFree. No pointer escapes this block.
+    unsafe {
+        let not_found = ERROR_NOT_FOUND.to_hresult();
+        match CredEnumerateW(PCWSTR::null(), None, &mut count, &mut entries) {
+            Err(e) if e.code() == not_found => return Ok(()),
+            other => other?,
+        }
+        for i in 0..count as usize {
+            // Wine can pack entries and their strings without alignment padding.
+            let entry = (*entries.add(i)).read_unaligned();
+            if entry.Type != CRED_TYPE_GENERIC {
+                continue;
+            }
+            let mut target = Vec::new();
+            loop {
+                let unit = entry.TargetName.0.add(target.len()).read_unaligned();
+                target.push(unit);
+                if unit == 0 {
+                    break;
+                }
+            }
+            // keyring uses "user.service"; numbered parts change only "user".
+            let name = String::from_utf16_lossy(&target[..target.len() - 1]);
+            if !name.rsplit_once('.').is_some_and(|(user, service)| !user.is_empty() && service.eq_ignore_ascii_case(SERVICE)) {
+                continue;
+            }
+            if let Err(e) = CredDeleteW(PCWSTR(target.as_ptr()), CRED_TYPE_GENERIC, None) {
+                if e.code() != not_found {
+                    result = Err(e);
+                }
+            }
+        }
+        CredFree(entries.cast());
+    }
+    result
+}
+
 /// The credential names for `name`, scoped to the data folder when it isn't the
 /// default one (`YTM_DATA_DIR` dev profiles, tests), so those never share or touch
 /// the real sign-ins.

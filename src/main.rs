@@ -66,6 +66,13 @@ pub const DEFAULT_SIZE: [f32; 2] = [1200.0, 780.0];
 pub const MIN_SIZE: [f32; 2] = [760.0, 480.0];
 
 fn main() -> eframe::Result {
+    #[cfg(windows)]
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--reset-install-profile")) {
+        std::process::exit(match vault::reset_install_profile() {
+            Ok(()) => 0,
+            Err(_) => 1,
+        });
+    }
     // glibc gives each thread that allocates its own heap (up to 8 per core), and what a
     // song frees in one isn't reused by the next song's threads: on Linux the app grew a
     // few MB with every song. Two heaps keep the freed memory in use. And big blocks (a

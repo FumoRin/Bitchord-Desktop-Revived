@@ -88,6 +88,8 @@ Type: files; Name: "{userprograms}\{#AppName}\{#AppName}.lnk"
 Type: dirifempty; Name: "{userprograms}\{#AppName}"
 
 [Run]
+; Run before any app launch, including during silent updates.
+Filename: "{app}\{#AppExe}"; Parameters: "--reset-install-profile"; Flags: runasoriginaluser runhidden
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
 
 [Code]
@@ -98,10 +100,6 @@ const
   // treated the two apps as one program. Ours is a new one; an old install under
   // the shared ID is uninstalled here so it doesn't linger beside the new entry.
   LegacyAppId = '{6E0B7C4A-2D1F-4C8E-9B3A-7F5D1E2A9C40}';
-  GenericCredential = 1;
-  CredentialNotFound = 1168;
-  CredentialServiceSuffix = '.bitchord';
-  MaxCredentialTargetLength = 32767;
 
 var
   // Where a previous BitChord install lives, from its uninstall key's
@@ -183,15 +181,14 @@ begin
     Result := location;
 end;
 
-// Read our install location before setup runs its uninstaller.
+// HKEY_AUTO uses the selected install mode's root and default registry view,
+// just like the uninstall registration Setup writes.
 function InitializeSetup(): Boolean;
-var
-  root: Integer;
-  path, location: String;
 begin
   PrevDir := '';
-  if FindUninstallValue(OurAppId, 'InstallLocation', root, path, location) then
-    PrevDir := location;
+  RegQueryStringValue(HKEY_AUTO,
+    'Software\Microsoft\Windows\CurrentVersion\Uninstall\' + OurAppId + '_is1',
+    'InstallLocation', PrevDir);
   Result := True;
 end;
 
@@ -316,75 +313,13 @@ begin
   RemoveStaleSchemeAt(HKEY_LOCAL_MACHINE);
 end;
 
-// Inno Setup 6 runs this script in a 32-bit process on every target.
-function CredEnumerate(filter, flags: LongWord; var count, entries: LongWord): Integer;
-  external 'CredEnumerateW@advapi32.dll stdcall';
-function CredDelete(target: String; kind, flags: LongWord): Integer;
-  external 'CredDeleteW@advapi32.dll stdcall';
-procedure CredFree(entries: LongWord);
-  external 'CredFree@advapi32.dll stdcall';
-function ReadCredentialWord(process: Integer; address: LongWord; var value: LongWord;
-  size, bytesRead: LongWord): Integer;
-  external 'ReadProcessMemory@kernel32.dll stdcall';
-function CopyCredentialTarget(dest: String; source: LongWord; limit: Integer): LongWord;
-  external 'lstrcpynW@kernel32.dll stdcall';
-
-procedure ClearBitChordCredentials;
-var
-  count, entries, i, entry, kind, namePtr: LongWord;
-  target: String;
-begin
-  if CredEnumerate(0, 0, count, entries) = 0 then begin
-    if DLLGetLastError <> CredentialNotFound then
-      Log('Could not enumerate Windows credentials for the BitChord reset.');
-    exit;
-  end;
-  try
-    for i := 1 to count do begin
-      // CREDENTIALW starts with Flags, Type and TargetName. The keyring crate
-      // uses "user.service", with vault parts named "user #2", "user #3", etc.
-      if (ReadCredentialWord(-1, entries + (i - 1) * 4, entry, 4, 0) = 0) or
-         (ReadCredentialWord(-1, entry + 4, kind, 4, 0) = 0) or
-         (ReadCredentialWord(-1, entry + 8, namePtr, 4, 0) = 0) then begin
-        Log('Could not read a Windows credential entry during the BitChord reset.');
-        continue;
-      end;
-      if kind <> GenericCredential then continue;
-      SetLength(target, MaxCredentialTargetLength + 1);
-      if CopyCredentialTarget(target, namePtr, MaxCredentialTargetLength + 1) = 0 then begin
-        Log('Could not read a Windows credential target during the BitChord reset.');
-        continue;
-      end;
-      SetLength(target, Pos(#0, target) - 1);
-      if Length(target) <= Length(CredentialServiceSuffix) then continue;
-      if CompareText(Copy(target, Length(target) - Length(CredentialServiceSuffix) + 1,
-         Length(CredentialServiceSuffix)), CredentialServiceSuffix) <> 0 then continue;
-      if CredDelete(target, kind, 0) = 0 then
-        if DLLGetLastError <> CredentialNotFound then
-          Log('Could not remove a BitChord credential during the reset.');
-    end;
-  finally
-    CredFree(entries);
-  end;
-end;
-
-// An update lands as a fresh install: the previous version's leftover files go,
-// and the data folder goes with it — an old settings file or cache is exactly
-// what leaves an updated app misbehaving, and nothing is migrated in its place.
-// The user signs in again. The app is closed by the setup's CloseApplications, so
-// nothing holds the files open. %AppData%\ytm-rs is never touched: it is ytm-rs's.
+// The shared install files are cleaned here. The [Run] entry separately resets
+// the initiating user's profile (%AppData%\bitchord and the Windows vault).
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssInstall then begin
     RemoveLegacyInstall();
     RemoveStaleScheme();
     WipePreviousInstall();
-    if DirExists(ExpandConstant('{userappdata}\bitchord')) then begin
-      if DelTree(ExpandConstant('{userappdata}\bitchord'), True, True, True) then
-        Log('Removed the previous BitChord data (%AppData%\bitchord) with the old install.')
-      else
-        Log('Could not remove all previous BitChord data.');
-    end;
-    ClearBitChordCredentials();
   end;
 end;
