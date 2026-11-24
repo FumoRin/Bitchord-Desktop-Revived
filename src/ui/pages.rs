@@ -1404,9 +1404,11 @@ fn artist(app: &mut App, ui: &mut Ui, id: &str, now: f64) {
     let hero_h = (w / 1.93).clamp(240.0, (screen_h * 0.7).max(380.0));
     let (hero, _) = ui.allocate_exact_size(vec2(w, hero_h), Sense::hover());
     let clip = ui.clip_rect();
-    // The gutters the art crosses: the panel's left inset (PAGE_INSET) and the scroll
-    // content's right one (the set_max_width in `page`), plus the title strip above.
-    let bleed = Rect::from_min_max(pos2(clip.left() - PAGE_INSET as f32, hero.top() - (clip.top() - screen.top())), pos2(clip.right(), hero.bottom()));
+    // The scroll's clip already spans the panel — its left is the sidebar's own edge,
+    // so crossing a page gutter again would paint over the sidebar — and on the
+    // right the content's gutter (the set_max_width in `page`) sits inside it. The
+    // title strip above is crossed.
+    let bleed = Rect::from_min_max(pos2(clip.left(), hero.top() - (clip.top() - screen.top())), pos2(clip.right(), hero.bottom()));
     let outer = ui.clip_rect();
     ui.set_clip_rect(Rect::from_min_max(pos2(bleed.left(), screen.top()), pos2(bleed.right(), clip.bottom())));
     if let Some(t) = a.banner.iter().max_by_key(|t| t.width) {
