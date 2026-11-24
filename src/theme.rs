@@ -832,6 +832,24 @@ fn choose_faces(family: &SysFamily) -> Option<[Face; 3]> {
     faces.try_into().ok()
 }
 
+/// Linux dynamic font discovery helper. 
+fn fc_match_face(query: &str, probe: char) -> Option<(std::path::PathBuf, u32)>{
+    use skrifa::MetadataProvider;
+    let output = std::process::Command::new("fc-match")
+        .args(["-f", "%{file}:%{index}\n", query])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None
+    }
+    let s = std::str::from_utf8(&output.stdout).ok()?;
+    let (p, idx_str) = s.lines().next()?.trim().rsplit_once(':')?;
+    let idx = idx_str.parse::<u32>().unwrap_or(0) & 0xFFFF;
+    let path = std::path::PathBuf::from(p);
+    let font = skrifa::FontRef::from_index(map(&path)?, idx).ok()?;
+    font.charmap().map(probe).is_some().then_some((path, idx))
+}
+
 /// Load the faces of the installed font in use, if that's what it is: the listener's
 /// pick, else one the theme names for its interface (Fluent's Segoe UI Variable). A
 /// name can list fallbacks, "Segoe UI Variable, Segoe UI", tried in order.
@@ -985,34 +1003,26 @@ fn linux_fallback_candidates() -> Vec<(std::path::PathBuf, u32)> {
 
     // Dynamic discovery via `fc-match` for scripts that were not found
     // in well-known system paths (e.g. NixOS, Guix, custom prefixes, ~/.local/share/fonts).
-    let queries: &[(&str, &str)] = &[
-        ("cjk", "Noto Sans CJK SC"),
-        ("cjk", "Noto Sans CJK JP"),
-        ("arabic", "Noto Sans Arabic"),
-        ("hebrew", "Noto Sans Hebrew"),
-        ("thai", "Noto Sans Thai"),
-        ("devanagari", "Noto Sans Devanagari"),
-        ("symbol", "Noto Sans Symbols 2"),
+    // Default using Noto Sans, but will use other font family if there's none
+    let queries: &[(&str, &str, char)] = &[
+        ("cjk", "Noto Sans CJK SC:charset=4e00", '\u{4e00}'),
+        ("cjk", "Noto Sans CJK JP:charset=3042", '\u{3042}'),
+        ("cjk", "Noto Sans CJK KR:charset=ac00", '\u{ac00}'),
+        ("arabic", "Noto Sans Arabic:charset=0627", '\u{0627}'),
+        ("hebrew", "Noto Sans Hebrew:charset=05d0", '\u{05d0}'),
+        ("thai", "Noto Sans Thai:charset=0e01", '\u{0e01}'),
+        ("devanagari", "Noto Sans Devanagari:charset=0915", '\u{0915}'),
+        ("symbol", "Noto Sans Symbols 2:charset=2192", '\u{2192}'),
     ];
 
-    for &(kw, query) in queries {
-        let has = list.iter().any(|(p, _)| p.to_string_lossy().to_ascii_lowercase().contains(kw));
-        if !has {
-            if let Ok(output) = std::process::Command::new("fc-match").args(["-f", "%{file}:%{index}\n", query]).output() {
-                if output.status.success() {
-                    if let Ok(s) = std::str::from_utf8(&output.stdout) {
-                        for line in s.lines() {
-                            let line = line.trim();
-                            if let Some((p, idx_str)) = line.rsplit_once(':') {
-                                let idx = idx_str.parse::<u32>().unwrap_or(0) & 0xFFFF;
-                                let path = std::path::PathBuf::from(p);
-                                if path.exists() && seen.insert((path.clone(), idx)) {
-                                    list.push((path, idx));
-                                }
-                            }
-                        }
-                    }
-                }
+
+    for &(kw, query, probe) in queries {
+        if list.iter().any(|(p, _)| p.to_string_lossy().to_ascii_lowercase().contains(kw)) {
+            continue;
+        }
+        if let Some(face) = fc_match_face(query, probe) {
+            if seen.insert(face.clone()) {
+                list.push(face);
             }
         }
     }
