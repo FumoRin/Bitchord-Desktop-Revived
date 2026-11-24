@@ -31,7 +31,6 @@ mod logging;
 mod login;
 mod lyrics;
 mod media;
-mod migrate;
 mod model;
 mod motion;
 mod notify;
@@ -139,9 +138,6 @@ fn main() -> eframe::Result {
         deeplink::push(code);
     }
     logging::init(&data_dir());
-    // Before anything reads the folder: an install from before 2.0.3 kept its data
-    // (and its sign-ins) under ytm-rs's names, and moves over once, here.
-    migrate::run(&data_dir());
     guard_settings(&data_dir());
     if show_requested {
         if claim.busy() {

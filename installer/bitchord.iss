@@ -26,7 +26,8 @@
 ; BitChord's own ID, new in 2.0.3. Before that, every install rode on ytm-rs's GUID,
 ; so Windows treated the two apps as one program: installing either "upgraded" the
 ; other and they shared a single uninstall entry. An old install under the shared ID
-; is uninstalled by [Code] below, so an update lands as one program, not two.
+; is uninstalled by [Code] below — its leftover files and data folder going with it —
+; so an update lands as one program, not two, and as a fresh install.
 AppId={{44C00AFB-5305-4CCA-80C5-5F0D03AC0D29}
 AppName={#AppName}
 AppVersion={#AppVersion}
@@ -53,12 +54,10 @@ CloseApplications=yes
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-; The escape hatch for a broken update: an old settings file (app.ron and friends)
-; can leave the app misbehaving after an update, and only wiping the data folder
-; fixes it. Checked here, everything under %AppData%\bitchord goes before the new
-; files land — the app starts as a fresh install. A pre-2.0.3 install kept its data
-; under %AppData%\ytm-rs; that folder is ytm-rs's and is never touched.
-Name: "cleandata"; Description: "Remove the existing BitChord data before installing (%AppData%\bitchord). Use this if an update left the app misbehaving: it deletes the old settings and caches, so BitChord starts as a fresh install."; GroupDescription: "Fix an update:"; Flags: unchecked
+; There is no "keep the old data" choice on an update: the previous install's files
+; and data folder go with it (see [Code]), so every update lands as a fresh install
+; and the user signs in again. A pre-2.0.3 install kept its data under
+; %AppData%\ytm-rs; that folder is ytm-rs's and is never touched.
 
 [Files]
 ; The exe statically links the WebView2 loader, so there's no DLL to ship.
@@ -93,22 +92,34 @@ Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags
 
 [Code]
 const
+  // BitChord's own AppId, matching [Setup] above.
+  OurAppId = '{44C00AFB-5305-4CCA-80C5-5F0D03AC0D29}';
   // ytm-rs's AppId, which every BitChord install before 2.0.3 also used: Windows
   // treated the two apps as one program. Ours is a new one; an old install under
   // the shared ID is uninstalled here so it doesn't linger beside the new entry.
   LegacyAppId = '{6E0B7C4A-2D1F-4C8E-9B3A-7F5D1E2A9C40}';
 
-// Read a value of the old install's uninstall key. `view` covers the 32-bit view
-// ('WOW6432Node\'), for installs a 32-bit build made. Sets `value` and returns True
-// when the key is there.
-function LegacyValue(view: String; name: String; var value: String): Boolean;
+var
+  // Where a previous BitChord install lives, from its uninstall key's
+  // InstallLocation ('' when there is none): the folder whose leftover files the
+  // update wipes before the new ones land. A previous uninstaller only removes
+  // what its own installer laid down — files renamed or added since stay — so an
+  // update that just runs it would mix old files into the new install.
+  PrevDir: String;
+
+// Read a value of the install's uninstall key under `id`. HKCU covers a per-user
+// install, HKLM an all-users one, and the 32-bit view ('WOW6432Node\') an install
+// a 32-bit build made. Sets `value` and returns True when the key is there.
+function UninstallValue(id: String; name: String; var value: String): Boolean;
 var
   path: String;
 begin
-  path := 'Software\' + view + 'Microsoft\Windows\CurrentVersion\Uninstall\' + LegacyAppId + '_is1';
+  path := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' + id + '_is1';
   Result := RegQueryStringValue(HKEY_CURRENT_USER, path, name, value);
   if not Result then
     Result := RegQueryStringValue(HKEY_LOCAL_MACHINE, path, name, value);
+  if not Result then
+    Result := RegQueryStringValue(HKEY_LOCAL_MACHINE, 'Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\' + id + '_is1', name, value);
 end;
 
 // Where this install goes by default: a pre-2.0.3 install under the shared AppId
@@ -119,10 +130,22 @@ var
   name, location: String;
 begin
   Result := ExpandConstant('{autopf}\{#AppName}');
-  if not LegacyValue('', 'DisplayName', name) then exit;
+  if not UninstallValue(LegacyAppId, 'DisplayName', name) then exit;
   if Pos('ytm-rs', Lowercase(name)) > 0 then exit;
-  if LegacyValue('', 'InstallLocation', location) and (location <> '') then
+  if UninstallValue(LegacyAppId, 'InstallLocation', location) and (location <> '') then
     Result := location;
+end;
+
+// The previous install's folder, read before setup touches anything: our own
+// uninstall key is still in place here — setup runs its uninstaller itself later.
+function InitializeSetup(): Boolean;
+var
+  location: String;
+begin
+  PrevDir := '';
+  if UninstallValue(OurAppId, 'InstallLocation', location) and (location <> '') then
+    PrevDir := location;
+  Result := True;
 end;
 
 // Split "…unins000.exe" /flags into the exe and its flags, then run it with ours.
@@ -165,24 +188,76 @@ begin
   Log('The old uninstaller is taking its time; carrying on.');
 end;
 
+// A path at a drive or share root is never ours to clear: a stray InstallLocation
+// naming one would take everything under it along. A real install folder always
+// keeps a folder name past the drive ('X:\name') or the share ('\\srv\share\name').
+function RootLike(dir: String): Boolean;
+var
+  i, depth: Integer;
+begin
+  Result := True;
+  if Copy(dir, 2, 1) = ':' then begin
+    Result := Length(dir) <= 3;
+    exit;
+  end;
+  if Copy(dir, 1, 2) = '\\' then begin
+    // '\\srv\share' carries one separator past the leading pair; deeper is a folder
+    depth := 0;
+    for i := 3 to Length(dir) do
+      if dir[i] = '\' then
+        depth := depth + 1;
+    Result := depth < 2;
+    exit;
+  end;
+end;
+
+// An install folder's leftovers: every file and folder still there goes, so the
+// new files land alone and nothing old rides along. The folder itself stays when
+// the new install is about to fill it again; a root or an empty path is skipped.
+procedure WipeLeftovers(dir: String);
+begin
+  while (Length(dir) > 1) and (Copy(dir, Length(dir), 1) = '\') do
+    SetLength(dir, Length(dir) - 1);
+  if dir = '' then exit;
+  if RootLike(dir) then begin
+    Log('Not wiping ' + dir + ': it names a drive or share root.');
+    exit;
+  end;
+  if not DirExists(dir) then exit;
+  DelTree(dir, True, True, False);
+  Log('Removed an install''s leftover files at ' + dir);
+end;
+
 // An old BitChord install under the shared AppId: uninstall it, so this install
 // doesn't end up beside a second "BitChord" in Settings › Apps. A ytm-rs that owns
-// the shared key is recognized by its DisplayName and left strictly alone.
+// the shared key is recognized by its DisplayName and left strictly alone. Its
+// folder is the previous install's: the uninstaller this runs only removes what
+// its own installer laid down, so the leftovers go right after it.
 procedure RemoveLegacyInstall;
 var
-  name, unins: String;
+  name, unins, location: String;
 begin
-  if not LegacyValue('', 'DisplayName', name) then exit;
+  if not UninstallValue(LegacyAppId, 'DisplayName', name) then exit;
   if Pos('ytm-rs', Lowercase(name)) > 0 then begin
     Log('The shared AppId is held by ' + name + '; leaving it alone.');
     exit;
   end;
-  if not LegacyValue('', 'QuietUninstallString', unins) then
-    if not LegacyValue('', 'UninstallString', unins) then begin
+  if not UninstallValue(LegacyAppId, 'QuietUninstallString', unins) then
+    if not UninstallValue(LegacyAppId, 'UninstallString', unins) then begin
       Log('No uninstaller for the old install under the shared AppId; skipping.');
       exit;
     end;
   RunUninstaller(unins);
+  if UninstallValue(LegacyAppId, 'InstallLocation', location) then
+    WipeLeftovers(location);
+end;
+
+// The install under our own AppId, which setup uninstalls itself before this
+// runs: its folder gets the same sweep, read back at InitializeSetup (the key is
+// gone by the time we get here).
+procedure WipePreviousInstall;
+begin
+  WipeLeftovers(PrevDir);
 end;
 
 // The ytm-rs:// class registration a pre-2.0.3 install wrote: give the scheme back
@@ -207,17 +282,18 @@ begin
   RemoveStaleSchemeAt(HKEY_LOCAL_MACHINE);
 end;
 
-// The "Remove the existing BitChord data" task: the data folder goes just before
-// the new files are written, so the install that follows is a clean one. The app
-// is closed by the setup's CloseApplications, so nothing holds the files open.
+// An update lands as a fresh install: the previous version's leftover files go,
+// and the data folder goes with it — an old settings file or cache is exactly
+// what leaves an updated app misbehaving, and nothing is migrated in its place.
+// The user signs in again. The app is closed by the setup's CloseApplications, so
+// nothing holds the files open. %AppData%\ytm-rs is never touched: it is ytm-rs's.
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssInstall then begin
     RemoveLegacyInstall();
     RemoveStaleScheme();
-    if IsTaskSelected('cleandata') then begin
-      DelTree(ExpandConstant('{userappdata}\bitchord'), True, True, True);
-      Log('Removed existing BitChord data (%AppData%\bitchord) at the user''s request.');
-    end;
+    WipePreviousInstall();
+    DelTree(ExpandConstant('{userappdata}\bitchord'), True, True, True);
+    Log('Removed the previous BitChord data (%AppData%\bitchord) with the old install.');
   end;
 end;

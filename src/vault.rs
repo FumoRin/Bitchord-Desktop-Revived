@@ -10,14 +10,6 @@
 use std::path::Path;
 
 const SERVICE: &str = "bitchord";
-/// The service name every version before 2.0.3 kept its secrets under, inherited
-/// from ytm-rs (see `migrate`).
-const OLD_SERVICE: &str = "ytm-rs";
-
-/// Every secret the app keeps in the credential store, by the module that owns it:
-/// `import_legacy` copies these, and only these, over from the old service name.
-/// Add a name here when adding a vault.
-const NAMES: &[&str] = &["google session", "spotify sp_dc", "discord token", "lastfm", "proxy"];
 
 /// The credential names for `name`, scoped to the data folder when it isn't the
 /// default one (`YTM_DATA_DIR` dev profiles, tests), so those never share or touch
@@ -60,33 +52,6 @@ mod store {
     fn entry_in(service: &str, key: &str, part: usize) -> keyring::Result<keyring::Entry> {
         let user = if part == 0 { key.to_owned() } else { format!("{key} #{}", part + 1) };
         keyring::Entry::new(service, &user)
-    }
-
-    /// Read `key` from the service name versions before 2.0.3 used and write it under
-    /// ours, if it's there and ours doesn't have it yet. Copied, never moved: a
-    /// parallel ytm-rs install keeps its sign-in under the old name.
-    pub fn import_legacy(key: &str) -> anyhow::Result<()> {
-        let mut old = Vec::new();
-        for part in 0.. {
-            match entry_in(super::OLD_SERVICE, key, part)?.get_secret() {
-                Ok(bytes) => {
-                    let full = bytes.len() == CHUNK;
-                    old.extend(bytes);
-                    if !full {
-                        break;
-                    }
-                }
-                Err(keyring::Error::NoEntry) if part == 0 => return Ok(()),
-                Err(keyring::Error::NoEntry) => break,
-                Err(e) => return Err(e.into()),
-            }
-        }
-        let ours = entry(key, 0).is_ok_and(|e| matches!(e.get_secret(), Err(keyring::Error::NoEntry)));
-        if ours {
-            set(key, &old)?;
-            log::info!("imported {key:?} from the {} credential service", super::OLD_SERVICE);
-        }
-        Ok(())
     }
 
     pub fn get(key: &str) -> anyhow::Result<Option<Vec<u8>>> {
@@ -247,22 +212,6 @@ pub fn delete(name: &str, data_dir: &Path) {
         log::warn!("couldn't delete {name} from the credential store: {e:#}");
     }
 }
-
-/// Copy the secrets kept under the service name versions before 2.0.3 used over to
-/// this app's own service (see `migrate`). Called once, on the first launch after the
-/// rename, and only for the default data folder — the plain names, not a dev
-/// profile's suffixed ones.
-#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-pub fn import_legacy() {
-    for name in NAMES {
-        if let Err(e) = store::import_legacy(name) {
-            log::debug!("couldn't import {name:?} from the old credential service: {e:#}");
-        }
-    }
-}
-
-#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-pub fn import_legacy() {}
 
 #[cfg(all(test, windows))]
 mod tests {
