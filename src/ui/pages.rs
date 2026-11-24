@@ -3154,24 +3154,20 @@ fn settings_updates(app: &mut App, ui: &mut Ui) {
 /// for that belongs with ytm-rs. The README's Acknowledgements has the whole list.
 fn settings_about(ui: &mut Ui) {
     settings_section(ui, "About", None, None, |ui| {
-        let link = |ui: &mut Ui, label: &str, url: &str| {
-            let color = if theme::light() { Color32::from_rgb(0, 102, 204) } else { Color32::from_rgb(62, 166, 255) };
-            ui.hyperlink_to(RichText::new(label).font(theme::regular(13.5)).color(color), url);
-        };
-        about_row(ui, "A fork of ytm-rs", "By grapedjuice — most of the code this app runs, from playback to the installers, comes from ytm-rs.", |ui| link(ui, "github.com/grapedjuice/ytm-rs", "https://github.com/grapedjuice/ytm-rs"));
+        about_row(ui, "A fork of ytm-rs", "By grapedjuice — most of the code this app runs, from playback to the installers, comes from ytm-rs.", "github.com/grapedjuice/ytm-rs", "https://github.com/grapedjuice/ytm-rs");
         divider(ui);
-        about_row(ui, "It continues BitChord-PC-Continued", "By jackychan4891 — in the style of the BitChord Android app by kushagrasinghx, which made the icon and hosts the Listen Together relay.", |ui| link(ui, "github.com/jackychan4891/BitChord-PC-Continued", "https://github.com/jackychan4891/BitChord-PC-Continued"));
+        about_row(ui, "It continues BitChord-PC-Continued", "By jackychan4891 — in the style of the BitChord Android app by kushagrasinghx, which made the icon and hosts the Listen Together relay.", "github.com/jackychan4891/BitChord-PC-Continued", "https://github.com/jackychan4891/BitChord-PC-Continued");
         divider(ui);
-        about_row(ui, "Credits", "Changes and additions by LoserDenji and nxfu, with lyrics providers following ForkChord and ideas from Sonora and Mochy-Music. The full list is in the README's Acknowledgements.", |ui| link(ui, "github.com/LoserDenji/Bitchord-Desktop-Revived", "https://github.com/LoserDenji/Bitchord-Desktop-Revived"));
+        about_row(ui, "Credits", "Changes and additions by LoserDenji and nxfu, with lyrics providers following ForkChord and ideas from Sonora and Mochy-Music. The full list is in the README's Acknowledgements.", "github.com/LoserDenji/Bitchord-Desktop-Revived", "https://github.com/LoserDenji/Bitchord-Desktop-Revived");
         divider(ui);
-        about_row(ui, "License", "BitChord Desktop Revived is free software under the GPL-3.0 license.", |ui| link(ui, "gnu.org/licenses/gpl-3.0", "https://www.gnu.org/licenses/gpl-3.0"));
+        about_row(ui, "License", "BitChord Desktop Revived is free software under the GPL-3.0 license.", "gnu.org/licenses/gpl-3.0", "https://www.gnu.org/licenses/gpl-3.0");
     });
 }
 
 /// One About row: like `setting_row`, but the link rides on its own line under the
 /// description instead of in the row's control column — a URL long enough to read
 /// won't fit in there beside the text without running over it.
-fn about_row(ui: &mut Ui, title: &str, desc: &str, link: impl FnOnce(&mut Ui)) {
+fn about_row(ui: &mut Ui, title: &str, desc: &str, label: &str, url: &str) {
     if !filter_show(ui, &format!("{title} {desc}")) {
         return;
     }
@@ -3179,16 +3175,18 @@ fn about_row(ui: &mut Ui, title: &str, desc: &str, link: impl FnOnce(&mut Ui)) {
     let title_g = widgets::galley(ui, title, theme::semibold(14.5), theme::text(), w);
     let desc_g = widgets::galley_wrapped(ui, desc, theme::regular(12.5), theme::text_dim(), w, 3);
     let (title_h, desc_h) = (title_g.size().y, desc_g.size().y);
-    // The link's own line: 20 points holds any one-line link a row puts there.
-    let text_h = title_h + desc_h + 3.0 + 20.0;
+    let color = if theme::light() { Color32::from_rgb(0, 102, 204) } else { Color32::from_rgb(62, 166, 255) };
+    let link_g = egui::WidgetText::from(RichText::new(label).font(theme::regular(13.5)).color(color))
+        .into_galley(ui, Some(egui::TextWrapMode::Wrap), w, egui::FontSelection::Default);
+    let text_h = title_h + 3.0 + desc_h + 6.0 + link_g.size().y;
     let h = (text_h + 26.0).max(58.0);
     let (rect, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
     let top = rect.center().y - text_h / 2.0;
     ui.painter().galley(pos2(rect.left(), top), title_g, theme::text());
     ui.painter().galley(pos2(rect.left(), top + title_h + 3.0), desc_g, theme::text_dim());
-    let lrect = Rect::from_min_size(pos2(rect.left(), top + title_h + 3.0 + desc_h + 6.0), vec2(w, 20.0));
-    let mut lui = ui.new_child(egui::UiBuilder::new().max_rect(lrect).layout(egui::Layout::left_to_right(egui::Align::Center)));
-    link(&mut lui);
+    let lrect = Rect::from_min_size(pos2(rect.left(), top + title_h + 3.0 + desc_h + 6.0), vec2(w, link_g.size().y));
+    let mut lui = ui.new_child(egui::UiBuilder::new().max_rect(lrect).layout(egui::Layout::top_down(egui::Align::Min)));
+    lui.hyperlink_to(link_g, url);
 }
 
 /// Settings › Downloads.
