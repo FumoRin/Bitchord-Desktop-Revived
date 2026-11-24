@@ -1,11 +1,14 @@
 ; Inno Setup script for BitChord.
 ; Build: cargo build --release, then
 ;   iscc installer\bitchord.iss
-; Output: installer\Output\bitchord-setup-<version>.exe
+; ISCC produces the inner payload. Package it with launcher.rs before distributing:
+;   $env:BITCHORD_INNO_SETUP = (Resolve-Path installer\Output\bitchord-payload-<version>.exe).Path
+;   rustc --edition 2024 -O installer\launcher.rs -o installer\Output\bitchord-setup-<version>.exe
 ; The version comes from Cargo.toml by default; the release workflow stamps its own:
 ;   iscc /DAppVersion="2.0.3" installer\bitchord.iss
 ; ARM64: cargo build --release --target aarch64-pc-windows-msvc, then
-;   iscc /DArm64 installer\bitchord.iss  ->  bitchord-setup-<version>-arm64.exe
+;   iscc /DArm64 installer\bitchord.iss
+; Add -arm64 to both filenames and --target aarch64-pc-windows-msvc to rustc.
 
 #define AppName "BitChord"
 #ifndef AppVersion
@@ -44,7 +47,7 @@ PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesAllowed={#Arch}
 ArchitecturesInstallIn64BitMode={#Arch}
 MinVersion=10.0
-OutputBaseFilename=bitchord-setup-{#AppVersion}{#Suffix}
+OutputBaseFilename=bitchord-payload-{#AppVersion}{#Suffix}
 Compression=lzma2/ultra
 SolidCompression=yes
 WizardStyle=modern
