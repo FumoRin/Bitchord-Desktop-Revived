@@ -51,6 +51,9 @@ WizardStyle=modern
 SetupIconFile=..\assets\icon\icon.ico
 UninstallDisplayIcon={app}\{#AppExe}
 CloseApplications=yes
+; Restart Manager must not launch the app before its profile has been reset.
+RestartApplications=no
+SetupLogging=yes
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
@@ -64,6 +67,10 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "{#BinDir}\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+
+[Dirs]
+; Inno processes [Dirs] after closing applications and before replacing files.
+Name: "{app}"; BeforeInstall: WipePreviousInstall
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"
@@ -88,9 +95,7 @@ Type: files; Name: "{userprograms}\{#AppName}\{#AppName}.lnk"
 Type: dirifempty; Name: "{userprograms}\{#AppName}"
 
 [Run]
-; Run before any app launch, including during silent updates.
-Filename: "{app}\{#AppExe}"; Parameters: "--reset-install-profile"; Flags: runasoriginaluser runhidden
-Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent; Check: CanLaunchApp
 
 [Code]
 const
@@ -108,6 +113,7 @@ var
   // what its own installer laid down — files renamed or added since stay — so an
   // update that just runs it would mix old files into the new install.
   PrevDir: String;
+  ProfileResetSucceeded: Boolean;
 
 // Keep the registry root and view with the first matching value so related
 // values can be read from that same registration.
@@ -283,9 +289,16 @@ begin
   WipeLeftovers(location);
 end;
 
-// The install under our own AppId, which setup uninstalls itself before this
-// runs: its folder gets the same sweep, read back at InitializeSetup (the key is
-// gone by the time we get here).
+procedure RegisterExtraCloseApplicationsResources;
+var
+  dir: String;
+begin
+  // The [Files] entry covers the new destination, which can differ from PrevDir.
+  dir := PrevDir;
+  if NormalizeInstallDir(dir) then
+    RegisterExtraCloseApplicationsResource(Is64BitInstallMode, AddBackslash(dir) + '{#AppExe}');
+end;
+
 procedure WipePreviousInstall;
 begin
   WipeLeftovers(PrevDir);
@@ -313,13 +326,43 @@ begin
   RemoveStaleSchemeAt(HKEY_LOCAL_MACHINE);
 end;
 
-// The shared install files are cleaned here. The [Run] entry separately resets
-// the initiating user's profile (%AppData%\bitchord and the Windows vault).
+function CanLaunchApp(): Boolean;
+begin
+  Result := ProfileResetSucceeded;
+end;
+
+function GetCustomSetupExitCode(): Integer;
+begin
+  Result := 0;
+  if not ProfileResetSucceeded then
+    Result := 10;
+end;
+
+procedure ResetInstallProfile;
+var
+  code: Integer;
+  failure: String;
+begin
+  if not ExecAsOriginalUser(ExpandConstant('{app}\{#AppExe}'), '--reset-install-profile',
+      '', SW_HIDE, ewWaitUntilTerminated, code) then
+    failure := 'Could not start the profile reset: ' + SysErrorMessage(code)
+  else if code <> 0 then
+    failure := 'Profile reset exited with code ' + IntToStr(code) + '.'
+  else begin
+    ProfileResetSucceeded := True;
+    exit;
+  end;
+  Log(failure);
+  SuppressibleMsgBox(failure + #13#10 +
+    'BitChord was installed but will not be launched. Close BitChord and rerun Setup without starting it as administrator.',
+    mbError, MB_OK, IDOK);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssInstall then begin
     RemoveLegacyInstall();
     RemoveStaleScheme();
-    WipePreviousInstall();
-  end;
+  end else if CurStep = ssPostInstall then
+    ResetInstallProfile();
 end;

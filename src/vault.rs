@@ -11,6 +11,13 @@ use std::path::Path;
 
 const SERVICE: &str = "bitchord";
 
+#[cfg(windows)]
+pub(crate) fn install_profile_dir() -> anyhow::Result<std::path::PathBuf> {
+    let dirs = directories::ProjectDirs::from("", "", SERVICE).ok_or_else(|| anyhow::anyhow!("no profile directory"))?;
+    // On Windows ProjectDirs uses %AppData%\bitchord\data.
+    Ok(dirs.data_dir().parent().expect("data directory has a parent").to_owned())
+}
+
 /// The installer calls this before launching the app, using its original user's token.
 #[cfg(windows)]
 pub(crate) fn reset_install_profile() -> anyhow::Result<()> {
@@ -33,10 +40,7 @@ pub(crate) fn reset_install_profile() -> anyhow::Result<()> {
     }
     anyhow::ensure!(elevation.TokenIsElevated == 0, "profile reset requires an unelevated user");
 
-    let dirs = directories::ProjectDirs::from("", "", SERVICE).ok_or_else(|| anyhow::anyhow!("no profile directory"))?;
-    // On Windows ProjectDirs uses %AppData%\bitchord\data.
-    let profile = dirs.data_dir().parent().expect("data directory has a parent");
-    let files = match std::fs::remove_dir_all(profile) {
+    let files = match std::fs::remove_dir_all(install_profile_dir()?) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         result => result,
     };
@@ -79,7 +83,7 @@ fn clear_windows_credentials() -> windows::core::Result<()> {
             }
             // keyring uses "user.service"; numbered parts change only "user".
             let name = String::from_utf16_lossy(&target[..target.len() - 1]);
-            if !name.rsplit_once('.').is_some_and(|(user, service)| !user.is_empty() && service.eq_ignore_ascii_case(SERVICE)) {
+            if !is_default_credential(&name) {
                 continue;
             }
             if let Err(e) = CredDeleteW(PCWSTR(target.as_ptr()), CRED_TYPE_GENERIC, None) {
@@ -91,6 +95,43 @@ fn clear_windows_credentials() -> windows::core::Result<()> {
         CredFree(entries.cast());
     }
     result
+}
+
+#[cfg(any(windows, test))]
+fn is_default_credential(name: &str) -> bool {
+    let Some((user, service)) = name.rsplit_once('.') else { return false };
+    if !service.eq_ignore_ascii_case(SERVICE) {
+        return false;
+    }
+    let base = if let Some((base, number)) = user.rsplit_once(" #") {
+        if number.starts_with('0') || !number.bytes().all(|c| c.is_ascii_digit()) ||
+            !number.parse::<usize>().is_ok_and(|n| n >= 2)
+        {
+            return false;
+        }
+        base
+    } else {
+        user
+    };
+    // Non-default usernames include a data path before the optional chunk suffix.
+    ["google session", "spotify sp_dc", "discord token", "lastfm", "proxy"]
+        .iter().any(|key| base.eq_ignore_ascii_case(key))
+}
+
+#[cfg(test)]
+#[test]
+fn reset_matches_only_default_credential_targets() {
+    for target in ["google session.bitchord", "spotify sp_dc #2.BITCHORD", "discord token #15.bitchord", "lastfm.bitchord", "proxy.bitchord"] {
+        assert!(is_default_credential(target), "{target}");
+    }
+    for target in [
+        r"google session (C:\BitChord\data).bitchord",
+        r"spotify sp_dc (D:\alt.profile #2) #3.bitchord",
+        "proxy #1.bitchord", "proxy #02.bitchord", "proxy #x.bitchord",
+        "unrelated.bitchord", "lastfm.ytm-rs",
+    ] {
+        assert!(!is_default_credential(target), "{target}");
+    }
 }
 
 /// The credential names for `name`, scoped to the data folder when it isn't the
