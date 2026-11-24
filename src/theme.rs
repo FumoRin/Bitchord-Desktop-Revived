@@ -850,6 +850,13 @@ fn fc_match_face(query: &str, probe: char) -> Option<(std::path::PathBuf, u32)>{
     font.charmap().map(probe).is_some().then_some((path, idx))
 }
 
+fn face_covers(path: &std::path::Path, index: u32, probe: char) -> bool {
+    use skrifa::MetadataProvider;
+    map(path)
+        .and_then(|bytes| skrifa::FontRef::from_index(bytes, index).ok())
+        .is_some_and(|font| font.charmap().map(probe).is_some())
+} 
+
 /// Load the faces of the installed font in use, if that's what it is: the listener's
 /// pick, else one the theme names for its interface (Fluent's Segoe UI Variable). A
 /// name can list fallbacks, "Segoe UI Variable, Segoe UI", tried in order.
@@ -1004,20 +1011,20 @@ fn linux_fallback_candidates() -> Vec<(std::path::PathBuf, u32)> {
     // Dynamic discovery via `fc-match` for scripts that were not found
     // in well-known system paths (e.g. NixOS, Guix, custom prefixes, ~/.local/share/fonts).
     // Default using Noto Sans, but will use other font family if there's none
-    let queries: &[(&str, &str, char)] = &[
-        ("cjk", "Noto Sans CJK SC:charset=4e00", '\u{4e00}'),
-        ("cjk", "Noto Sans CJK JP:charset=3042", '\u{3042}'),
-        ("cjk", "Noto Sans CJK KR:charset=ac00", '\u{ac00}'),
-        ("arabic", "Noto Sans Arabic:charset=0627", '\u{0627}'),
-        ("hebrew", "Noto Sans Hebrew:charset=05d0", '\u{05d0}'),
-        ("thai", "Noto Sans Thai:charset=0e01", '\u{0e01}'),
-        ("devanagari", "Noto Sans Devanagari:charset=0915", '\u{0915}'),
-        ("symbol", "Noto Sans Symbols 2:charset=2192", '\u{2192}'),
+    let queries: &[(&str, char)] = &[
+        ("Noto Sans CJK SC:charset=4e00", '\u{4e00}'),
+        ("Noto Sans CJK JP:charset=3042", '\u{3042}'),
+        ("Noto Sans CJK KR:charset=ac00", '\u{ac00}'),
+        ("Noto Sans Arabic:charset=0627", '\u{0627}'),
+        ("Noto Sans Hebrew:charset=05d0", '\u{05d0}'),
+        ("Noto Sans Thai:charset=0e01", '\u{0e01}'),
+        ("Noto Sans Devanagari:charset=0915", '\u{0915}'),
+        ("Noto Sans Symbols 2:charset=2192", '\u{2192}'),
     ];
 
 
-    for &(kw, query, probe) in queries {
-        if list.iter().any(|(p, _)| p.to_string_lossy().to_ascii_lowercase().contains(kw)) {
+    for &(query, probe) in queries {
+        if list.iter().any(|(p, idx)| face_covers(p, *idx, probe)) {
             continue;
         }
         if let Some(face) = fc_match_face(query, probe) {
