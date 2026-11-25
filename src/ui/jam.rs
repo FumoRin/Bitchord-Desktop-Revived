@@ -265,6 +265,8 @@ fn restore_stash(app: &mut App, stash: Stash) {
     if stash.was_playing {
         app.play_current_at(stash.position, true);
     } else {
+        app.generation += 1;
+        app.audio.status.wanted_gen.store(app.generation, Ordering::Relaxed);
         app.audio.send(AudioCmd::Stop);
         app.buffering = false;
         app.resume_at = Some(stash.position);
@@ -273,6 +275,7 @@ fn restore_stash(app: &mut App, stash: Stash) {
         app.request_art();
         if let Some(t) = app.current().cloned() {
             app.show_in_media(&t);
+            app.refresh_lyrics(t);
         }
     }
 }
