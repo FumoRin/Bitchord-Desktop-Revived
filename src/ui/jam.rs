@@ -102,6 +102,15 @@ pub struct Session {
     /// True once a joined guest has reconciled with the room's queue/track (or acted by
     /// hand), so pre-join local playback is never pushed over the room on the first tick.
     synced_once: bool,
+    /// The joining user's personal queue, restored when leaving the room.
+    stash: Option<Stash>,
+}
+
+struct Stash {
+    tracks: Vec<crate::model::Track>,
+    index: usize,
+    position: Duration,
+    was_playing: bool,
 }
 
 impl Session {
@@ -221,9 +230,51 @@ pub fn leave(app: &mut App) {
     if let Some(c) = app.jam.conn.take() {
         c.leave();
     }
+    let stash = app.jam.stash.take();
     fresh(app, false);
-    // A follower's queue was the room's: hidden explicit songs leave it.
-    app.queue.drop_explicit();
+    if let Some(stash) = stash {
+        restore_stash(app, stash);
+    } else {
+        // A follower's queue was the room's: hidden explicit songs leave it.
+        app.queue.drop_explicit();
+    }
+}
+
+fn stash_player(app: &mut App) {
+    if app.jam.stash.is_some() || app.queue.tracks.is_empty() {
+        return;
+    }
+    let index = app.queue.index.unwrap_or(0).min(app.queue.tracks.len() - 1);
+    app.jam.stash = Some(Stash {
+        tracks: app.queue.tracks.clone(),
+        index,
+        position: app.resume_at.unwrap_or_else(|| app.audio.status.position()),
+        was_playing: app.playing(),
+    });
+}
+
+fn restore_stash(app: &mut App, stash: Stash) {
+    if stash.index >= stash.tracks.len() {
+        return;
+    }
+    app.queue_source = None;
+    app.queue.fill = None;
+    app.play_pending = None;
+    app.queue.tracks = stash.tracks;
+    app.queue.index = Some(stash.index);
+    if stash.was_playing {
+        app.play_current_at(stash.position, true);
+    } else {
+        app.audio.send(AudioCmd::Stop);
+        app.buffering = false;
+        app.resume_at = Some(stash.position);
+        app.audio.status.position_ms.store(stash.position.as_millis() as u64, Ordering::Relaxed);
+        app.audio.status.duration_ms.store(app.current().and_then(|t| t.duration).map_or(0, |d| d as u64 * 1000), Ordering::Relaxed);
+        app.request_art();
+        if let Some(t) = app.current().cloned() {
+            app.show_in_media(&t);
+        }
+    }
 }
 
 /// Dev hooks: YTM_JAM_HOST starts a room, YTM_JAM_JOIN=<code> joins one. The relay names
@@ -386,6 +437,9 @@ fn on_event(app: &mut App, e: Event) {
             app.jam.error = None;
             if first && !app.jam.joined_once {
                 app.jam.joined_once = true;
+                if !created {
+                    stash_player(app);
+                }
                 app.toast(if created { "Party started: share the code or link" } else { "Joined the party" });
             }
         }
