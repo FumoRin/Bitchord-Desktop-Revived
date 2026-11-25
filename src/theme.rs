@@ -832,6 +832,31 @@ fn choose_faces(family: &SysFamily) -> Option<[Face; 3]> {
     faces.try_into().ok()
 }
 
+/// Linux dynamic font discovery helper. 
+fn fc_match_face(query: &str, probe: char) -> Option<(std::path::PathBuf, u32)>{
+    use skrifa::MetadataProvider;
+    let output = std::process::Command::new("fc-match")
+        .args(["-f", "%{file}:%{index}\n", query])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None
+    }
+    let s = std::str::from_utf8(&output.stdout).ok()?;
+    let (p, idx_str) = s.lines().next()?.trim().rsplit_once(':')?;
+    let idx = idx_str.parse::<u32>().unwrap_or(0) & 0xFFFF;
+    let path = std::path::PathBuf::from(p);
+    let font = skrifa::FontRef::from_index(map(&path)?, idx).ok()?;
+    font.charmap().map(probe).is_some().then_some((path, idx))
+}
+
+fn face_covers(path: &std::path::Path, index: u32, probe: char) -> bool {
+    use skrifa::MetadataProvider;
+    map(path)
+        .and_then(|bytes| skrifa::FontRef::from_index(bytes, index).ok())
+        .is_some_and(|font| font.charmap().map(probe).is_some())
+} 
+
 /// Load the faces of the installed font in use, if that's what it is: the listener's
 /// pick, else one the theme names for its interface (Fluent's Segoe UI Variable). A
 /// name can list fallbacks, "Segoe UI Variable, Segoe UI", tried in order.
@@ -896,16 +921,121 @@ const CANDIDATES: &[(&str, u32)] = &[
     ("/System/Library/Fonts/Apple Symbols.ttf", 0),
 ];
 
+#[cfg(windows)]
+fn fallback_candidates() -> Vec<(std::path::PathBuf, u32)> {
+    CANDIDATES.iter().map(|&(p, i)| (std::path::PathBuf::from(p), i)).collect()
+}
+
+#[cfg(target_os = "macos")]
+fn fallback_candidates() -> Vec<(std::path::PathBuf, u32)> {
+    CANDIDATES.iter().map(|&(p, i)| (std::path::PathBuf::from(p), i)).collect()
+}
+
 #[cfg(all(unix, not(target_os = "macos")))]
-const CANDIDATES: &[(&str, u32)] = &[
-    ("/usr/share/fonts/noto/NotoSans-Regular.ttf", 0),
-    ("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", 0),
-    ("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", 0),
-    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0),
-    ("/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc", 0),
-    ("/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf", 0),
-    ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0),
-];
+fn fallback_candidates() -> Vec<(std::path::PathBuf, u32)> {
+    linux_fallback_candidates()
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn linux_fallback_candidates() -> Vec<(std::path::PathBuf, u32)> {
+    let mut list: Vec<(std::path::PathBuf, u32)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    // Static well-known paths covering major Linux distributions
+    // (Fedora, Arch, Debian, Ubuntu, openSUSE, Alpine, etc.)
+    const KNOWN: &[(&str, u32)] = &[
+        ("/usr/share/fonts/google-noto-sans-cjk-vf-fonts/NotoSansCJK-VF.ttc", 0),
+        ("/usr/share/fonts/google-noto-sans-cjk-vf-fonts/NotoSansCJK-VF.ttc", 2),
+        ("/usr/share/fonts/google-noto-cjk-fonts/NotoSansCJK-Regular.ttc", 0),
+        ("/usr/share/fonts/google-noto-cjk-fonts/NotoSansCJK-Regular.ttc", 2),
+        ("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", 0),
+        ("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", 2),
+        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0),
+        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 2),
+        ("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", 0),
+        ("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", 2),
+        ("/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc", 0),
+        ("/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc", 0),
+        ("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 0),
+        ("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf", 0),
+
+        ("/usr/share/fonts/google-noto-vf/NotoSansArabic[wght].ttf", 0),
+        ("/usr/share/fonts/google-noto-fonts/NotoSansArabic-Regular.ttf", 0),
+        ("/usr/share/fonts/noto/NotoSansArabic-Regular.ttf", 0),
+        ("/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf", 0),
+        ("/usr/share/fonts/opentype/noto/NotoSansArabic-Regular.otf", 0),
+
+        ("/usr/share/fonts/google-noto-vf/NotoSansHebrew[wght].ttf", 0),
+        ("/usr/share/fonts/google-noto-fonts/NotoSansHebrew-Regular.ttf", 0),
+        ("/usr/share/fonts/noto/NotoSansHebrew-Regular.ttf", 0),
+        ("/usr/share/fonts/truetype/noto/NotoSansHebrew-Regular.ttf", 0),
+
+        ("/usr/share/fonts/google-noto-vf/NotoSansThai[wght].ttf", 0),
+        ("/usr/share/fonts/google-noto-fonts/NotoSansThai-Regular.ttf", 0),
+        ("/usr/share/fonts/noto/NotoSansThai-Regular.ttf", 0),
+        ("/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf", 0),
+
+        ("/usr/share/fonts/google-noto-vf/NotoSansDevanagari[wght].ttf", 0),
+        ("/usr/share/fonts/google-noto-fonts/NotoSansDevanagari-Regular.ttf", 0),
+        ("/usr/share/fonts/noto/NotoSansDevanagari-Regular.ttf", 0),
+        ("/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf", 0),
+
+        ("/usr/share/fonts/google-noto-vf/NotoSansBengali[wght].ttf", 0),
+        ("/usr/share/fonts/google-noto-vf/NotoSansTamil[wght].ttf", 0),
+        ("/usr/share/fonts/google-noto-vf/NotoSansTelugu[wght].ttf", 0),
+        ("/usr/share/fonts/google-noto-vf/NotoSansKhmer[wght].ttf", 0),
+
+        ("/usr/share/fonts/google-noto/NotoSansSymbols2-Regular.ttf", 0),
+        ("/usr/share/fonts/google-noto-fonts/NotoSansSymbols2-Regular.ttf", 0),
+        ("/usr/share/fonts/noto/NotoSansSymbols2-Regular.ttf", 0),
+        ("/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf", 0),
+        ("/usr/share/fonts/google-noto/NotoSansSymbols-Regular.ttf", 0),
+        ("/usr/share/fonts/noto/NotoSansSymbols-Regular.ttf", 0),
+        ("/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf", 0),
+
+        ("/usr/share/fonts/google-noto/NotoSans-Regular.ttf", 0),
+        ("/usr/share/fonts/noto/NotoSans-Regular.ttf", 0),
+        ("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", 0),
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0),
+        ("/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf", 0),
+        ("/usr/share/fonts/dejavu/DejaVuSans.ttf", 0),
+    ];
+
+    for &(path, idx) in KNOWN {
+        let p = std::path::PathBuf::from(path);
+        if p.exists() && seen.insert((p.clone(), idx)) {
+            list.push((p, idx));
+        }
+    }
+
+    // Dynamic discovery via `fc-match` for scripts that were not found
+    // in well-known system paths (e.g. NixOS, Guix, custom prefixes, ~/.local/share/fonts).
+    // Default using Noto Sans, but will use other font family if there's none
+    let queries: &[(&str, char)] = &[
+        ("Noto Sans CJK SC:charset=4e00", '\u{4e00}'),
+        ("Noto Sans CJK JP:charset=3042", '\u{3042}'),
+        ("Noto Sans CJK KR:charset=ac00", '\u{ac00}'),
+        ("Noto Sans Arabic:charset=0627", '\u{0627}'),
+        ("Noto Sans Hebrew:charset=05d0", '\u{05d0}'),
+        ("Noto Sans Thai:charset=0e01", '\u{0e01}'),
+        ("Noto Sans Devanagari:charset=0915", '\u{0915}'),
+        ("Noto Sans Symbols 2:charset=2192", '\u{2192}'),
+    ];
+
+
+    for &(query, probe) in queries {
+        if list.iter().any(|(p, idx)| face_covers(p, *idx, probe)) {
+            continue;
+        }
+        if let Some(face) = fc_match_face(query, probe) {
+            if seen.insert(face.clone()) {
+                list.push(face);
+            }
+        }
+    }
+
+    list
+}
 
 /// Ascent and line height in em, as egui lays text out (skrifa's metrics: OS/2 typo
 /// values when the font asks for them, else hhea).
@@ -959,13 +1089,35 @@ pub fn install_fonts(ctx: &egui::Context, ui_font: &str) {
     type Fallbacks = [Vec<(String, Face)>; 3];
     static SYSTEM: std::sync::OnceLock<Fallbacks> = std::sync::OnceLock::new();
     let system = SYSTEM.get_or_init(|| {
+        let candidates = fallback_candidates();
+        let target_weights = [400.0, 600.0, 750.0];
         std::array::from_fn(|w| {
-            CANDIDATES
+            candidates
                 .iter()
-                .filter_map(|&(path, index)| {
-                    let heavy = (w > 0).then(|| HEAVIER.iter().find(|(base, _)| *base == path)).flatten().map(|(_, v)| v[w - 1]);
-                    let mapped = |(p, i): (&str, u32)| map(p).map(|bytes| (format!("sys:{p}#{i}"), Face { bytes, index: i, wght: None }));
-                    heavy.and_then(mapped).or_else(|| mapped((path, index)))
+                .filter_map(|(path, index)| {
+                    let heavy = (w > 0)
+                        .then(|| {
+                            let p_str = path.to_str()?;
+                            HEAVIER.iter().find(|(base, _)| *base == p_str).map(|(_, v)| v[w - 1])
+                        })
+                        .flatten();
+                    if let Some((p, i)) = heavy {
+                        if let Some(bytes) = map(p) {
+                            return Some((format!("sys:{p}#{i}"), Face { bytes, index: i, wght: None }));
+                        }
+                    }
+                    let bytes = map(path)?;
+                    let target: f32 = target_weights[w];
+                    let wght = skrifa::FontRef::from_index(bytes, *index)
+                        .ok()
+                        .and_then(|f| {
+                            use skrifa::MetadataProvider;
+                            f.axes()
+                                .iter()
+                                .find(|a| a.tag() == skrifa::Tag::new(b"wght"))
+                                .map(|a| target.clamp(a.min_value(), a.max_value()))
+                        });
+                    Some((format!("sys:{}#{index}", path.display()), Face { bytes, index: *index, wght }))
                 })
                 .collect()
         })
