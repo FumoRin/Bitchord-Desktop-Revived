@@ -72,7 +72,7 @@ impl Invite {
     fn from_message(msg: &str) -> Option<Self> {
         if let Some(rest) = msg.strip_prefix("party:") {
             let (code, server) = rest.split_once('|').map(|(c, s)| (c, Some(s))).unwrap_or((rest, None));
-            return crate::party::clean_code(code).map(|code| Self::Party(code, server.map(str::to_owned)));
+            return crate::jam::normalize_code(code).map(|code| Self::Party(code, server.map(str::to_owned)));
         }
         crate::jam::normalize_code(msg).map(Self::Jam)
     }
@@ -107,7 +107,50 @@ pub fn parse(arg: &str) -> Option<Invite> {
         }
         // A Listen Together invite: `…/invite/<CODE>` on the origin that hosts it,
         // or `bitchord://party/CODE`, with the custom server it names, if any.
-        return crate::party::parse_invite(arg).map(|(code, server)| Invite::Party(code, server));
+        return parse_party_invite(arg).map(|(code, server)| Invite::Party(code, server));
+    }
+    None
+}
+
+fn sanitize_server_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    let with_scheme = if trimmed.to_ascii_lowercase().starts_with("http://")
+        || trimmed.to_ascii_lowercase().starts_with("https://")
+    {
+        trimmed.to_owned()
+    } else {
+        format!("https://{trimmed}")
+    };
+    let url = url::Url::parse(&with_scheme).ok()?;
+    (!url.host_str().unwrap_or_default().is_empty()).then_some(with_scheme)
+}
+
+fn parse_party_invite(value: &str) -> Option<(String, Option<String>)> {
+    let value = value.trim().trim_matches('"');
+    let (scheme, rest) = value.split_once("://")?;
+    let rest = rest.split('#').next().unwrap_or("");
+    let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let server = sanitize_server_url(query_param(query, "server").unwrap_or_default());
+    if scheme.eq_ignore_ascii_case("bitchord") {
+        let (host, code) = path.split_once('/').unwrap_or((path, ""));
+        if !host.eq_ignore_ascii_case("party") {
+            return None;
+        }
+        let named = || query_param(query, "code").or_else(|| query_param(query, "c")).unwrap_or_default();
+        let code = normalize(if code.is_empty() { named() } else { code })?;
+        return Some((code, server));
+    }
+    if scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http") {
+        let path = path.trim_end_matches('/');
+        let (before, last) = path.rsplit_once('/')?;
+        if before.ends_with("/invite")
+            && let Some(code) = normalize(last)
+        {
+            return Some((code, server));
+        }
     }
     None
 }

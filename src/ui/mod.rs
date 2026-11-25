@@ -13,7 +13,6 @@ mod glyphs;
 mod hero;
 mod integrations;
 mod jam;
-mod party;
 mod karaoke;
 mod keybinds;
 mod lists;
@@ -894,10 +893,6 @@ pub struct App {
     /// time and kept, so a reconnect joins as the same member rather than a stranger.
     jam_user: String,
     jam_device: String,
-    /// Listen Together on the party server (ui/party.rs): the session and whether
-    /// the jam page shows it instead of the relay jam.
-    party: party::Session,
-    party_view: bool,
     signing_in: Arc<AtomicBool>,
     toast: Option<(String, f64)>,
     /// What the toast up now can undo.
@@ -1438,8 +1433,6 @@ impl App {
             jam_server: String::new(),
             jam_user: String::new(),
             jam_device: String::new(),
-            party: Default::default(),
-            party_view: false,
             toast: None,
             undo: None,
             settings_search: String::new(),
@@ -1521,8 +1514,6 @@ impl App {
         app.jam_server = get("jam_server").unwrap_or_default();
         app.jam_user = get("jam_user").unwrap_or_default();
         app.jam_device = get("jam_device").unwrap_or_default();
-        app.party.nickname = get("party_nickname").unwrap_or_default();
-        app.party.server = get("party_server").unwrap_or_default();
         // Last launch's name, picture and playlists, so they show at once; the account
         // menu and the library replace them when they arrive.
         if app.logged_in
@@ -2103,7 +2094,7 @@ impl eframe::App for App {
             self.bring_back(ctx, wayland);
             match invite {
                 crate::deeplink::Invite::Jam(code) => jam::open_link(self, code, None),
-                crate::deeplink::Invite::Party(code, server) => party::open_link(self, code, server),
+                crate::deeplink::Invite::Party(code, server) => jam::open_link(self, code, server),
             }
         }
         for a in std::mem::take(&mut self.actions) {
@@ -2111,7 +2102,6 @@ impl eframe::App for App {
         }
         jam::tick(self, ctx);
         jam::dev_script(self, ctx, now);
-        party::tick(self, ctx);
         // The Discord sign-in window landed: file the account, bring the gateway up.
         if let Some(r) = self.take_discord_link_result() {
             match r {
@@ -2489,8 +2479,6 @@ impl eframe::App for App {
         storage.set_string("jam_server", self.jam_server.clone());
         storage.set_string("jam_user", self.jam_user.clone());
         storage.set_string("jam_device", self.jam_device.clone());
-        storage.set_string("party_nickname", self.party.nickname.clone());
-        storage.set_string("party_server", self.party.server.clone());
         let cache = self.logged_in.then(|| AccountCache {
             name: self.account_name.clone(),
             avatar: self.account_avatar.clone(),

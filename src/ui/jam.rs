@@ -99,6 +99,18 @@ pub struct Session {
     asked_queue: Option<Instant>,
     /// Steps of the YTM_JAM_SCRIPT dev hook already run.
     script_done: usize,
+    /// True once a joined guest has reconciled with the room's queue/track (or acted by
+    /// hand), so pre-join local playback is never pushed over the room on the first tick.
+    synced_once: bool,
+    /// The joining user's personal queue, restored when leaving the room.
+    stash: Option<Stash>,
+}
+
+struct Stash {
+    tracks: Vec<crate::model::Track>,
+    index: usize,
+    position: Duration,
+    was_playing: bool,
 }
 
 impl Session {
@@ -139,7 +151,25 @@ impl Session {
 /// own head is a song we no longer mean to play, and `reconcile` would walk us back to it.
 pub fn hand_picked(app: &mut App) {
     if app.jam.active() && !app.jam.locked() {
+        app.jam.synced_once = true;
         app.jam.pending_song = app.current().map(|t| (t.id.clone(), Instant::now()));
+    }
+}
+
+/// Rejoin the room after a local pause in a locked party: clear the pause intent and,
+/// if the room is playing the same song, jump straight to its playhead and resume.
+pub fn rejoin(app: &mut App) {
+    app.jam.intent = None;
+    let Some(head) = app.jam.conn.as_ref().and_then(|c| c.position()) else { return };
+    if !head.playing || app.current_id() != Some(head.vid.as_str()) {
+        return;
+    }
+    if app.resume_at.is_some() {
+        let report = std::mem::take(&mut app.resume_counts);
+        app.play_current_at(Duration::from_millis(head.ms), report);
+    } else {
+        app.audio.send(AudioCmd::SeekLive { pos: Duration::from_millis(head.ms), at: Instant::now() });
+        app.audio.send(AudioCmd::Resume);
     }
 }
 
@@ -170,7 +200,7 @@ fn my_name(app: &App) -> String {
 /// learned about how long songs take to start on this machine.
 fn fresh(app: &mut App, created: bool) {
     let (code_input, name, load_ms) = (std::mem::take(&mut app.jam.code_input), std::mem::take(&mut app.jam.name), app.jam.load_ms);
-    app.jam = Session { created, code_input, name, load_ms: load_ms.max(800), ..Default::default() };
+    app.jam = Session { created, code_input, name, load_ms: load_ms.max(800), synced_once: created, ..Default::default() };
 }
 
 pub fn start(app: &mut App) {
@@ -197,14 +227,57 @@ pub fn join(app: &mut App, code: &str) {
 /// Leave the room. The relay has no "end the party": a room goes with its last member,
 /// so a host who is done simply leaves too. Playback carries on here.
 pub fn leave(app: &mut App) {
-    // Only one room kind at a time: a party on the web app's server stands down too.
-    super::party::leave(app);
     if let Some(c) = app.jam.conn.take() {
         c.leave();
     }
+    let stash = app.jam.stash.take();
     fresh(app, false);
-    // A follower's queue was the room's: hidden explicit songs leave it.
-    app.queue.drop_explicit();
+    if let Some(stash) = stash {
+        restore_stash(app, stash);
+    } else {
+        // A follower's queue was the room's: hidden explicit songs leave it.
+        app.queue.drop_explicit();
+    }
+}
+
+fn stash_player(app: &mut App) {
+    if app.jam.stash.is_some() || app.queue.tracks.is_empty() {
+        return;
+    }
+    let index = app.queue.index.unwrap_or(0).min(app.queue.tracks.len() - 1);
+    app.jam.stash = Some(Stash {
+        tracks: app.queue.tracks.clone(),
+        index,
+        position: app.resume_at.unwrap_or_else(|| app.audio.status.position()),
+        was_playing: app.playing(),
+    });
+}
+
+fn restore_stash(app: &mut App, stash: Stash) {
+    if stash.index >= stash.tracks.len() {
+        return;
+    }
+    app.queue_source = None;
+    app.queue.fill = None;
+    app.play_pending = None;
+    app.queue.tracks = stash.tracks;
+    app.queue.index = Some(stash.index);
+    if stash.was_playing {
+        app.play_current_at(stash.position, true);
+    } else {
+        app.generation += 1;
+        app.audio.status.wanted_gen.store(app.generation, Ordering::Relaxed);
+        app.audio.send(AudioCmd::Stop);
+        app.buffering = false;
+        app.resume_at = Some(stash.position);
+        app.audio.status.position_ms.store(stash.position.as_millis() as u64, Ordering::Relaxed);
+        app.audio.status.duration_ms.store(app.current().and_then(|t| t.duration).map_or(0, |d| d as u64 * 1000), Ordering::Relaxed);
+        app.request_art();
+        if let Some(t) = app.current().cloned() {
+            app.show_in_media(&t);
+            app.refresh_lyrics(t);
+        }
+    }
 }
 
 /// Dev hooks: YTM_JAM_HOST starts a room, YTM_JAM_JOIN=<code> joins one. The relay names
@@ -300,7 +373,6 @@ pub fn open_link(app: &mut App, code: String, server: Option<String>) {
     if let Some(server) = server {
         app.jam_server = server;
     }
-    app.party_view = false;
     app.go(Page::Jam);
     join(app, &code);
 }
@@ -368,6 +440,9 @@ fn on_event(app: &mut App, e: Event) {
             app.jam.error = None;
             if first && !app.jam.joined_once {
                 app.jam.joined_once = true;
+                if !created {
+                    stash_player(app);
+                }
                 app.toast(if created { "Party started: share the code or link" } else { "Joined the party" });
             }
         }
@@ -417,16 +492,20 @@ fn window_fp(app: &App) -> u64 {
 /// Send what's different: the queue around the playing song, the song, play or pause, a
 /// seek. Then wait for the room to agree before sending anything else.
 fn publish(app: &mut App, party: &Party, head: Option<&Playhead>) {
-    if app.jam.locked() || app.jam.quiet.is_some() || app.buffering {
+    if !app.jam.synced_once || app.jam.locked() || app.jam.quiet.is_some() || app.buffering {
+        return;
+    }
+    if !party.vid.is_empty() && party.position_of(&party.vid).is_none() {
+        // Don't publish until the room's queue holds the room's playing song, otherwise
+        // `position_of` is `None` and `share_queue` would overwrite the room with ours.
         return;
     }
     let Some(index) = app.queue.index else { return };
     let Some(track) = app.current().cloned() else { return };
     let (cur, pos_ms) = (track.id.clone(), position_ms(app));
-    if party.vid != cur && app.jam.loaded.as_deref() == Some(cur.as_str()) {
-        // The room's head has moved to a song we don't hold yet and `reconcile` is asking
-        // for it. Say nothing meanwhile, or we hand the room back the song we were listening
-        // to a moment ago and its own new one never lands.
+    if party.vid != cur && !party.vid.is_empty() && !app.jam.unannounced(Some(&cur)) {
+        // The room's head is a different song that we didn't just pick by hand: let
+        // `reconcile` bring us to the room instead of pushing our old song over it.
         return;
     }
     // Play and pause reach the room only as a deliberate ask from this device. Our own
@@ -616,6 +695,14 @@ fn reconcile(app: &mut App, ctx: &egui::Context, party: &Party, head: Option<&Pl
             app.queue.fill = None;
         }
     }
+    if party.position_of(&head.vid).is_some() {
+        app.jam.synced_once = true;
+    } else if app.jam.asked_queue.is_none_or(|t| t.elapsed() > Duration::from_secs(2)) {
+        app.jam.asked_queue = Some(Instant::now());
+        if let Some(c) = &app.jam.conn {
+            c.ask_queue();
+        }
+    }
 
     // 2. Play it, or hold it paused at the room's position.
     let started = app.jam.loaded.as_deref() == Some(head.vid.as_str());
@@ -736,9 +823,7 @@ pub fn refused(app: &App, a: &Action) -> bool {
     }
 }
 
-/// The sidebar's Listen together page: two room kinds, the relay jam this port brought
-/// and the party server the web app and the phone share (Listen Together), one live at
-/// a time.
+/// The sidebar's Listen together page.
 pub fn page(app: &mut App, ui: &mut Ui) {
     let avail = ui.available_width();
     let w = avail.min(720.0);
@@ -747,21 +832,8 @@ pub fn page(app: &mut App, ui: &mut Ui) {
         ui.vertical(|ui| {
             ui.set_width(w);
             page_title(ui, "Listen together");
-            // Two room kinds: the relay jam, and the party server the web app and the
-            // phone share (Listen Together).
-            ui.horizontal(|ui| {
-                if pill(ui, "Jam", None, !app.party_view).clicked() {
-                    app.party_view = false;
-                }
-                ui.add_space(8.0);
-                if pill(ui, "Listen Together", None, app.party_view).clicked() {
-                    app.party_view = true;
-                }
-            });
-            ui.add_space(10.0);
-            if app.party_view {
-                super::party::page(app, ui);
-            } else if app.jam.active() {
+            ui.add_space(6.0);
+            if app.jam.active() {
                 room(app, ui);
             } else {
                 lobby(app, ui);
@@ -935,6 +1007,20 @@ fn room(app: &mut App, ui: &mut Ui) {
             ui.painter().text(pos2(rect.left() + 34.0, rect.center().y), Align2::LEFT_CENTER, name, theme::semibold(14.5), if m.connected { theme::text() } else { theme::text_dim() });
             if is_host {
                 ui.painter().text(pos2(rect.right() - 4.0, rect.center().y), Align2::RIGHT_CENTER, "Host", theme::regular(12.5), theme::text_dim());
+            } else if host && m.id != you {
+                let btn = egui::Rect::from_min_max(
+                    pos2(rect.right() - 60.0, rect.center().y - 13.0),
+                    pos2(rect.right() - 4.0, rect.center().y + 13.0),
+                );
+                let r = ui.interact(btn, ui.scope_id().with(("jam-kick", &m.id)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+                let bg = if r.hovered() { theme::glass(0.18) } else { theme::glass(0.08) };
+                ui.painter().rect_filled(btn, 13.0, bg);
+                ui.painter().text(btn.center(), Align2::CENTER_CENTER, "Kick", theme::semibold(12.0), if r.hovered() { theme::RED } else { theme::text_dim() });
+                if r.clicked() {
+                    if let Some(c) = &app.jam.conn {
+                        c.kick(&m.id);
+                    }
+                }
             }
         }
         ui.add_space(6.0);

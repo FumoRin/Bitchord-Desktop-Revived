@@ -682,7 +682,11 @@ impl App {
         if self.queue.index.is_none() {
             return;
         }
-        if self.jam.active() && !(self.jam.locked() && !self.playing()) {
+        if self.jam.active() {
+            if self.jam.locked() && !self.playing() {
+                super::jam::rejoin(self);
+                return;
+            }
             // Play and pause are the room's to know, so say so here first: that keeps the
             // sync from walking us straight back to the room's still-unmoved state while
             // our own ask is on its way. In a room only the host drives, a play stays the
