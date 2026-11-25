@@ -99,6 +99,9 @@ pub struct Session {
     asked_queue: Option<Instant>,
     /// Steps of the YTM_JAM_SCRIPT dev hook already run.
     script_done: usize,
+    /// True once a joined guest has reconciled with the room's queue/track (or acted by
+    /// hand), so pre-join local playback is never pushed over the room on the first tick.
+    synced_once: bool,
 }
 
 impl Session {
@@ -139,6 +142,7 @@ impl Session {
 /// own head is a song we no longer mean to play, and `reconcile` would walk us back to it.
 pub fn hand_picked(app: &mut App) {
     if app.jam.active() && !app.jam.locked() {
+        app.jam.synced_once = true;
         app.jam.pending_song = app.current().map(|t| (t.id.clone(), Instant::now()));
     }
 }
@@ -170,7 +174,7 @@ fn my_name(app: &App) -> String {
 /// learned about how long songs take to start on this machine.
 fn fresh(app: &mut App, created: bool) {
     let (code_input, name, load_ms) = (std::mem::take(&mut app.jam.code_input), std::mem::take(&mut app.jam.name), app.jam.load_ms);
-    app.jam = Session { created, code_input, name, load_ms: load_ms.max(800), ..Default::default() };
+    app.jam = Session { created, code_input, name, load_ms: load_ms.max(800), synced_once: created, ..Default::default() };
 }
 
 pub fn start(app: &mut App) {
@@ -197,8 +201,6 @@ pub fn join(app: &mut App, code: &str) {
 /// Leave the room. The relay has no "end the party": a room goes with its last member,
 /// so a host who is done simply leaves too. Playback carries on here.
 pub fn leave(app: &mut App) {
-    // Only one room kind at a time: a party on the web app's server stands down too.
-    super::party::leave(app);
     if let Some(c) = app.jam.conn.take() {
         c.leave();
     }
@@ -300,7 +302,6 @@ pub fn open_link(app: &mut App, code: String, server: Option<String>) {
     if let Some(server) = server {
         app.jam_server = server;
     }
-    app.party_view = false;
     app.go(Page::Jam);
     join(app, &code);
 }
@@ -417,16 +418,15 @@ fn window_fp(app: &App) -> u64 {
 /// Send what's different: the queue around the playing song, the song, play or pause, a
 /// seek. Then wait for the room to agree before sending anything else.
 fn publish(app: &mut App, party: &Party, head: Option<&Playhead>) {
-    if app.jam.locked() || app.jam.quiet.is_some() || app.buffering {
+    if !app.jam.synced_once || app.jam.locked() || app.jam.quiet.is_some() || app.buffering {
         return;
     }
     let Some(index) = app.queue.index else { return };
     let Some(track) = app.current().cloned() else { return };
     let (cur, pos_ms) = (track.id.clone(), position_ms(app));
-    if party.vid != cur && app.jam.loaded.as_deref() == Some(cur.as_str()) {
-        // The room's head has moved to a song we don't hold yet and `reconcile` is asking
-        // for it. Say nothing meanwhile, or we hand the room back the song we were listening
-        // to a moment ago and its own new one never lands.
+    if party.vid != cur && !party.vid.is_empty() && !app.jam.unannounced(Some(&cur)) {
+        // The room's head is a different song that we didn't just pick by hand: let
+        // `reconcile` bring us to the room instead of pushing our old song over it.
         return;
     }
     // Play and pause reach the room only as a deliberate ask from this device. Our own
@@ -536,6 +536,7 @@ fn report(app: &mut App, head: Option<&Playhead>) {
 /// Get the player to where the room is: its song, its position, its play or pause.
 fn reconcile(app: &mut App, ctx: &egui::Context, party: &Party, head: Option<&Playhead>) {
     let Some(head) = head else { return };
+    app.jam.synced_once = true;
     // The room has come round to what we asked for: from here we're simply following it.
     if app.jam.intent == Some(head.playing) {
         log::debug!("jam: the room agrees with our {}", if head.playing { "play" } else { "pause" });
@@ -736,9 +737,7 @@ pub fn refused(app: &App, a: &Action) -> bool {
     }
 }
 
-/// The sidebar's Listen together page: two room kinds, the relay jam this port brought
-/// and the party server the web app and the phone share (Listen Together), one live at
-/// a time.
+/// The sidebar's Listen together page.
 pub fn page(app: &mut App, ui: &mut Ui) {
     let avail = ui.available_width();
     let w = avail.min(720.0);
@@ -747,21 +746,8 @@ pub fn page(app: &mut App, ui: &mut Ui) {
         ui.vertical(|ui| {
             ui.set_width(w);
             page_title(ui, "Listen together");
-            // Two room kinds: the relay jam, and the party server the web app and the
-            // phone share (Listen Together).
-            ui.horizontal(|ui| {
-                if pill(ui, "Jam", None, !app.party_view).clicked() {
-                    app.party_view = false;
-                }
-                ui.add_space(8.0);
-                if pill(ui, "Listen Together", None, app.party_view).clicked() {
-                    app.party_view = true;
-                }
-            });
-            ui.add_space(10.0);
-            if app.party_view {
-                super::party::page(app, ui);
-            } else if app.jam.active() {
+            ui.add_space(6.0);
+            if app.jam.active() {
                 room(app, ui);
             } else {
                 lobby(app, ui);

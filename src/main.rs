@@ -35,7 +35,6 @@ mod model;
 mod motion;
 mod notify;
 mod opus;
-mod party;
 mod preset;
 mod providers;
 mod recommend;
