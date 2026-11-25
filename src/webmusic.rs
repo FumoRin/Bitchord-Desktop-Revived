@@ -24,6 +24,8 @@ const VERSION: &str = "1.20260707.12.00";
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Session {
     pub cookie: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    listening_key: Option<[u8; 20]>,
     session_index: u32,
     /// Brand channel to act as (X-Goog-PageId), when it isn't the account's own.
     #[serde(default)]
@@ -70,7 +72,9 @@ const LEGACY: &str = "rustypipe_cache.json";
 
 impl Session {
     pub fn new(cookie: String, session_index: u32, page_id: Option<String>) -> Self {
-        Self { cookie, session_index, page_id, visitor_data: None, replaced: Default::default(), login: new_login() }
+        let mut session = Self { cookie, listening_key: None, session_index, page_id, visitor_data: None, replaced: Default::default(), login: new_login() };
+        session.listening_key = session.listening_digest();
+        session
     }
 
     /// The brand channel this session acts as; `None` for the Google account's own.
@@ -206,7 +210,11 @@ impl Session {
                 }
             }
         }
-        changed.then(|| Self { cookie: jar.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("; "), ..self.clone() })
+        changed.then(|| Self {
+            listening_key: self.listening_digest(),
+            cookie: jar.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("; "),
+            ..self.clone()
+        })
     }
 
     /// Ask Google for fresh session cookies, as an open YouTube tab does every few
@@ -247,6 +255,18 @@ impl Session {
     /// its channels either acts as: the cookies are the sign-in's.
     pub fn same_login(&self, other: &Self) -> bool {
         self.login == other.login
+    }
+
+    // Older sessions have no pinned digest. Capture theirs before replacing cookies.
+    fn listening_digest(&self) -> Option<[u8; 20]> {
+        self.listening_key.or_else(|| {
+            let sid = ["SAPISID", "__Secure-3PAPISID", "__Secure-1PAPISID"].into_iter().find_map(|c| self.get(c))?;
+            Some(Sha1::digest(sid).into())
+        })
+    }
+
+    pub fn scope_key(&self) -> Option<String> {
+        Some(self.listening_digest()?.iter().map(|b| format!("{b:02x}")).collect())
     }
 
     async fn post(&self, http: &reqwest::Client, origin: &str, endpoint: &str, client: (&str, &str, &str), body: Value) -> anyhow::Result<Value> {
@@ -496,11 +516,35 @@ mod tests {
         assert!(brand.same_login(&s));
         assert_eq!((brand.channel(), brand.on_channel(None).channel()), (Some("42"), None));
         // Still the same once Google replaces cookies, SAPISID included.
-        assert!(brand.updated(["SAPISID=new; Domain=.youtube.com"]).unwrap().same_login(&s));
+        let dir = tempfile::tempdir().unwrap();
+        let mut history = crate::listening::Listening::default();
+        history.note_left(crate::model::Track { id: "song".into(), duration: Some(200), ..Default::default() }, 123, 90.0);
+        std::fs::write(dir.path().join("listening.json"), serde_json::to_vec(&history).unwrap()).unwrap();
+        assert_eq!(crate::listening::Listening::load(dir.path(), s.scope_key().as_deref()).events, history.events);
+        let replaced = brand.updated(["SAPISID=new; Domain=.youtube.com"]).unwrap();
+        assert!(replaced.same_login(&s));
+        let restored: Session = serde_json::from_slice(&serde_json::to_vec(&replaced).unwrap()).unwrap();
+        for session in [&replaced, &restored] {
+            assert_eq!(session.scope_key(), s.scope_key());
+            assert_eq!(crate::listening::Listening::load(dir.path(), session.scope_key().as_deref()).events, history.events);
+        }
         // Another sign-in isn't, even with the same cookies (or none of the ones compared).
         assert!(!Session::new("SID=a; SAPISID=k".into(), 0, None).same_login(&s));
         let loaded: Session = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
         assert!(!loaded.same_login(&s));
+    }
+
+    #[test]
+    fn the_scope_key_names_the_account_not_the_credential() {
+        let s = Session::new("SID=a; SAPISID=k; __Secure-3PAPISID=three".into(), 0, None);
+        // The key follows the SAPISID whatever the rest of the cookie does, so
+        // Google's rotations don't re-file a listener's listening.
+        let rotated = s.updated(["SID=other; Domain=.youtube.com"]).unwrap();
+        assert_eq!(rotated.scope_key(), s.scope_key());
+        assert_ne!(s.scope_key(), Session::new("SID=a; SAPISID=other".into(), 0, None).scope_key());
+        // One-way: the cookie's value never shows up in the key.
+        assert_eq!(s.scope_key().unwrap().find('k'), None);
+        assert_eq!(Session::new("SID=a".into(), 0, None).scope_key(), None);
     }
 
     #[test]

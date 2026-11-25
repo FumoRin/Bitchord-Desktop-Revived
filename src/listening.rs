@@ -7,10 +7,14 @@
 //! tells it what's current and playing, so what a song got of actual listening
 //! is a per-frame sum there, settled the moment the song stops being current.
 
-use std::collections::VecDeque;
-use std::path::Path;
+use std::collections::{HashMap, VecDeque};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use crate::model::Track;
+
+// Each occupied path has one writer, and holds its latest requested snapshot.
+static PENDING: LazyLock<Mutex<HashMap<PathBuf, Arc<Vec<u8>>>>> = LazyLock::new(Default::default);
 
 /// One song played: what played, when it started, and how much of it actually did.
 /// The taste reads the timestamp (recent plays count more); the local rows read
@@ -33,8 +37,9 @@ pub struct Skip {
     pub at: u64,
 }
 
-/// The store, and the answers Home asks of it. A plain JSON file beside the app's
-/// other caches, written off the UI thread the way `HomeCache` is.
+/// The store, and the answers Home asks of it. One plain JSON file per account in
+/// the data dir's `listening/`, and one for signed-out listening, written off the
+/// UI thread the way `HomeCache` is.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Listening {
     /// Every play, oldest first; the cap keeps the file small (Mochy's table grows,
@@ -49,7 +54,9 @@ pub struct Listening {
     /// Liked songs, newest first (the taste counts only the newest fifty).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub liked: Vec<Track>,
-    /// Whether the account's history and likes were pulled in once, on a first run.
+    /// Whether this account's history and likes were pulled in once, on its first
+    /// sign-in here — the store is the account's own, so a different one seeds its
+    /// own store, never blocked by this.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub seeded: bool,
     /// What autoplay last served, newest last, kept so fresh recommendations don't
@@ -289,10 +296,16 @@ impl Listening {
         self.seeded = true;
     }
 
-    /// Read it from `listening.json` in the data dir; missing or unreadable is an
+    /// Read the store for `account` from the data dir; missing or unreadable is an
     /// empty one (a fresh install, or an older version's file that didn't parse).
-    pub fn load(dir: &Path) -> Self {
-        std::fs::read(dir.join(LISTENING))
+    pub fn load(dir: &Path, account: Option<&str>) -> Self {
+        let path = file(dir, account);
+        let pending = PENDING.lock().unwrap().get(&path).cloned();
+        if let Some(json) = pending {
+            return serde_json::from_slice(&json).unwrap_or_default();
+        }
+        take_over(dir, account);
+        std::fs::read(path)
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default()
@@ -300,25 +313,65 @@ impl Listening {
 
     /// Write it off the UI thread: a later write always lands, and a half-written
     /// file never shows (the `HomeCache::store` dance).
-    pub fn store(&self, dir: &Path) {
-        static STARTED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        static WRITTEN: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
-        let n = STARTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        let path = dir.join(LISTENING);
-        let json = serde_json::to_vec(self).unwrap_or_default();
+    pub fn store(&self, dir: &Path, account: Option<&str>) {
+        let path = file(dir, account);
+        let json = Arc::new(serde_json::to_vec(self).unwrap_or_default());
+        if PENDING.lock().unwrap().insert(path.clone(), json.clone()).is_some() {
+            return;
+        }
         std::thread::spawn(move || {
-            let mut written = WRITTEN.lock().unwrap_or_else(|e| e.into_inner());
-            if *written > n {
-                return;
-            }
-            *written = n;
+            let _ = std::fs::create_dir_all(path.parent().unwrap());
             let tmp = path.with_extension("json.tmp");
-            let _ = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &path));
+            let mut current = json;
+            loop {
+                if let Err(e) = std::fs::write(&tmp, current.as_slice()).and_then(|_| std::fs::rename(&tmp, &path)) {
+                    log::warn!("couldn't save listening history: {e}");
+                }
+                let mut pending = PENDING.lock().unwrap();
+                if Arc::ptr_eq(&current, &pending[&path]) {
+                    pending.remove(&path);
+                    break;
+                }
+                current = pending[&path].clone();
+            }
         });
     }
 }
 
-const LISTENING: &str = "listening.json";
+/// Where the stores live: one per signed-in account, named for the one-way key of
+/// its session's SAPISID cookie (`webmusic::Session::scope_key`), and one for
+/// signed-out listening beside them. What was listened to as one account is that
+/// account's taste, so switching accounts switches the store the rows grow from,
+/// and signing out leaves the machine's own.
+const DIR: &str = "listening";
+/// What a version before per-account stores kept: every account's listening in one
+/// flat file, which the first scope to load with none of its own takes over — so a
+/// listener's existing history isn't lost to the change.
+const PRE_ACCOUNT: &str = "listening.json";
+
+/// The store's own file: the account's key names it, and signed-out listening has
+/// `out` beside the accounts'. An unusable key (empty, say) falls in with
+/// signed-out rather than naming a file after nothing.
+fn file(dir: &Path, account: Option<&str>) -> PathBuf {
+    let name = match account {
+        Some(key) if !key.is_empty() => format!("{key}.json"),
+        _ => "out.json".to_owned(),
+    };
+    dir.join(DIR).join(name)
+}
+
+/// The flat store from before the accounts had their own, moved to where `account`'s
+/// belongs — once: it's gone afterwards, so every later scope, signed-out included,
+/// starts a store of its own.
+fn take_over(dir: &Path, account: Option<&str>) {
+    let (old, new) = (dir.join(PRE_ACCOUNT), file(dir, account));
+    if old.exists()
+        && !new.exists()
+        && let Some(parent) = new.parent()
+    {
+        let _ = std::fs::create_dir_all(parent).and_then(|_| std::fs::rename(&old, &new));
+    }
+}
 
 pub fn unix_now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
@@ -470,5 +523,51 @@ mod tests {
         let back: Listening = serde_json::from_slice(&json).unwrap();
         assert_eq!(back.events.len(), 1);
         assert_eq!(back.events[0].track.thumbs[0].url, "https://example/t");
+    }
+
+    #[test]
+    fn rapid_scope_switches_keep_the_latest_snapshot_in_memory_and_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut history = Listening::default();
+        for n in 1..=16 {
+            history.note_left(song("a", "X", Some(200)), at(0.0), 90.0);
+            history.store(dir.path(), Some("a"));
+            if n == 1 {
+                history.store(dir.path(), None);
+            }
+            assert_eq!(Listening::load(dir.path(), Some("a")).events.len(), n);
+            assert_eq!(Listening::load(dir.path(), None).events.len(), 1);
+        }
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while PENDING.lock().unwrap().keys().any(|p| p.starts_with(dir.path())) {
+            assert!(std::time::Instant::now() < until, "writer did not finish");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(Listening::load(dir.path(), Some("a")).events.len(), 16);
+        assert_eq!(Listening::load(dir.path(), None).events.len(), 1);
+    }
+
+    #[test]
+    fn each_scope_keeps_its_own_store_and_the_flat_one_is_taken_over_once() {
+        let dir = std::env::temp_dir().join(format!("bitchord-listening-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // One store per scope: an account's is its own file, signed-out another.
+        assert_eq!(file(&dir, Some("a1b2")), dir.join(DIR).join("a1b2.json"));
+        assert_eq!(file(&dir, None), dir.join(DIR).join("out.json"));
+        // The flat store from before them is taken over by the first scope with none
+        // of its own — here the signed-in account — and by no scope after that.
+        let mut l = Listening::default();
+        l.note_left(song("a", "X", Some(200)), at(1.0), 90.0);
+        l.seeded = true;
+        std::fs::write(dir.join(PRE_ACCOUNT), serde_json::to_vec(&l).unwrap()).unwrap();
+        let a = Listening::load(&dir, Some("a1b2"));
+        assert_eq!(a.events.len(), 1);
+        assert!(!dir.join(PRE_ACCOUNT).exists());
+        // A different account, and signed out: each starts empty, not seeded by A's.
+        assert!(Listening::load(&dir, Some("c3d4")).events.is_empty());
+        let out = Listening::load(&dir, None);
+        assert!(out.events.is_empty() && !out.seeded);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
