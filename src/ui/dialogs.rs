@@ -10,7 +10,6 @@ use super::{Action, App, Dialog, notes, pages, widgets};
 
 impl App {
     pub(super) fn draw_dialog(&mut self, ctx: &egui::Context) {
-        log::info!("DDCALLED {}", match &self.dialog { Some(d) => match d { Dialog::ArtistAbout { .. } => "ArtistAbout", Dialog::ConfirmDelete { .. } => "ConfirmDelete", _ => "other" }, None => "none" });
         if let Some(Dialog::ConfirmClearCache) = &self.dialog {
             let mut body = "Saved covers, translated lyrics and the lyrics check's browser data are deleted. They come back as you play and browse. Your library and your downloads stay as they are.".to_owned();
             if let Some(n) = self.storage.known().map(|u| u.cache).filter(|n| *n > 0) {
