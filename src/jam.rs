@@ -406,6 +406,11 @@ impl Jam {
         self.action("setHostOnlyControl", json!({ "enabled": on }));
     }
 
+    /// Remove a member from the party (host only).
+    pub fn kick(&self, member_id: &str) {
+        self.action("kick", json!({ "memberId": member_id }));
+    }
+
     /// Our own position, for the relay's drift log.
     pub fn report(&self, pos_ms: u64, playing: bool) {
         let _ = self.out.send(Out::Text(json!({ "type": "report", "positionMs": pos_ms, "isPlaying": playing }).to_string()));

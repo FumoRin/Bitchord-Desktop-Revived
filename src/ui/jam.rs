@@ -147,6 +147,23 @@ pub fn hand_picked(app: &mut App) {
     }
 }
 
+/// Rejoin the room after a local pause in a locked party: clear the pause intent and,
+/// if the room is playing the same song, jump straight to its playhead and resume.
+pub fn rejoin(app: &mut App) {
+    app.jam.intent = None;
+    let Some(head) = app.jam.conn.as_ref().and_then(|c| c.position()) else { return };
+    if !head.playing || app.current_id() != Some(head.vid.as_str()) {
+        return;
+    }
+    if app.resume_at.is_some() {
+        let report = std::mem::take(&mut app.resume_counts);
+        app.play_current_at(Duration::from_millis(head.ms), report);
+    } else {
+        app.audio.send(AudioCmd::SeekLive { pos: Duration::from_millis(head.ms), at: Instant::now() });
+        app.audio.send(AudioCmd::Resume);
+    }
+}
+
 /// Who this device is to the relay. Both ids are stable, which is how a reconnecting
 /// member keeps its place in the room instead of arriving as a stranger.
 fn ids(app: &mut App) -> Ids {
@@ -421,6 +438,11 @@ fn publish(app: &mut App, party: &Party, head: Option<&Playhead>) {
     if !app.jam.synced_once || app.jam.locked() || app.jam.quiet.is_some() || app.buffering {
         return;
     }
+    if !party.vid.is_empty() && party.position_of(&party.vid).is_none() {
+        // Don't publish until the room's queue holds the room's playing song, otherwise
+        // `position_of` is `None` and `share_queue` would overwrite the room with ours.
+        return;
+    }
     let Some(index) = app.queue.index else { return };
     let Some(track) = app.current().cloned() else { return };
     let (cur, pos_ms) = (track.id.clone(), position_ms(app));
@@ -536,7 +558,6 @@ fn report(app: &mut App, head: Option<&Playhead>) {
 /// Get the player to where the room is: its song, its position, its play or pause.
 fn reconcile(app: &mut App, ctx: &egui::Context, party: &Party, head: Option<&Playhead>) {
     let Some(head) = head else { return };
-    app.jam.synced_once = true;
     // The room has come round to what we asked for: from here we're simply following it.
     if app.jam.intent == Some(head.playing) {
         log::debug!("jam: the room agrees with our {}", if head.playing { "play" } else { "pause" });
@@ -615,6 +636,14 @@ fn reconcile(app: &mut App, ctx: &egui::Context, party: &Party, head: Option<&Pl
         if remade {
             // The party's order is the room's now; a playlist still loading can't add over it.
             app.queue.fill = None;
+        }
+    }
+    if party.position_of(&head.vid).is_some() {
+        app.jam.synced_once = true;
+    } else if app.jam.asked_queue.is_none_or(|t| t.elapsed() > Duration::from_secs(2)) {
+        app.jam.asked_queue = Some(Instant::now());
+        if let Some(c) = &app.jam.conn {
+            c.ask_queue();
         }
     }
 
@@ -921,6 +950,20 @@ fn room(app: &mut App, ui: &mut Ui) {
             ui.painter().text(pos2(rect.left() + 34.0, rect.center().y), Align2::LEFT_CENTER, name, theme::semibold(14.5), if m.connected { theme::text() } else { theme::text_dim() });
             if is_host {
                 ui.painter().text(pos2(rect.right() - 4.0, rect.center().y), Align2::RIGHT_CENTER, "Host", theme::regular(12.5), theme::text_dim());
+            } else if host && m.id != you {
+                let btn = egui::Rect::from_min_max(
+                    pos2(rect.right() - 60.0, rect.center().y - 13.0),
+                    pos2(rect.right() - 4.0, rect.center().y + 13.0),
+                );
+                let r = ui.interact(btn, ui.scope_id().with(("jam-kick", &m.id)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+                let bg = if r.hovered() { theme::glass(0.18) } else { theme::glass(0.08) };
+                ui.painter().rect_filled(btn, 13.0, bg);
+                ui.painter().text(btn.center(), Align2::CENTER_CENTER, "Kick", theme::semibold(12.0), if r.hovered() { theme::RED } else { theme::text_dim() });
+                if r.clicked() {
+                    if let Some(c) = &app.jam.conn {
+                        c.kick(&m.id);
+                    }
+                }
             }
         }
         ui.add_space(6.0);
