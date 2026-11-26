@@ -837,6 +837,9 @@ pub struct App {
     /// Settings › Appearance: the backdrop now playing uses, when it isn't the theme's
     /// own (`None`), without editing a theme.
     np_bg: Option<crate::preset::BgMode>,
+    /// Settings › Appearance: Now playing's edge volume as the half disc pressed on
+    /// the window's border, rather than the bar (the default) the view grew up with.
+    np_vol_dial: bool,
     /// A queue row being dragged to a new place (see `row_drag`).
     row_drag: Option<row_drag::RowDrag>,
     /// Settings › Appearance: the covers Apple Music moves (where it has a clip for the
@@ -1042,11 +1045,10 @@ impl App {
         storage: Option<&dyn eframe::Storage>,
     ) -> Self {
         let get = |k: &str| storage.and_then(|s| s.get_string(k));
-        // Dev hook: YTM_FONT=<font name> tries a font without saving it.
-        // The default font is JetBrains Mono Nerd — a developer-grade monospace that
-        // carries the Nerd Font glyph set. The listener's saved choice (or "Theme's
-        // font" if they cleared it) takes over once they pick one.
-        theme::set_font_choice(&dev_var("YTM_FONT").map(str::to_owned).or_else(|| get("font")).unwrap_or_else(|| "JetBrains Mono Nerd".to_owned()));
+        // Dev hook: YTM_FONT=<font name> tries a font without saving it. Nothing is
+        // forced on a fresh install: the theme's own font shows until the listener
+        // picks one.
+        theme::set_font_choice(&dev_var("YTM_FONT").map(str::to_owned).or_else(|| get("font")).unwrap_or_default());
         let discord_enabled = get("discord_enabled").is_none_or(|v| v == "1");
         let discord_prefs = get("discord")
             .and_then(|s| crate::discord::Prefs::from_saved(&s))
@@ -1407,6 +1409,8 @@ impl App {
             np_open: false,
             np_tab: if get("np_art").is_some_and(|v| v == "1") { NpTab::Art } else { NpTab::Lyrics },
             np_bg: get("np_bg").and_then(|v| crate::preset::BgMode::from_name(&v)),
+            // The bar is the default; the dial is a choice.
+            np_vol_dial: get("np_vol_dial").is_some_and(|v| v == "1"),
             animated_covers: get("animated_covers").is_none_or(|v| v == "1"),
             visual: theme::VisualPreset::from_key(&get("visual_preset").unwrap_or_default()),
             reduce_motion: get("reduce_motion").is_some_and(|v| v == "1"),
@@ -1993,17 +1997,16 @@ impl App {
     /// one of them (it lives in Appearance now, not Lyrics). `ctx` re-styles the
     /// animation time; `None` at launch, where the first frame styles it anyway.
     pub(super) fn apply_visual(&mut self, ctx: Option<&egui::Context>) {
-        use crate::preset::BgMode;
         use crate::theme::VisualPreset;
         match self.visual {
             VisualPreset::Custom => {}
-            // Older computers: no animation, blur or glow anywhere, and Now playing's
-            // backdrop a flat colour instead of the blurred-cover shader. Playback
-            // itself is untouched.
+            // Older computers: no animation or glow anywhere. The backdrop stays the
+            // theme's own — held still by the no-animation settings — and its heavy
+            // blur with it. Playback itself is untouched.
             VisualPreset::Barebones => {
                 self.anim_bg = false;
                 self.reactive_bg = false;
-                self.disable_blur = true;
+                self.disable_blur = false;
                 self.animated_covers = false;
                 self.ambient_light = false;
                 self.reduce_motion = true;
@@ -2011,7 +2014,7 @@ impl App {
                 self.lyric_fx = false;
                 self.lyric_prefs.glow_boost = false;
                 self.lyric_light = true;
-                self.np_bg = Some(BgMode::AccentGradient);
+                self.np_bg = None;
                 self.lyrics_full_rate = false;
             }
             VisualPreset::High => {
@@ -2617,6 +2620,7 @@ impl eframe::App for App {
         }
         storage.set_string("np_art", b(self.np_tab == NpTab::Art));
         storage.set_string("np_bg", self.np_bg.map(|m| m.name().to_owned()).unwrap_or_default());
+        storage.set_string("np_vol_dial", b(self.np_vol_dial));
         // Dev hook: YTM_VISUAL tries a preset without saving it as the listener's.
         if dev_var("YTM_VISUAL").is_none() {
             storage.set_string("visual_preset", self.visual.key().to_owned());

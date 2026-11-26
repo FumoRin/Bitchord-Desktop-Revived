@@ -3375,7 +3375,7 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
         // The row and its bundle: picking one sets every setting it owns, and changing
         // any of those by hand (here or in Lyrics, for the refresh rate) returns to
         // Custom, so the label never claims a bundle that isn't in force.
-        setting_row(ui, "Visual preset", Some("A bundle of the visual settings below. Barebones turns every animation, blur and glow off for older computers — Now playing becomes a flat backdrop with a still cover, and the lyrics take the Light renderer; nothing about playback changes. High visual turns them all on. Changing any of these settings afterwards returns to Custom."), |ui| {
+        setting_row(ui, "Visual preset", Some("A bundle of the visual settings below. Barebones turns every animation and glow off for older computers — Now playing keeps the theme's own backdrop, held still, and the lyrics take the Light renderer; nothing about playback changes. High visual turns them all on. Changing any of these settings afterwards returns to Custom."), |ui| {
             let mut pick = None;
             let btn = dropdown_button(ui, app.visual.label(), 160.0, "Visual preset");
             egui::Popup::menu(&btn).show(|ui| {
@@ -3523,6 +3523,26 @@ fn settings_appearance(app: &mut App, ui: &mut Ui) {
         divider(ui);
         setting_row(ui, "Accent-coloured controls", Some("The play button and volume slider in the accent colour, like the progress line."), |ui| {
             toggle(ui, &mut app.accent_controls, "Accent-coloured controls");
+        });
+        divider(ui);
+        setting_row(ui, "Volume control", Some("How the volume shows at Now playing's left edge. Bar is the slim slider that grows out of the margin; Edge dial is the half disc pressed on the window's border, its level read round the rim. Bar is the app's own look."), |ui| {
+            let mut pick = None;
+            let btn = dropdown_button(ui, if app.np_vol_dial { "Edge dial" } else { "Bar" }, 160.0, "Volume control");
+            egui::Popup::menu(&btn).show(|ui| {
+                ui.set_width(160.0);
+                ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                ui.add_space(4.0);
+                for (label, dial) in [("Bar", false), ("Edge dial", true)] {
+                    if option_row(ui, label, dial == app.np_vol_dial).clicked() {
+                        pick = Some(dial);
+                        ui.close();
+                    }
+                }
+                ui.add_space(4.0);
+            });
+            if let Some(dial) = pick {
+                app.np_vol_dial = dial;
+            }
         });
         divider(ui);
         setting_row(ui, "Font", Some("For the whole app and the lyrics. Any font installed on this computer works, e.g. one made for your language."), |ui| {
